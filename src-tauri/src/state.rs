@@ -6,13 +6,16 @@ use crate::{
     error::AppResult,
     models::AppSettings,
     network::{cloud::CloudConnectionManager, http::HttpClient},
+    runtime::AppRuntime,
     store::db::Database,
 };
 
 pub struct AppState {
+    pub app: AppHandle,
     pub database: Database,
     pub http: HttpClient,
     pub cloud: CloudConnectionManager,
+    pub runtime: AppRuntime,
 }
 
 impl AppState {
@@ -26,12 +29,14 @@ impl AppState {
         let default_download_path = resolve_download_path(&app_dir)?;
         database.ensure_settings(AppSettings::new(default_download_path).normalize())?;
         let http = HttpClient::new()?;
-        let cloud = CloudConnectionManager::new(app.clone(), database.clone(), http.clone());
+        let (runtime, cloud) = AppRuntime::build(app.clone(), database.clone(), http.clone());
 
         Ok(Self {
+            app: app.clone(),
             database,
             http,
             cloud,
+            runtime,
         })
     }
 }

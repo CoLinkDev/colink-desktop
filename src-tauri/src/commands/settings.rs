@@ -14,3 +14,11 @@ pub fn update_settings(
 ) -> Result<AppSettings, String> {
     service::update_settings(state.inner(), settings).map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn pick_download_directory(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    state
+        .runtime
+        .pick_folder_path()
+        .map_err(|error| error.to_string())
+}

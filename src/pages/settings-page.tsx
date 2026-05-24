@@ -18,11 +18,12 @@ const settingsSchema = z.object({
 })
 
 export function SettingsPage() {
-  const { settings, saveSettings } = useAppState()
+  const { settings, saveSettings, pickDownloadDirectory } = useAppState()
 
   return (
     <SettingsForm
       key={JSON.stringify(settings)}
+      onPickDownloadDirectory={pickDownloadDirectory}
       onSave={saveSettings}
       settings={settings}
     />
@@ -32,9 +33,14 @@ export function SettingsPage() {
 interface SettingsFormProps {
   settings: AppSettings
   onSave: (settings: AppSettings) => Promise<void>
+  onPickDownloadDirectory: () => Promise<string | null>
 }
 
-function SettingsForm({ settings, onSave }: SettingsFormProps) {
+function SettingsForm({
+  settings,
+  onSave,
+  onPickDownloadDirectory,
+}: SettingsFormProps) {
   const [form, setForm] = useState<AppSettings>(settings)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -69,7 +75,7 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
       <div>
         <div className="text-lg font-semibold">设置</div>
         <div className="mt-1 text-sm text-[hsl(var(--muted))]">
-          第一版只保存本地配置，不接系统级自启动。
+          网络、后台行为和接收目录都在这里控制。
         </div>
       </div>
 
@@ -90,15 +96,34 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
             </Field>
 
             <Field label="下载路径" tip="接收文件时使用的本地目录。">
-              <Input
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    downloadPath: event.target.value,
-                  }))
-                }
-                value={form.downloadPath}
-              />
+              <div className="flex gap-3">
+                <Input
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      downloadPath: event.target.value,
+                    }))
+                  }
+                  value={form.downloadPath}
+                />
+                <Button
+                  onClick={async () => {
+                    const nextPath = await onPickDownloadDirectory()
+                    if (!nextPath) {
+                      return
+                    }
+
+                    setForm((current) => ({
+                      ...current,
+                      downloadPath: nextPath,
+                    }))
+                  }}
+                  type="button"
+                  variant="secondary"
+                >
+                  选择目录
+                </Button>
+              </div>
             </Field>
           </div>
         </section>
@@ -108,7 +133,7 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
           <div className="mt-6 grid gap-4">
             <SwitchRow
               checked={form.autoStart}
-              description="当前只保存偏好。"
+              description="保存后会写入系统启动项。"
               label="开机启动"
               onChange={(checked) =>
                 setForm((current) => ({
@@ -119,7 +144,7 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
             />
             <SwitchRow
               checked={form.startMinimized}
-              description="启动后先隐藏到托盘的偏好。"
+              description="下次启动会按托盘模式打开。"
               label="启动时最小化"
               onChange={(checked) =>
                 setForm((current) => ({
@@ -130,7 +155,7 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
             />
             <SwitchRow
               checked={form.lanDiscovery}
-              description="后续 LAN 模块会读取这个值。"
+              description="保存后会更新局域网发现开关。"
               label="局域网发现"
               onChange={(checked) =>
                 setForm((current) => ({
@@ -141,7 +166,7 @@ function SettingsForm({ settings, onSave }: SettingsFormProps) {
             />
             <SwitchRow
               checked={form.notifications}
-              description="后续通知模块会读取这个值。"
+              description="保存后会影响系统通知。"
               label="通知"
               onChange={(checked) =>
                 setForm((current) => ({

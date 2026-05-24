@@ -1,6 +1,8 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, LogOut, RefreshCw, Settings2 } from 'lucide-react'
+import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2 } from 'lucide-react'
 import type { PropsWithChildren } from 'react'
+import { useEffect } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { NavLink, useNavigate } from 'react-router-dom'
 
 import { useAppState } from '../hooks/use-app-state'
@@ -10,6 +12,24 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const { cloud, device, logout, refreshBootstrap } = useAppState()
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+
+    void (async () => {
+      try {
+        unlisten = await listen<string>('shell-navigate', (event) => {
+          navigate(event.payload)
+        })
+      } catch {
+        // Desktop runtime only.
+      }
+    })()
+
+    return () => {
+      unlisten?.()
+    }
+  }, [navigate])
 
   return (
     <div className="grid min-h-screen grid-cols-[248px_minmax(0,1fr)] bg-[hsl(var(--background))]">
@@ -24,6 +44,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
           <nav className="flex flex-1 flex-col gap-2">
             <SidebarLink icon={Computer} label="设备" to="/devices" />
+            <SidebarLink icon={MessagesSquare} label="消息" to="/messages" />
             <SidebarLink icon={Settings2} label="设置" to="/settings" />
           </nav>
 

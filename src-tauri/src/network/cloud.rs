@@ -4,11 +4,10 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::{
-    sync::watch,
+    sync::{mpsc, watch},
     time::{interval, sleep, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -16,9 +15,15 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     models::{unix_now, AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
+    protocol::{
+        AnnouncePayload, BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope,
+        DeviceOnlinePayload,
+    },
+    runtime_events::RuntimeEvent,
+    shell,
     store::db::Database,
 };
 
@@ -37,12 +42,14 @@ pub struct CloudConnectionManager {
     app: AppHandle,
     database: Database,
     http: HttpClient,
+    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     inner: Arc<Mutex<ManagerState>>,
 }
 
 struct ManagerState {
     generation: u64,
     cancel: Option<watch::Sender<bool>>,
+    command_tx: Option<mpsc::UnboundedSender<CloudCommand>>,
     status: CloudStatus,
 }
 
@@ -68,6 +75,14 @@ enum ConnectionExit {
     },
 }
 
+enum CloudCommand {
+    Relay {
+        to: String,
+        message: BusinessEnvelope,
+    },
+    Announce(AnnouncePayload),
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RefreshResponse {
@@ -75,13 +90,13 @@ struct RefreshResponse {
     refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RefreshRequest<'a> {
     refresh_token: &'a str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TicketRequest<'a> {
     device_id: &'a str,
@@ -99,39 +114,22 @@ struct DeviceListResponse {
     devices: Vec<DeviceInfo>,
 }
 
-#[derive(Debug, Serialize)]
-struct ClientWsMessage {
-    id: String,
-    #[serde(rename = "type")]
-    message_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ServerWsMessage {
-    #[serde(rename = "type")]
-    message_type: String,
-    from: Option<String>,
-    payload: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceOnlinePayload {
-    name: String,
-    #[serde(rename = "type")]
-    device_type: String,
-}
-
 impl CloudConnectionManager {
-    pub fn new(app: AppHandle, database: Database, http: HttpClient) -> Self {
+    pub fn new(
+        app: AppHandle,
+        database: Database,
+        http: HttpClient,
+        event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) -> Self {
         Self {
             app,
             database,
             http,
+            event_tx,
             inner: Arc::new(Mutex::new(ManagerState {
                 generation: 0,
                 cancel: None,
+                command_tx: None,
                 status: CloudStatus::disconnected(),
             })),
         }
@@ -154,6 +152,7 @@ impl CloudConnectionManager {
             }
             inner.generation += 1;
             inner.cancel = Some(cancel_tx);
+            inner.command_tx = None;
             inner.status = CloudStatus::connecting();
             inner.generation
         };
@@ -177,10 +176,25 @@ impl CloudConnectionManager {
                 let _ = cancel.send(true);
             }
             inner.generation += 1;
+            inner.command_tx = None;
             inner.status = CloudStatus::disconnected();
         }
 
         self.emit_status(CloudStatus::disconnected());
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::CloudDisconnected(Some("云端连接已停止".to_string())));
+    }
+
+    pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
+        self.send_command(CloudCommand::Relay {
+            to: to.to_string(),
+            message,
+        })
+    }
+
+    pub fn announce(&self, payload: AnnouncePayload) -> AppResult<()> {
+        self.send_command(CloudCommand::Announce(payload))
     }
 
     async fn run(&self, generation: u64, mut cancel_rx: watch::Receiver<bool>) {
@@ -195,6 +209,7 @@ impl CloudConnectionManager {
                 ContextLoad::Ready(context) => context,
                 ContextLoad::NoSession => {
                     let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
+                    self.clear_command_sender(generation);
                     return;
                 }
                 ContextLoad::Invalidated(message) => {
@@ -203,9 +218,14 @@ impl CloudConnectionManager {
                 }
                 ContextLoad::Retryable(message) => {
                     attempt += 1;
-                    let status = CloudStatus::reconnecting(attempt, Some(message));
+                    let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
+                    let _ = self.event_tx.send(RuntimeEvent::Log {
+                        level: "warn".to_string(),
+                        source: "cloud".to_string(),
+                        message,
+                    });
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -227,27 +247,32 @@ impl CloudConnectionManager {
                     connected_for,
                     reason,
                 }) => {
+                    self.clear_command_sender(generation);
                     attempt = if connected_for.as_secs() >= 60 {
                         1
                     } else {
                         attempt.saturating_add(1).max(1)
                     };
-                    let status = CloudStatus::reconnecting(attempt, reason);
+                    let status = CloudStatus::reconnecting(attempt, reason.clone());
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
+                    let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(reason));
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
                 }
                 Err(ConnectionFailure::Invalidated(message)) => {
+                    self.clear_command_sender(generation);
                     self.invalidate_auth(message, generation);
                     return;
                 }
                 Err(ConnectionFailure::Retryable(message)) => {
+                    self.clear_command_sender(generation);
                     attempt += 1;
-                    let status = CloudStatus::reconnecting(attempt, Some(message));
+                    let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
+                    let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(message)));
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -352,11 +377,15 @@ impl CloudConnectionManager {
             .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         let connected_at = Instant::now();
 
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        self.install_command_sender(generation, command_tx);
+
         let connected = CloudStatus::connected();
         let _ = self.update_status_if_current(generation, connected.clone());
         self.emit_status(connected);
 
         let _ = self.sync_devices_from_server(&context).await;
+        let _ = self.event_tx.send(RuntimeEvent::CloudConnected);
 
         let (mut writer, mut reader) = stream.split();
         let mut ping_interval = interval(Duration::from_secs(30));
@@ -371,16 +400,47 @@ impl CloudConnectionManager {
                     return Ok(ConnectionExit::Cancelled);
                 }
                 _ = ping_interval.tick() => {
-                    let ping = ClientWsMessage {
+                    let ping = CloudClientEnvelope {
                         id: Uuid::new_v4().to_string(),
                         message_type: "ping".to_string(),
+                        to: None,
+                        payload: None,
                     };
-                    let payload = serde_json::to_string(&ping)
-                        .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
-                    if writer.send(Message::Text(payload.into())).await.is_err() {
+                    if write_client_message(&mut writer, ping).await.is_err() {
                         return Ok(ConnectionExit::Disconnected {
                             connected_for: connected_at.elapsed(),
                             reason: Some("云端连接已断开".to_string()),
+                        });
+                    }
+                }
+                command = command_rx.recv() => {
+                    let Some(command) = command else {
+                        continue;
+                    };
+
+                    let outbound = match command {
+                        CloudCommand::Relay { to, message } => {
+                            CloudClientEnvelope {
+                                id: Uuid::new_v4().to_string(),
+                                message_type: "relay".to_string(),
+                                to: Some(to),
+                                payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
+                            }
+                        }
+                        CloudCommand::Announce(payload) => {
+                            CloudClientEnvelope {
+                                id: Uuid::new_v4().to_string(),
+                                message_type: "announce".to_string(),
+                                to: None,
+                                payload: Some(serde_json::to_value(payload).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
+                            }
+                        }
+                    };
+
+                    if write_client_message(&mut writer, outbound).await.is_err() {
+                        return Ok(ConnectionExit::Disconnected {
+                            connected_for: connected_at.elapsed(),
+                            reason: Some("云端发送失败".to_string()),
                         });
                     }
                 }
@@ -423,7 +483,7 @@ impl CloudConnectionManager {
     }
 
     async fn handle_server_message(&self, raw: &str) {
-        let Ok(message) = serde_json::from_str::<ServerWsMessage>(raw) else {
+        let Ok(message) = serde_json::from_str::<CloudServerEnvelope>(raw) else {
             return;
         };
 
@@ -433,13 +493,38 @@ impl CloudConnectionManager {
                     .payload
                     .and_then(|value| serde_json::from_value::<DeviceOnlinePayload>(value).ok());
                 if let Some(device_id) = message.from {
-                    self.update_device_presence(&device_id, true, payload).await;
+                    self.update_device_presence(&device_id, true, payload.clone()).await;
+                    let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
+                        device_id,
+                        online: true,
+                        payload,
+                    });
                 }
             }
             "device.offline" => {
                 if let Some(device_id) = message.from {
                     self.update_device_presence(&device_id, false, None).await;
+                    let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
+                        device_id,
+                        online: false,
+                        payload: None,
+                    });
                 }
+            }
+            "relay" => {
+                let Some(from) = message.from else {
+                    return;
+                };
+                let Some(payload) = message.payload else {
+                    return;
+                };
+                let Ok(business) = serde_json::from_value::<BusinessEnvelope>(payload) else {
+                    return;
+                };
+                let _ = self.event_tx.send(RuntimeEvent::CloudRelay {
+                    from,
+                    message: business,
+                });
             }
             _ => {}
         }
@@ -479,10 +564,49 @@ impl CloudConnectionManager {
         if let Some(payload) = payload {
             device.name = payload.name;
             device.device_type = payload.device_type;
+            device.local_ip = payload.local_ip;
+            device.local_port = payload.local_port;
+        } else if !online {
+            device.local_ip = None;
+            device.local_port = None;
+            device.lan_available = false;
+            device.active_route = None;
         }
 
         if self.database.save_cached_devices(&devices).is_ok() {
             self.emit_devices(devices);
+        }
+    }
+
+    fn send_command(&self, command: CloudCommand) -> AppResult<()> {
+        let sender = self
+            .inner
+            .lock()
+            .expect("cloud manager poisoned")
+            .command_tx
+            .clone()
+            .ok_or_else(|| AppError::message("云端连接尚未建立"))?;
+
+        sender
+            .send(command)
+            .map_err(|_| AppError::message("云端连接不可用"))
+    }
+
+    fn install_command_sender(
+        &self,
+        generation: u64,
+        sender: mpsc::UnboundedSender<CloudCommand>,
+    ) {
+        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        if inner.generation == generation {
+            inner.command_tx = Some(sender);
+        }
+    }
+
+    fn clear_command_sender(&self, generation: u64) {
+        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        if inner.generation == generation {
+            inner.command_tx = None;
         }
     }
 
@@ -492,6 +616,7 @@ impl CloudConnectionManager {
         let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());
         self.emit_status(CloudStatus::disconnected());
+        let _ = self.event_tx.send(RuntimeEvent::AuthInvalidated(message.clone()));
         let _ = self.app.emit(AUTH_INVALIDATED_EVENT, message);
     }
 
@@ -507,10 +632,12 @@ impl CloudConnectionManager {
 
     fn emit_status(&self, status: CloudStatus) {
         let _ = self.app.emit(CLOUD_STATUS_EVENT, status);
+        let _ = shell::refresh_tray(&self.app);
     }
 
     fn emit_devices(&self, devices: Vec<DeviceInfo>) {
         let _ = self.app.emit(DEVICES_UPDATED_EVENT, devices);
+        let _ = shell::refresh_tray(&self.app);
     }
 }
 
@@ -563,4 +690,16 @@ async fn wait_or_cancel(duration: Duration, cancel_rx: &mut watch::Receiver<bool
         _ = sleep(duration) => false,
         changed = cancel_rx.changed() => changed.is_ok() && *cancel_rx.borrow(),
     }
+}
+
+async fn write_client_message<S>(
+    writer: &mut S,
+    message: CloudClientEnvelope,
+) -> Result<(), tokio_tungstenite::tungstenite::Error>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let payload = serde_json::to_string(&message)
+        .map_err(|error| tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(error)))?;
+    writer.send(Message::Text(payload.into())).await
 }

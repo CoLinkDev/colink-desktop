@@ -26,6 +26,11 @@ export interface DeviceInfo {
   online: boolean
   lastSeen: string | null
   publicKey: string
+  localIp: string | null
+  localPort: number | null
+  lanAvailable: boolean
+  activeRoute: string | null
+  securityState: string
 }
 
 export interface CloudStatus {
@@ -41,6 +46,9 @@ export interface BootstrapPayload {
   devices: DeviceInfo[]
   device: LocalDeviceSummary | null
   cloud: CloudStatus
+  messages: TextMessageRecord[]
+  transfers: FileTransferRecord[]
+  logs: AppLogEntry[]
 }
 
 export interface LoginPayload {
@@ -52,6 +60,51 @@ export interface RegisterPayload {
   email: string
   username: string
   password: string
+}
+
+export interface TextMessageRecord {
+  messageId: string
+  deviceId: string
+  direction: 'inbound' | 'outbound'
+  text: string
+  route: string
+  createdAt: number
+}
+
+export interface FileTransferRecord {
+  fileId: string
+  deviceId: string
+  direction: 'inbound' | 'outbound'
+  fileName: string
+  fileSize: number
+  transferredBytes: number
+  totalChunks: number
+  status: string
+  checksum: string
+  route: string
+  tempPath: string | null
+  finalPath: string | null
+  error: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AppLogEntry {
+  id: string
+  level: string
+  source: string
+  message: string
+  createdAt: number
+}
+
+export interface SendTextPayload {
+  deviceId: string
+  text: string
+}
+
+export interface SendFilePayload {
+  deviceId: string
+  paths: string[]
 }
 
 export const defaultSettings: AppSettings = {

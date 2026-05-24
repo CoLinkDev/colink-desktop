@@ -6,9 +6,11 @@ use crate::{
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     models::{
-        unix_now, AppSettings, BootstrapPayload, DeviceIdentity, DeviceInfo, LoginPayload,
-        RegisterPayload, SessionRecord,
+        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity,
+        DeviceInfo, DeviceNameUpdatePayload, LoginPayload, RegisterPayload,
+        RotateDeviceKeyPayload, SessionRecord,
     },
+    shell,
     state::AppState,
 };
 
@@ -88,6 +90,8 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
 
                 state.database.save_cached_devices(&fetched_devices)?;
                 state.cloud.start();
+                let _ = state.runtime.activate();
+                let _ = shell::refresh_tray(&state.app);
 
                 session_summary = Some(refreshed_session.summary());
                 device_summary = Some(identity.summary());
@@ -99,6 +103,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         }
     } else {
         state.cloud.stop();
+        let _ = state.runtime.deactivate();
     }
 
     Ok(BootstrapPayload {
@@ -107,6 +112,9 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         devices,
         device: device_summary,
         cloud: state.cloud.snapshot(),
+        messages: state.database.load_messages(200)?,
+        transfers: state.database.load_transfers(200)?,
+        logs: state.database.load_logs(200)?,
     })
 }
 
@@ -159,6 +167,87 @@ pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let session = current_session(state).await?;
     let devices = fetch_devices(state, &session).await?;
     state.database.save_cached_devices(&devices)?;
+    shell::refresh_tray(&state.app)?;
+    Ok(devices)
+}
+
+pub async fn update_device_name(
+    state: &AppState,
+    payload: DeviceNameUpdatePayload,
+) -> AppResult<Vec<DeviceInfo>> {
+    let session = current_session(state).await?;
+    let settings = load_settings(state)?;
+    let path = format!("{DEVICES_PATH}/{}", payload.device_id);
+    let request = serde_json::json!({ "name": payload.name });
+    state
+        .http
+        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .await?;
+
+    if let Some(mut identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            identity.name = payload.name;
+            state.database.save_device_identity(&identity)?;
+        }
+    }
+
+    let devices = fetch_devices(state, &session).await?;
+    state.database.save_cached_devices(&devices)?;
+    shell::refresh_tray(&state.app)?;
+    Ok(devices)
+}
+
+pub async fn delete_device(
+    state: &AppState,
+    payload: DeviceDeletePayload,
+) -> AppResult<Vec<DeviceInfo>> {
+    let session = current_session(state).await?;
+    let settings = load_settings(state)?;
+    let path = format!("{DEVICES_PATH}/{}", payload.device_id);
+    state
+        .http
+        .delete_empty(&settings.server_url, &path, Some(&session.access_token))
+        .await?;
+
+    if let Some(identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            state.database.clear_device_identity()?;
+            clear_auth_state(state)?;
+            return Ok(Vec::new());
+        }
+    }
+
+    let devices = fetch_devices(state, &session).await?;
+    state.database.save_cached_devices(&devices)?;
+    shell::refresh_tray(&state.app)?;
+    Ok(devices)
+}
+
+pub async fn rotate_device_key(
+    state: &AppState,
+    payload: RotateDeviceKeyPayload,
+) -> AppResult<Vec<DeviceInfo>> {
+    let session = current_session(state).await?;
+    let settings = load_settings(state)?;
+    let generated = generate_key_pair()?;
+    let path = format!("{DEVICES_PATH}/{}/key", payload.device_id);
+    let request = serde_json::json!({ "publicKey": generated.public_key });
+    state
+        .http
+        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .await?;
+
+    if let Some(mut identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            identity.public_key = generated.public_key.clone();
+            identity.private_key = generated.private_key;
+            state.database.save_device_identity(&identity)?;
+        }
+    }
+
+    let devices = fetch_devices(state, &session).await?;
+    state.database.save_cached_devices(&devices)?;
+    shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
 
@@ -176,10 +265,13 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     Url::parse(&normalized.server_url)?;
 
     state.database.save_settings(&normalized)?;
+    shell::apply_auto_start(normalized.auto_start)?;
 
     if state.database.load_session()?.is_some() {
         state.cloud.restart();
+        let _ = state.runtime.activate();
     }
+    shell::refresh_tray(&state.app)?;
 
     Ok(normalized)
 }
@@ -193,8 +285,10 @@ fn load_settings(state: &AppState) -> AppResult<AppSettings> {
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {
     state.cloud.stop();
+    state.runtime.deactivate()?;
     state.database.clear_session()?;
     state.database.clear_cached_devices()?;
+    shell::refresh_tray(&state.app)?;
     Ok(())
 }
 
@@ -215,6 +309,8 @@ async fn save_session_and_bootstrap(
     let devices = fetch_devices(state, &session).await?;
     state.database.save_cached_devices(&devices)?;
     state.cloud.start();
+    let _ = state.runtime.activate();
+    let _ = shell::refresh_tray(&state.app);
 
     Ok(BootstrapPayload {
         settings,
@@ -222,6 +318,9 @@ async fn save_session_and_bootstrap(
         devices,
         device: Some(identity.summary()),
         cloud: state.cloud.snapshot(),
+        messages: state.database.load_messages(200)?,
+        transfers: state.database.load_transfers(200)?,
+        logs: state.database.load_logs(200)?,
     })
 }
 

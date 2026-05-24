@@ -5,6 +5,7 @@ import { LoadingScreen } from './components/loading-screen'
 import { useAppState } from './hooks/use-app-state'
 import { AuthPage } from './pages/auth-page'
 import { DevicesPage } from './pages/devices-page'
+import { MessagesPage } from './pages/messages-page'
 import { SettingsPage } from './pages/settings-page'
 
 function RootRedirect() {
@@ -51,6 +52,10 @@ export const router = createHashRouter([
       {
         path: '/devices',
         element: <DevicesPage />,
+      },
+      {
+        path: '/messages',
+        element: <MessagesPage />,
       },
       {
         path: '/settings',

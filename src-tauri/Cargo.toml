@@ -4,22 +4,33 @@ version = "0.1.0"
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "2.0.2", features = [] }
+tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
+clipboard-rs = "0.3.4"
 dirs = "5.0.1"
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 futures-util = "0.3.31"
 hostname = "0.4.1"
+if-addrs = "0.15.0"
+image = { version = "0.25.8", default-features = false, features = ["png"] }
+mdns-sd = "0.19.2"
 rand = "0.8.5"
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls"] }
+rfd = "0.15.4"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
+sanitize-filename = "0.5.0"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.132"
-tauri = { version = "2.0.6", features = [] }
+sha2 = "0.10.9"
+tauri = { version = "2.11.2", features = ["tray-icon"] }
+tauri-plugin-notification = "2.3.3"
 thiserror = "1.0.64"
-tokio = { version = "1.48.0", features = ["macros", "sync", "time"] }
+tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.2"
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55.0"

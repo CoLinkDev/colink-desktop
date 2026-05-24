@@ -23,3 +23,29 @@ export function formatLastSeen(value: string | null) {
     minute: '2-digit',
   }).format(timestamp)
 }
+
+export function formatTimestamp(value: number) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(value)
+}
+
+export function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`
+  }
+
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`
+  }
+
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}

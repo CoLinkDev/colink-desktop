@@ -99,6 +99,54 @@ impl HttpClient {
         Ok(())
     }
 
+    pub async fn put_empty<Req>(
+        &self,
+        base_url: &str,
+        path: &str,
+        body: &Req,
+        access_token: Option<&str>,
+    ) -> AppResult<()>
+    where
+        Req: Serialize + ?Sized,
+    {
+        let request = self
+            .authorized(
+                self.client.put(Self::endpoint(base_url, path)?),
+                access_token,
+            )
+            .json(body);
+
+        let (_, payload) = self.send_raw(request).await?;
+        let envelope: ApiOptionalEnvelope<Value> = serde_json::from_str(&payload)?;
+
+        if envelope.code != 0 {
+            return Err(AppError::message(envelope.message));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_empty(
+        &self,
+        base_url: &str,
+        path: &str,
+        access_token: Option<&str>,
+    ) -> AppResult<()> {
+        let request = self.authorized(
+            self.client.delete(Self::endpoint(base_url, path)?),
+            access_token,
+        );
+
+        let (_, payload) = self.send_raw(request).await?;
+        let envelope: ApiOptionalEnvelope<Value> = serde_json::from_str(&payload)?;
+
+        if envelope.code != 0 {
+            return Err(AppError::message(envelope.message));
+        }
+
+        Ok(())
+    }
+
     fn authorized(&self, request: RequestBuilder, access_token: Option<&str>) -> RequestBuilder {
         match access_token {
             Some(token) => request.bearer_auth(token),

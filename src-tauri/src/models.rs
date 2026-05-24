@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
+pub const LAN_PORT: u16 = 27_777;
+pub const MAX_TEXT_LENGTH: usize = 10_000;
+pub const FILE_CHUNK_SIZE: usize = 65_536;
+pub const CLIPBOARD_MAX_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +103,16 @@ pub struct DeviceInfo {
     pub online: bool,
     pub last_seen: Option<String>,
     pub public_key: String,
+    #[serde(default)]
+    pub local_ip: Option<String>,
+    #[serde(default)]
+    pub local_port: Option<u16>,
+    #[serde(default)]
+    pub lan_available: bool,
+    #[serde(default)]
+    pub active_route: Option<String>,
+    #[serde(default = "default_security_state")]
+    pub security_state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,12 +164,56 @@ impl CloudStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TextMessageRecord {
+    pub message_id: String,
+    pub device_id: String,
+    pub direction: String,
+    pub text: String,
+    pub route: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTransferRecord {
+    pub file_id: String,
+    pub device_id: String,
+    pub direction: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub transferred_bytes: i64,
+    pub total_chunks: i64,
+    pub status: String,
+    pub checksum: String,
+    pub route: String,
+    pub temp_path: Option<String>,
+    pub final_path: Option<String>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLogEntry {
+    pub id: String,
+    pub level: String,
+    pub source: String,
+    pub message: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {
     pub settings: AppSettings,
     pub session: Option<SessionSummary>,
     pub devices: Vec<DeviceInfo>,
     pub device: Option<LocalDeviceSummary>,
     pub cloud: CloudStatus,
+    pub messages: Vec<TextMessageRecord>,
+    pub transfers: Vec<FileTransferRecord>,
+    pub logs: Vec<AppLogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,9 +231,53 @@ pub struct RegisterPayload {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTextPayload {
+    pub device_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceNameUpdatePayload {
+    pub device_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDeletePayload {
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateDeviceKeyPayload {
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFilePayload {
+    pub device_id: String,
+    pub paths: Vec<String>,
+}
+
 pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs() as i64)
         .unwrap_or_default()
+}
+
+pub fn unix_now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn default_security_state() -> String {
+    "unverified".to_string()
 }

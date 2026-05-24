@@ -11,24 +11,37 @@ import { listen } from '@tauri-apps/api/event'
 
 import {
   bootstrapApp,
+  cancelTransfer as cancelTransferRequest,
+  deleteDevice as deleteDeviceRequest,
   getSettings,
   listDevices,
   login as loginRequest,
   logout as logoutRequest,
+  pickDownloadDirectory as pickDownloadDirectoryRequest,
+  pickFiles as pickFilesRequest,
   registerAccount,
+  rotateDeviceKey as rotateDeviceKeyRequest,
+  sendFiles as sendFilesRequest,
+  sendText as sendTextRequest,
+  updateDeviceName as updateDeviceNameRequest,
   updateSettings as updateSettingsRequest,
 } from '../lib/api'
 import {
+  type AppLogEntry,
   defaultCloudStatus,
   defaultSettings,
   type AppSettings,
   type BootstrapPayload,
   type CloudStatus,
   type DeviceInfo,
+  type FileTransferRecord,
   type LocalDeviceSummary,
   type LoginPayload,
   type RegisterPayload,
+  type SendFilePayload,
+  type SendTextPayload,
   type SessionSummary,
+  type TextMessageRecord,
 } from '../lib/types'
 
 type AppStatus = 'booting' | 'ready'
@@ -41,12 +54,23 @@ interface AppStateValue {
   device: LocalDeviceSummary | null
   devices: DeviceInfo[]
   cloud: CloudStatus
+  messages: TextMessageRecord[]
+  transfers: FileTransferRecord[]
+  logs: AppLogEntry[]
   refreshBootstrap: () => Promise<void>
   login: (payload: LoginPayload) => Promise<void>
   register: (payload: RegisterPayload) => Promise<void>
   logout: () => Promise<void>
   refreshDevices: () => Promise<void>
+  updateDeviceName: (deviceId: string, name: string) => Promise<void>
+  deleteDevice: (deviceId: string) => Promise<void>
+  rotateDeviceKey: (deviceId: string) => Promise<void>
   saveSettings: (settings: AppSettings) => Promise<void>
+  pickDownloadDirectory: () => Promise<string | null>
+  sendText: (payload: SendTextPayload) => Promise<void>
+  pickFiles: (multiple?: boolean) => Promise<string[]>
+  sendFiles: (payload: SendFilePayload) => Promise<void>
+  cancelTransfer: (fileId: string) => Promise<void>
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null)
@@ -71,6 +95,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [cloud, setCloud] = useState<CloudStatus>(defaultCloudStatus)
+  const [messages, setMessages] = useState<TextMessageRecord[]>([])
+  const [transfers, setTransfers] = useState<FileTransferRecord[]>([])
+  const [logs, setLogs] = useState<AppLogEntry[]>([])
 
   const applyBootstrap = useCallback((payload: BootstrapPayload) => {
     setSession(payload.session)
@@ -78,6 +105,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setDevice(payload.device)
     setDevices(payload.devices)
     setCloud(payload.cloud)
+    setMessages(payload.messages)
+    setTransfers(payload.transfers)
+    setLogs(payload.logs)
   }, [])
 
   const refreshBootstrap = useCallback(async () => {
@@ -101,6 +131,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       setDevice(null)
       setDevices([])
       setCloud(defaultCloudStatus)
+      setMessages([])
+      setTransfers([])
+      setLogs([])
     } finally {
       setStatus('ready')
     }
@@ -119,6 +152,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     let unlistenCloud: (() => void) | null = null
     let unlistenDevices: (() => void) | null = null
     let unlistenAuth: (() => void) | null = null
+    let unlistenMessages: (() => void) | null = null
+    let unlistenTransfers: (() => void) | null = null
+    let unlistenLogs: (() => void) | null = null
 
     void (async () => {
       try {
@@ -142,6 +178,24 @@ export function AppStateProvider({ children }: PropsWithChildren) {
           setBootstrapError('登录状态失效，请重新登录')
           void refreshBootstrap()
         })
+
+        unlistenMessages = await listen<TextMessageRecord[]>('messages-updated', (event) => {
+          if (!disposed) {
+            setMessages(event.payload)
+          }
+        })
+
+        unlistenTransfers = await listen<FileTransferRecord[]>('transfers-updated', (event) => {
+          if (!disposed) {
+            setTransfers(event.payload)
+          }
+        })
+
+        unlistenLogs = await listen<AppLogEntry[]>('logs-updated', (event) => {
+          if (!disposed) {
+            setLogs(event.payload)
+          }
+        })
       } catch {
         // Ignore browser-mode event failures. The desktop runtime provides these events.
       }
@@ -152,6 +206,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       unlistenCloud?.()
       unlistenDevices?.()
       unlistenAuth?.()
+      unlistenMessages?.()
+      unlistenTransfers?.()
+      unlistenLogs?.()
     }
   }, [refreshBootstrap])
 
@@ -178,6 +235,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setSession(null)
     setDevices([])
     setCloud(defaultCloudStatus)
+    setMessages([])
+    setTransfers([])
+    setLogs([])
     setBootstrapError(null)
   }, [])
 
@@ -186,10 +246,45 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setDevices(nextDevices)
   }, [])
 
+  const updateDeviceName = useCallback(async (deviceId: string, name: string) => {
+    const nextDevices = await updateDeviceNameRequest(deviceId, name)
+    setDevices(nextDevices)
+  }, [])
+
+  const deleteDevice = useCallback(async (deviceId: string) => {
+    const nextDevices = await deleteDeviceRequest(deviceId)
+    setDevices(nextDevices)
+  }, [])
+
+  const rotateDeviceKey = useCallback(async (deviceId: string) => {
+    const nextDevices = await rotateDeviceKeyRequest(deviceId)
+    setDevices(nextDevices)
+  }, [])
+
   const saveSettings = useCallback(async (nextSettings: AppSettings) => {
     const saved = await updateSettingsRequest(nextSettings)
     setSettings(saved)
     setBootstrapError(null)
+  }, [])
+
+  const pickDownloadDirectory = useCallback(async () => {
+    return pickDownloadDirectoryRequest()
+  }, [])
+
+  const sendText = useCallback(async (payload: SendTextPayload) => {
+    await sendTextRequest(payload)
+  }, [])
+
+  const pickFiles = useCallback(async (multiple = true) => {
+    return pickFilesRequest(multiple)
+  }, [])
+
+  const sendFiles = useCallback(async (payload: SendFilePayload) => {
+    await sendFilesRequest(payload)
+  }, [])
+
+  const cancelTransfer = useCallback(async (fileId: string) => {
+    await cancelTransferRequest(fileId)
   }, [])
 
   const value = useMemo<AppStateValue>(
@@ -201,12 +296,23 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       device,
       devices,
       cloud,
+      messages,
+      transfers,
+      logs,
       refreshBootstrap,
       login,
       register,
       logout,
       refreshDevices,
+      updateDeviceName,
+      deleteDevice,
+      rotateDeviceKey,
       saveSettings,
+      pickDownloadDirectory,
+      sendText,
+      pickFiles,
+      sendFiles,
+      cancelTransfer,
     }),
     [
       status,
@@ -216,12 +322,23 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       device,
       devices,
       cloud,
+      messages,
+      transfers,
+      logs,
       refreshBootstrap,
       login,
       register,
       logout,
       refreshDevices,
+      updateDeviceName,
+      deleteDevice,
+      rotateDeviceKey,
       saveSettings,
+      pickDownloadDirectory,
+      sendText,
+      pickFiles,
+      sendFiles,
+      cancelTransfer,
     ],
   )
 

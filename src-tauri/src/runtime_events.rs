@@ -1,0 +1,43 @@
+use crate::protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload};
+
+#[derive(Debug, Clone)]
+pub enum RuntimeEvent {
+    AuthInvalidated(String),
+    CloudConnected,
+    CloudDisconnected(Option<String>),
+    CloudRelay {
+        from: String,
+        message: BusinessEnvelope,
+    },
+    DevicePresence {
+        device_id: String,
+        online: bool,
+        payload: Option<DeviceOnlinePayload>,
+    },
+    LanDiscovered {
+        device_id: String,
+        ip: String,
+        port: u16,
+        source: String,
+    },
+    LanConnected {
+        device_id: String,
+    },
+    LanDisconnected {
+        device_id: String,
+    },
+    LanMessage {
+        from: String,
+        message: BusinessEnvelope,
+    },
+    LocalEndpoint {
+        ip: String,
+        port: u16,
+    },
+    ClipboardChanged(ClipboardSyncPayload),
+    Log {
+        level: String,
+        source: String,
+        message: String,
+    },
+}
