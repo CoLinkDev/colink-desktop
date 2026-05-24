@@ -14,7 +14,7 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, refreshDevices, theme, setTheme } = useAppState()
+  const { cloud, logout, refreshDevices, theme, setTheme, settingsDirty } = useAppState()
 
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
@@ -171,6 +171,7 @@ export function AppLayout({ children }: PropsWithChildren) {
             )}
             {location.pathname === '/settings' && (
               <Button
+                disabled={!settingsDirty}
                 form="settings-form"
                 type="submit"
                 size="sm"

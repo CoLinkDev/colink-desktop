@@ -41,6 +41,16 @@ interface SettingsFormProps {
 function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFormProps) {
   const [form, setForm] = useState<AppSettings>(settings)
   const [version, setVersion] = useState(fallbackVersion)
+  const { setSettingsDirty } = useAppState()
+
+  useEffect(() => {
+    const isDirty = JSON.stringify(form) !== JSON.stringify(settings)
+    setSettingsDirty(isDirty)
+
+    return () => {
+      setSettingsDirty(false)
+    }
+  }, [form, settings, setSettingsDirty])
 
   useEffect(() => {
     let cancelled = false

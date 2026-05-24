@@ -73,6 +73,8 @@ interface AppStateValue {
   pickFiles: (multiple?: boolean) => Promise<string[]>
   sendFiles: (payload: SendFilePayload) => Promise<void>
   cancelTransfer: (fileId: string) => Promise<void>
+  settingsDirty: boolean
+  setSettingsDirty: (dirty: boolean) => void
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null)
@@ -94,6 +96,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
   const [session, setSession] = useState<SessionSummary | null>(null)
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
+  const [settingsDirty, setSettingsDirty] = useState(false)
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [cloud, setCloud] = useState<CloudStatus>(defaultCloudStatus)
@@ -371,6 +374,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       pickFiles,
       sendFiles,
       cancelTransfer,
+      settingsDirty,
+      setSettingsDirty,
     }),
     [
       status,
@@ -399,6 +404,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       pickFiles,
       sendFiles,
       cancelTransfer,
+      settingsDirty,
+      setSettingsDirty,
     ],
   )
 
