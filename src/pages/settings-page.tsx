@@ -25,6 +25,17 @@ export function SettingsPage() {
   )
 }
 
+const SUPPORTED_LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'zh-CN', label: '简体中文' },
+  { code: 'zh-TW', label: '繁體中文' },
+  { code: 'ja', label: '日本語' },
+  { code: 'ko', label: '한국어' },
+  { code: 'es', label: 'Español' },
+  { code: 'de', label: 'Deutsch' },
+  { code: 'ru', label: 'Русский' },
+] as const
+
 interface SettingsFormProps {
   settings: AppSettings
   onSave: (settings: AppSettings) => Promise<void>
@@ -84,7 +95,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     }
   }
 
-  function handleLanguageChange(lang: 'zh-CN' | 'en') {
+  function handleLanguageChange(lang: string) {
     void i18n.changeLanguage(lang)
     localStorage.setItem('colink-lang', lang)
     toast.success(t('settings.saveSuccess'))
@@ -115,33 +126,24 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label={t('settings.notifications')} checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
         </Section>
 
-        <Section title={t('settings.language')}>
+        <Section title={t('settings.language') + '/Language'}>
           <Field label={t('settings.language')} tip={t('settings.languageTip')}>
-            <div className="grid grid-cols-2 gap-2 max-w-xs">
-              <button
-                type="button"
-                onClick={() => handleLanguageChange('zh-CN')}
-                className={cn(
-                  "flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all w-full",
-                  i18n.language === 'zh-CN'
-                    ? "border-[hsl(var(--text))] bg-[hsl(var(--text)/0.06)] text-[hsl(var(--text))]"
-                    : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
-                )}
-              >
-                {t('settings.zh')}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleLanguageChange('en')}
-                className={cn(
-                  "flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all w-full",
-                  i18n.language === 'en'
-                    ? "border-[hsl(var(--text))] bg-[hsl(var(--text)/0.06)] text-[hsl(var(--text))]"
-                    : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
-                )}
-              >
-                {t('settings.en')}
-              </button>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 max-w-xl">
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <button
+                  key={lang.code}
+                  type="button"
+                  onClick={() => handleLanguageChange(lang.code)}
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all w-full",
+                    i18n.language === lang.code
+                      ? "border-[hsl(var(--text))] bg-[hsl(var(--text)/0.06)] text-[hsl(var(--text))]"
+                      : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+                  )}
+                >
+                  {lang.label}
+                </button>
+              ))}
             </div>
           </Field>
         </Section>
