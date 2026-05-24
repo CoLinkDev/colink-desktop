@@ -45,6 +45,7 @@
   html {
     min-width: 320px;
     min-height: 100%;
+    overscroll-behavior: none;
   }
 
   body {
@@ -54,6 +55,7 @@
     background: hsl(var(--background));
     color: hsl(var(--text));
     transition: background-color 0.3s ease, color 0.3s ease;
+    overscroll-behavior: none;
     font-family:
       -apple-system,
       BlinkMacSystemFont,

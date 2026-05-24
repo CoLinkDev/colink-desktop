@@ -300,7 +300,7 @@ function SidebarLink({ icon: Icon, label, to }: SidebarLinkProps) {
         cn(
           'group relative flex h-[38px] items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium transition-all duration-200',
           isActive
-            ? 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]'
+            ? 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))]'
             : 'text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))/0.4] hover:text-[hsl(var(--text))]',
         )
       }
