@@ -40,8 +40,8 @@ export function MessagesPage() {
   }
 
   return (
-    <div className="grid gap-5 animate-fade-in xl:grid-cols-[240px_minmax(0,1fr)]">
-      <aside className="space-y-1">
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] gap-6 animate-fade-in overflow-hidden">
+      <aside className="h-full overflow-y-auto py-6 pl-8 pr-1.5 space-y-1 scrollbar-thin">
         <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">设备</div>
         {targetDevices.length === 0 ? (
           <div className="py-8 text-center text-[13px] text-[hsl(var(--muted))]">无其他设备</div>
@@ -66,7 +66,7 @@ export function MessagesPage() {
         ))}
       </aside>
 
-      <div className="space-y-5">
+      <div className="h-full overflow-y-auto py-6 pr-8 pl-1 space-y-5 scrollbar-thin">
         <section className="rounded-xl border bg-[hsl(var(--panel))] p-5">
           <div className="flex items-center justify-between">
             <div className="text-[14px] font-medium">{selectedDevice?.name ?? '未选择'}</div>
