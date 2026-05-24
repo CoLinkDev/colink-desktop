@@ -57,6 +57,8 @@ interface AppStateValue {
   messages: TextMessageRecord[]
   transfers: FileTransferRecord[]
   logs: AppLogEntry[]
+  theme: 'light' | 'dark' | 'auto'
+  setTheme: (theme: 'light' | 'dark' | 'auto') => void
   refreshBootstrap: () => Promise<void>
   login: (payload: LoginPayload) => Promise<void>
   register: (payload: RegisterPayload) => Promise<void>
@@ -98,6 +100,60 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [messages, setMessages] = useState<TextMessageRecord[]>([])
   const [transfers, setTransfers] = useState<FileTransferRecord[]>([])
   const [logs, setLogs] = useState<AppLogEntry[]>([])
+
+  const [theme, setThemeState] = useState<'light' | 'dark' | 'auto'>(() => {
+    const saved = localStorage.getItem('colink-theme')
+    if (saved === 'light' || saved === 'dark' || saved === 'auto') {
+      return saved
+    }
+    return 'dark'
+  })
+
+  useEffect(() => {
+    const root = window.document.documentElement
+    
+    function applyTheme() {
+      if (theme === 'dark') {
+        root.classList.add('dark')
+      } else if (theme === 'light') {
+        root.classList.remove('dark')
+      } else {
+        // Auto mode
+        const systemIsDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        if (systemIsDark) {
+          root.classList.add('dark')
+        } else {
+          root.classList.remove('dark')
+        }
+      }
+    }
+
+    applyTheme()
+    localStorage.setItem('colink-theme', theme)
+
+    if (theme === 'auto') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const listener = () => applyTheme()
+      
+      if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener('change', listener)
+      } else {
+        mediaQuery.addListener(listener)
+      }
+      
+      return () => {
+        if (mediaQuery.removeEventListener) {
+          mediaQuery.removeEventListener('change', listener)
+        } else {
+          mediaQuery.removeListener(listener)
+        }
+      }
+    }
+  }, [theme])
+
+  const setTheme = useCallback((nextTheme: 'light' | 'dark' | 'auto') => {
+    setThemeState(nextTheme)
+  }, [])
 
   const applyBootstrap = useCallback((payload: BootstrapPayload) => {
     setSession(payload.session)
@@ -299,6 +355,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       messages,
       transfers,
       logs,
+      theme,
+      setTheme,
       refreshBootstrap,
       login,
       register,
@@ -325,6 +383,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       messages,
       transfers,
       logs,
+      theme,
+      setTheme,
       refreshBootstrap,
       login,
       register,

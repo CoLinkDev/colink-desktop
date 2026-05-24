@@ -4,6 +4,19 @@
 
 @layer base {
   :root {
+    color-scheme: light;
+    --background: 240 5% 96%;
+    --panel: 0 0% 100%;
+    --panel-2: 240 5% 90%;
+    --border: 240 6% 85%;
+    --text: 240 10% 4%;
+    --muted: 240 4% 46%;
+    --accent: 156 61% 42%;
+    --accent-foreground: 0 0% 100%;
+    --danger: 0 84% 60%;
+  }
+
+  html.dark {
     color-scheme: dark;
     --background: 218 14% 8%;
     --panel: 220 12% 11%;
@@ -32,6 +45,7 @@
     min-height: 100vh;
     background: hsl(var(--background));
     color: hsl(var(--text));
+    transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
     font-family:
       Inter,
       'Microsoft YaHei UI',
@@ -61,4 +75,24 @@
   .surface-muted {
     background: hsl(var(--panel-2));
   }
+}
+
+/* Custom premium scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--panel-2));
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--border));
 }

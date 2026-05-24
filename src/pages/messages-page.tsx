@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
-import { formatBytes, formatTimestamp } from '../lib/utils'
+import { formatBytes, formatTimestamp, formatPlatformName } from '../lib/utils'
 
 export function MessagesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -146,7 +146,7 @@ export function MessagesPage() {
                   </div>
                 </div>
                 <div className="mt-2 text-xs text-[hsl(var(--muted))]">
-                  {item.type} · {item.activeRoute ?? 'cloud'}
+                  {formatPlatformName(item.type)} · {item.activeRoute ?? 'cloud'}
                 </div>
               </button>
             ))

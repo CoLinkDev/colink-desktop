@@ -49,3 +49,14 @@ export function formatBytes(value: number) {
 
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
+
+export function formatPlatformName(platform: string) {
+  const mapping: Record<string, string> = {
+    windows: 'Windows',
+    macos: 'macOS',
+    linux: 'Linux',
+    android: 'Android',
+    ios: 'iOS',
+  }
+  return mapping[platform.toLowerCase()] ?? platform
+}

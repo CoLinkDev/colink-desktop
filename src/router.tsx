@@ -7,6 +7,7 @@ import { AuthPage } from './pages/auth-page'
 import { DevicesPage } from './pages/devices-page'
 import { MessagesPage } from './pages/messages-page'
 import { SettingsPage } from './pages/settings-page'
+import { LogsPage } from './pages/logs-page'
 
 function RootRedirect() {
   const { session, status } = useAppState()
@@ -56,6 +57,10 @@ export const router = createHashRouter([
       {
         path: '/messages',
         element: <MessagesPage />,
+      },
+      {
+        path: '/logs',
+        element: <LogsPage />,
       },
       {
         path: '/settings',

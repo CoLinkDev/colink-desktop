@@ -2,7 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff } from 'lucide-react'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
-import { formatLastSeen } from '../lib/utils'
+import { formatLastSeen, formatPlatformName } from '../lib/utils'
 
 const iconByType: Record<DevicePlatform, LucideIcon> = {
   windows: Monitor,
@@ -31,7 +31,7 @@ export function DeviceCard({ device, isLocalDevice }: DeviceCardProps) {
 
           <div>
             <div className="text-base font-medium">{device.name}</div>
-            <div className="mt-1 text-sm text-[hsl(var(--muted))]">{device.type}</div>
+            <div className="mt-1 text-sm text-[hsl(var(--muted))]">{formatPlatformName(device.type)}</div>
           </div>
         </div>
 
