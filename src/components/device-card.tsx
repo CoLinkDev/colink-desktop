@@ -67,7 +67,7 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
           <button
             onClick={() => onRotateKey(device.deviceId)}
             disabled={actingId === device.deviceId}
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[hsl(var(--panel-2))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border transition-all hover:bg-[hsl(var(--text)/0.05)] hover:border-[hsl(var(--text)/0.2)] active:scale-[0.98] disabled:opacity-40"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--panel-2))] dark:hover:bg-[hsl(var(--panel-2))] active:scale-[0.98] disabled:opacity-40"
             type="button"
           >
             <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
