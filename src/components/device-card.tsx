@@ -1,6 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, MessageSquare, Key } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, Key } from 'lucide-react'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
 import { formatLastSeen, formatPlatformName } from '../lib/utils'
@@ -25,7 +24,7 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
   const status = getDeviceStatus(device, isLocalDevice)
 
   return (
-    <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--muted))]">
+    <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--text)/0.2)]">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--panel-2))]">
@@ -63,15 +62,8 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
         </div>
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2">
-        <Link
-          to={`/messages?deviceId=${device.deviceId}`}
-          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[hsl(var(--panel-2))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border transition-all hover:bg-[hsl(var(--text)/0.05)] hover:border-[hsl(var(--text)/0.2)] active:scale-[0.98]"
-        >
-          <MessageSquare className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
-          发消息
-        </Link>
-        {isLocalDevice && onRotateKey && (
+      {isLocalDevice && onRotateKey && (
+        <div className="mt-5 flex items-center justify-end gap-2">
           <button
             onClick={() => onRotateKey(device.deviceId)}
             disabled={actingId === device.deviceId}
@@ -81,8 +73,8 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
             <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
             {actingId === device.deviceId ? '轮换中...' : '轮换密钥'}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </article>
   )
 }

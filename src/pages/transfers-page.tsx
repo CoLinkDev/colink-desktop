@@ -43,7 +43,12 @@ export function TransfersPage() {
           <div className="py-8 text-center text-[13px] text-[hsl(var(--muted))]">无其他设备</div>
         ) : targetDevices.map((item) => (
           <button
-            className={cn("w-full rounded-lg px-3 py-2.5 text-left transition-colors", item.deviceId === selectedDeviceId ? "bg-[hsl(var(--panel-2))]" : "hover:bg-[hsl(var(--panel-2)/0.5)]")}
+            className={cn(
+              "w-full rounded-lg px-3 py-2.5 text-left border transition-all",
+              item.deviceId === selectedDeviceId
+                ? "border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm"
+                : "border-transparent hover:bg-[hsl(var(--panel-2)/0.5)] bg-transparent"
+            )}
             key={item.deviceId}
             onClick={() => { setSelectedDeviceId(item.deviceId); setSearchParams({ deviceId: item.deviceId }) }}
             type="button"

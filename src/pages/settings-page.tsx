@@ -1,6 +1,7 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useState } from 'react'
 import { z } from 'zod'
+import { toast } from 'sonner'
 
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -38,25 +39,25 @@ interface SettingsFormProps {
 
 function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFormProps) {
   const [form, setForm] = useState<AppSettings>(settings)
-  const [submitting, setSubmitting] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setError(null)
-    setMessage(null)
     const parsed = settingsSchema.safeParse(form)
-    if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? '设置不完整'); return }
-    setSubmitting(true)
-    try { await onSave(parsed.data); setMessage('已保存') }
-    catch (e) { setError(readErrorMessage(e)) }
-    finally { setSubmitting(false) }
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? '设置不完整')
+      return
+    }
+    try {
+      await onSave(parsed.data)
+      toast.success('设置已保存')
+    } catch (e) {
+      toast.error(readErrorMessage(e))
+    }
   }
 
   return (
     <div className="max-w-2xl animate-fade-in">
-      <form className="space-y-6" onSubmit={handleSubmit}>
+      <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
         <Section title="网络">
           <Field label="Server URL" tip="桌面端请求 API 的地址">
             <Input onChange={(e) => setForm((c) => ({ ...c, serverUrl: e.target.value }))} value={form.serverUrl} />
@@ -78,16 +79,6 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label="局域网发现" checked={form.lanDiscovery} onChange={(v) => setForm((c) => ({ ...c, lanDiscovery: v }))} />
           <SwitchRow label="通知" checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
         </Section>
-
-        {(message || error) && (
-          <div className={error ? 'text-[13px] text-[hsl(var(--danger))]' : 'text-[13px] text-[hsl(var(--success))]'}>
-            {error ?? message}
-          </div>
-        )}
-
-        <Button disabled={submitting} type="submit">
-          {submitting ? '保存中…' : '保存'}
-        </Button>
       </form>
     </div>
   )

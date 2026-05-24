@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
+import { toast } from 'sonner'
 
 import { DeviceCard } from '../components/device-card'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
@@ -28,8 +29,9 @@ export function DevicesPage() {
     try {
       await rotateDeviceKey(rotateConfirmId)
       setRotateConfirmId(null)
+      toast.success('安全密钥已成功轮换')
     } catch (requestError) {
-      setError(readErrorMessage(requestError))
+      toast.error(readErrorMessage(requestError))
     } finally {
       setActingId(null)
     }

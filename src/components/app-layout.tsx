@@ -1,9 +1,11 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown } from 'lucide-react'
+import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+
+import { Toaster } from 'sonner'
 
 import { useAppState, readErrorMessage } from '../hooks/use-app-state'
 import { cn } from '../lib/utils'
@@ -66,8 +68,9 @@ export function AppLayout({ children }: PropsWithChildren) {
   }
 
   return (
-    <div className="grid h-screen w-screen grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
-      {/* Sidebar */}
+    <>
+      <div className="grid h-screen w-screen grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
+        {/* Sidebar */}
       <aside className="flex h-full flex-col border-r bg-[hsl(var(--sidebar))]">
         {/* Logo/Brand Area */}
         <div className="flex flex-col px-4 pt-7 pb-5 select-none">
@@ -80,7 +83,7 @@ export function AppLayout({ children }: PropsWithChildren) {
         <nav className="flex flex-1 flex-col gap-1 px-3">
           <SidebarLink icon={Computer} label="设备" to="/devices" />
           <SidebarLink icon={MessagesSquare} label="消息" to="/messages" />
-          <SidebarLink icon={ArrowUpDown} label="传输" to="/transfers" />
+          <SidebarLink icon={ArrowUpDown} label="文件传输" to="/transfers" />
           <SidebarLink icon={ScrollText} label="日志" to="/logs" />
           <SidebarLink icon={Settings2} label="设置" to="/settings" />
         </nav>
@@ -166,11 +169,23 @@ export function AppLayout({ children }: PropsWithChildren) {
                 </Button>
               </div>
             )}
+            {location.pathname === '/settings' && (
+              <Button
+                form="settings-form"
+                type="submit"
+                size="sm"
+                className="gap-1.5"
+              >
+                <Save className="h-3.5 w-3.5" />
+                保存
+              </Button>
+            )}
           </div>
         </header>
 
         <main className="flex-1 overflow-y-auto px-8 py-6">{children}</main>
       </div>
+    </div>
 
       {/* Theme Modal */}
       {showThemeModal && (
@@ -213,7 +228,10 @@ export function AppLayout({ children }: PropsWithChildren) {
           </div>
         </div>
       )}
-    </div>
+
+      {/* Toast Notification Container */}
+      <Toaster theme={theme === 'auto' ? 'system' : theme} position="top-right" closeButton richColors />
+    </>
   )
 }
 
