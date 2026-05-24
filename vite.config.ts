@@ -11,7 +11,7 @@ export default defineConfig({
   envPrefix: ['VITE_', 'TAURI_'],
   define: {
     __APP_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
-    __APP_PROJECT_URL__: JSON.stringify('https://github.com/CoLinkDev/CoLink'),
+    __APP_PROJECT_URL__: JSON.stringify('https://github.com/CoLinkDev/colink-desktop'),
     __APP_FALLBACK_VERSION__: JSON.stringify(packageJson.version ?? '0.0.0'),
   },
   server: {
