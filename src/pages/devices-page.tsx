@@ -121,7 +121,7 @@ export function DevicesPage() {
         <div className="mb-4">
           <div className="text-lg font-semibold">账户设备</div>
           <div className="mt-1 text-sm text-[hsl(var(--muted))]">
-            在线状态来自服务端设备列表。
+            在线状态会区分云端连接和局域网直连。
           </div>
         </div>
 
@@ -133,7 +133,10 @@ export function DevicesPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             {devices.map((item) => (
               <div className="space-y-3" key={item.deviceId}>
-                <DeviceCard device={item} />
+                <DeviceCard
+                  device={item}
+                  isLocalDevice={item.deviceId === device?.deviceId}
+                />
                 <div className="flex flex-wrap gap-2">
                   <Link
                     className="rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm text-[hsl(var(--muted))] transition hover:text-[hsl(var(--text))]"

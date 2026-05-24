@@ -15,9 +15,11 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    device_cache::reconcile_devices,
     error::{AppError, AppResult},
     models::{unix_now, AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
+    network::lan::LanManager,
     protocol::{
         AnnouncePayload, BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope,
         DeviceOnlinePayload,
@@ -42,6 +44,7 @@ pub struct CloudConnectionManager {
     app: AppHandle,
     database: Database,
     http: HttpClient,
+    lan: LanManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     inner: Arc<Mutex<ManagerState>>,
 }
@@ -119,12 +122,14 @@ impl CloudConnectionManager {
         app: AppHandle,
         database: Database,
         http: HttpClient,
+        lan: LanManager,
         event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) -> Self {
         Self {
             app,
             database,
             http,
+            lan,
             event_tx,
             inner: Arc::new(Mutex::new(ManagerState {
                 generation: 0,
@@ -540,8 +545,8 @@ impl CloudConnectionManager {
             )
             .await?;
 
-        self.database.save_cached_devices(&response.devices)?;
-        self.emit_devices(response.devices);
+        let devices = self.replace_cached_devices(response.devices)?;
+        self.emit_devices(devices);
         Ok(())
     }
 
@@ -554,6 +559,7 @@ impl CloudConnectionManager {
         let Ok(mut devices) = self.database.load_cached_devices() else {
             return;
         };
+        let previous = devices.clone();
 
         let Some(device) = devices.iter_mut().find(|item| item.device_id == device_id) else {
             return;
@@ -569,13 +575,19 @@ impl CloudConnectionManager {
         } else if !online {
             device.local_ip = None;
             device.local_port = None;
-            device.lan_available = false;
-            device.active_route = None;
         }
 
-        if self.database.save_cached_devices(&devices).is_ok() {
-            self.emit_devices(devices);
+        let reconciled = reconcile_devices(devices, &previous, &self.lan.peer_ids());
+        if self.database.save_cached_devices(&reconciled).is_ok() {
+            self.emit_devices(reconciled);
         }
+    }
+
+    fn replace_cached_devices(&self, devices: Vec<DeviceInfo>) -> AppResult<Vec<DeviceInfo>> {
+        let previous = self.database.load_cached_devices()?;
+        let reconciled = reconcile_devices(devices, &previous, &self.lan.peer_ids());
+        self.database.save_cached_devices(&reconciled)?;
+        Ok(reconciled)
     }
 
     fn send_command(&self, command: CloudCommand) -> AppResult<()> {

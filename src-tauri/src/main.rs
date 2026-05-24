@@ -1,5 +1,6 @@
 mod commands;
 mod crypto;
+mod device_cache;
 mod error;
 mod models;
 mod network;

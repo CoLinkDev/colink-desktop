@@ -88,7 +88,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
                     .await
                     .unwrap_or_else(|_| state.database.load_cached_devices().unwrap_or_default());
 
-                state.database.save_cached_devices(&fetched_devices)?;
+                let fetched_devices = state.runtime.replace_cached_devices(fetched_devices)?;
                 state.cloud.start();
                 let _ = state.runtime.activate();
                 let _ = shell::refresh_tray(&state.app);
@@ -166,7 +166,7 @@ pub async fn logout(state: &AppState) -> AppResult<()> {
 pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let session = current_session(state).await?;
     let devices = fetch_devices(state, &session).await?;
-    state.database.save_cached_devices(&devices)?;
+    let devices = state.runtime.replace_cached_devices(devices)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -192,7 +192,7 @@ pub async fn update_device_name(
     }
 
     let devices = fetch_devices(state, &session).await?;
-    state.database.save_cached_devices(&devices)?;
+    let devices = state.runtime.replace_cached_devices(devices)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -218,7 +218,7 @@ pub async fn delete_device(
     }
 
     let devices = fetch_devices(state, &session).await?;
-    state.database.save_cached_devices(&devices)?;
+    let devices = state.runtime.replace_cached_devices(devices)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -246,7 +246,7 @@ pub async fn rotate_device_key(
     }
 
     let devices = fetch_devices(state, &session).await?;
-    state.database.save_cached_devices(&devices)?;
+    let devices = state.runtime.replace_cached_devices(devices)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -307,7 +307,7 @@ async fn save_session_and_bootstrap(
     state.database.save_session(&session)?;
     let identity = ensure_device_identity(state, &session).await?;
     let devices = fetch_devices(state, &session).await?;
-    state.database.save_cached_devices(&devices)?;
+    let devices = state.runtime.replace_cached_devices(devices)?;
     state.cloud.start();
     let _ = state.runtime.activate();
     let _ = shell::refresh_tray(&state.app);

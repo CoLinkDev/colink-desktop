@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex},
     time::Duration,
@@ -127,6 +128,16 @@ impl LanManager {
             .expect("lan manager poisoned")
             .peers
             .contains_key(device_id)
+    }
+
+    pub fn peer_ids(&self) -> HashSet<String> {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .peers
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<()> {

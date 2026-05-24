@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff } from 'lucide-react'
+import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff } from 'lucide-react'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
 import { formatLastSeen } from '../lib/utils'
@@ -14,10 +14,12 @@ const iconByType: Record<DevicePlatform, LucideIcon> = {
 
 interface DeviceCardProps {
   device: DeviceInfo
+  isLocalDevice: boolean
 }
 
-export function DeviceCard({ device }: DeviceCardProps) {
+export function DeviceCard({ device, isLocalDevice }: DeviceCardProps) {
   const Icon = iconByType[device.type]
+  const status = getDeviceStatus(device, isLocalDevice)
 
   return (
     <article className="surface rounded-lg border border-[hsl(var(--border))] p-5">
@@ -35,13 +37,13 @@ export function DeviceCard({ device }: DeviceCardProps) {
 
         <div
           className={
-            device.online
+            status.online
               ? 'flex items-center gap-2 text-sm text-[hsl(var(--accent))]'
               : 'flex items-center gap-2 text-sm text-[hsl(var(--muted))]'
           }
         >
-          {device.online ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
-          {device.online ? '在线' : '离线'}
+          <status.Icon className="h-4 w-4" />
+          {status.label}
         </div>
       </div>
 
@@ -59,4 +61,36 @@ export function DeviceCard({ device }: DeviceCardProps) {
       </div>
     </article>
   )
+}
+
+function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean) {
+  if (isLocalDevice) {
+    return {
+      Icon: Computer,
+      label: '本机',
+      online: true,
+    }
+  }
+
+  if (!device.online) {
+    return {
+      Icon: WifiOff,
+      label: '离线',
+      online: false,
+    }
+  }
+
+  if (device.lanAvailable) {
+    return {
+      Icon: Wifi,
+      label: '云端在线 · 局域网在线',
+      online: true,
+    }
+  }
+
+  return {
+    Icon: Wifi,
+    label: '云端在线',
+    online: true,
+  }
 }
