@@ -1,5 +1,5 @@
 import type { FormEvent, ReactNode } from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { z } from 'zod'
 import { toast } from 'sonner'
 
@@ -7,6 +7,7 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { buildTime, fallbackVersion, formatBuildTime, projectUrl, readAppVersion } from '../lib/app-meta'
 import type { AppSettings } from '../lib/types'
 
 const settingsSchema = z.object({
@@ -39,6 +40,21 @@ interface SettingsFormProps {
 
 function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFormProps) {
   const [form, setForm] = useState<AppSettings>(settings)
+  const [version, setVersion] = useState(fallbackVersion)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void readAppVersion().then((nextVersion) => {
+      if (!cancelled) {
+        setVersion(nextVersion)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -56,7 +72,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   }
 
   return (
-    <div className="max-w-2xl animate-fade-in">
+    <div className="max-w-2xl animate-fade-in space-y-6">
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
         <Section title="网络">
           <Field label="Server URL" tip="桌面端请求 API 的地址">
@@ -80,6 +96,12 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label="通知" checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
         </Section>
       </form>
+
+      <Section title="关于">
+        <InfoRow label="项目地址" value={projectUrl} />
+        <InfoRow label="版本" value={version} />
+        <InfoRow label="打包时间" value={formatBuildTime(buildTime)} />
+      </Section>
     </div>
   )
 }
@@ -108,6 +130,15 @@ function SwitchRow({ label, checked, onChange }: { label: string; checked: boole
     <div className="flex items-center justify-between py-1">
       <span className="text-[13px] font-medium">{label}</span>
       <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </div>
+  )
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1">
+      <div className="text-[11px] text-[hsl(var(--muted))]">{label}</div>
+      <div className="break-all text-[13px] font-medium text-[hsl(var(--text))]">{value}</div>
     </div>
   )
 }
