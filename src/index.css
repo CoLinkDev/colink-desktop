@@ -5,28 +5,36 @@
 @layer base {
   :root {
     color-scheme: light;
-    --background: 240 5% 96%;
+    --background: 0 0% 97.5%;
     --panel: 0 0% 100%;
-    --panel-2: 240 5% 90%;
-    --border: 240 6% 85%;
-    --text: 240 10% 4%;
-    --muted: 240 4% 46%;
-    --accent: 156 61% 42%;
+    --panel-2: 220 6% 95%;
+    --border: 220 6% 90%;
+    --text: 220 14% 10%;
+    --text-secondary: 220 6% 44%;
+    --muted: 220 6% 56%;
+    --accent: 215 20% 50%;
     --accent-foreground: 0 0% 100%;
-    --danger: 0 84% 60%;
+    --danger: 0 60% 54%;
+    --success: 145 40% 46%;
+    --ring: 215 20% 50%;
+    --sidebar: 220 6% 98%;
   }
 
   html.dark {
     color-scheme: dark;
-    --background: 218 14% 8%;
-    --panel: 220 12% 11%;
-    --panel-2: 220 10% 15%;
-    --border: 218 10% 23%;
-    --text: 210 20% 96%;
-    --muted: 218 12% 66%;
-    --accent: 156 61% 46%;
+    --background: 220 12% 7%;
+    --panel: 220 10% 10%;
+    --panel-2: 220 8% 14%;
+    --border: 220 8% 18%;
+    --text: 220 10% 93%;
+    --text-secondary: 220 6% 60%;
+    --muted: 220 6% 48%;
+    --accent: 215 18% 58%;
     --accent-foreground: 0 0% 100%;
-    --danger: 0 72% 58%;
+    --danger: 0 55% 58%;
+    --success: 145 35% 50%;
+    --ring: 215 18% 58%;
+    --sidebar: 220 10% 9%;
   }
 
   * {
@@ -45,9 +53,12 @@
     min-height: 100vh;
     background: hsl(var(--background));
     color: hsl(var(--text));
-    transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+    transition: background-color 0.3s ease, color 0.3s ease;
     font-family:
-      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      'SF Pro Text',
+      'Inter',
       'Microsoft YaHei UI',
       'PingFang SC',
       system-ui,
@@ -55,6 +66,10 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    letter-spacing: -0.01em;
+    line-height: 1.5;
+    font-size: 14px;
   }
 
   #root {
@@ -62,8 +77,16 @@
   }
 
   button,
-  input {
+  input,
+  textarea,
+  select {
     font: inherit;
+    letter-spacing: inherit;
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.2);
+    color: hsl(var(--text));
   }
 }
 
@@ -77,10 +100,10 @@
   }
 }
 
-/* Custom premium scrollbar styling */
+/* Refined scrollbar — thin, unobtrusive */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -88,11 +111,47 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--panel-2));
+  background: hsl(var(--border));
   border-radius: 9999px;
-  transition: background-color 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--border));
+  background: hsl(var(--muted) / 0.4);
+}
+
+/* Keyframes */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.25s ease-out;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s ease-in-out infinite;
 }

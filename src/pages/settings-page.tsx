@@ -36,11 +36,7 @@ interface SettingsFormProps {
   onPickDownloadDirectory: () => Promise<string | null>
 }
 
-function SettingsForm({
-  settings,
-  onSave,
-  onPickDownloadDirectory,
-}: SettingsFormProps) {
+function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFormProps) {
   const [form, setForm] = useState<AppSettings>(settings)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -50,181 +46,77 @@ function SettingsForm({
     event.preventDefault()
     setError(null)
     setMessage(null)
-
     const parsed = settingsSchema.safeParse(form)
-
-    if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? '设置不完整')
-      return
-    }
-
+    if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? '设置不完整'); return }
     setSubmitting(true)
-
-    try {
-      await onSave(parsed.data)
-      setMessage('设置已保存')
-    } catch (requestError) {
-      setError(readErrorMessage(requestError))
-    } finally {
-      setSubmitting(false)
-    }
+    try { await onSave(parsed.data); setMessage('已保存') }
+    catch (e) { setError(readErrorMessage(e)) }
+    finally { setSubmitting(false) }
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-2xl animate-fade-in">
       <form className="space-y-6" onSubmit={handleSubmit}>
-        <section className="surface rounded-lg border border-[hsl(var(--border))] p-6">
-          <div className="text-sm font-semibold tracking-wide">网络</div>
-          <div className="mt-6 grid gap-6">
-            <Field label="Server URL" tip="桌面端请求 API 的地址。">
-              <Input
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    serverUrl: event.target.value,
-                  }))
-                }
-                value={form.serverUrl}
-              />
-            </Field>
+        <Section title="网络">
+          <Field label="Server URL" tip="桌面端请求 API 的地址">
+            <Input onChange={(e) => setForm((c) => ({ ...c, serverUrl: e.target.value }))} value={form.serverUrl} />
+          </Field>
+          <Field label="下载路径" tip="接收文件时使用的本地目录">
+            <div className="flex gap-2">
+              <Input onChange={(e) => setForm((c) => ({ ...c, downloadPath: e.target.value }))} value={form.downloadPath} />
+              <Button
+                onClick={async () => { const p = await onPickDownloadDirectory(); if (p) setForm((c) => ({ ...c, downloadPath: p })) }}
+                type="button" variant="secondary" className="shrink-0"
+              >选择</Button>
+            </div>
+          </Field>
+        </Section>
 
-            <Field label="下载路径" tip="接收文件时使用的本地目录。">
-              <div className="flex gap-3">
-                <Input
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      downloadPath: event.target.value,
-                    }))
-                  }
-                  value={form.downloadPath}
-                />
-                <Button
-                  onClick={async () => {
-                    const nextPath = await onPickDownloadDirectory()
-                    if (!nextPath) {
-                      return
-                    }
-
-                    setForm((current) => ({
-                      ...current,
-                      downloadPath: nextPath,
-                    }))
-                  }}
-                  type="button"
-                  variant="secondary"
-                  className="shrink-0"
-                >
-                  选择目录
-                </Button>
-              </div>
-            </Field>
-          </div>
-        </section>
-
-        <section className="surface rounded-lg border border-[hsl(var(--border))] p-6">
-          <div className="text-sm font-semibold tracking-wide">行为</div>
-          <div className="mt-6 grid gap-4">
-            <SwitchRow
-              checked={form.autoStart}
-              label="开机启动"
-              onChange={(checked) =>
-                setForm((current) => ({
-                  ...current,
-                  autoStart: checked,
-                }))
-              }
-            />
-            <SwitchRow
-              checked={form.startMinimized}
-              label="启动时最小化"
-              onChange={(checked) =>
-                setForm((current) => ({
-                  ...current,
-                  startMinimized: checked,
-                }))
-              }
-            />
-            <SwitchRow
-              checked={form.lanDiscovery}
-              label="局域网发现"
-              onChange={(checked) =>
-                setForm((current) => ({
-                  ...current,
-                  lanDiscovery: checked,
-                }))
-              }
-            />
-            <SwitchRow
-              checked={form.notifications}
-              label="通知"
-              onChange={(checked) =>
-                setForm((current) => ({
-                  ...current,
-                  notifications: checked,
-                }))
-              }
-            />
-          </div>
-        </section>
+        <Section title="行为">
+          <SwitchRow label="开机启动" checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
+          <SwitchRow label="启动时最小化" checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
+          <SwitchRow label="局域网发现" checked={form.lanDiscovery} onChange={(v) => setForm((c) => ({ ...c, lanDiscovery: v }))} />
+          <SwitchRow label="通知" checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
+        </Section>
 
         {(message || error) && (
-          <div
-            className={
-              error
-                ? 'rounded-lg border border-[hsl(var(--danger)/0.5)] bg-[hsl(var(--danger)/0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]'
-                : 'rounded-lg border border-[hsl(var(--accent)/0.5)] bg-[hsl(var(--accent)/0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]'
-            }
-          >
+          <div className={error ? 'text-[13px] text-[hsl(var(--danger))]' : 'text-[13px] text-[hsl(var(--success))]'}>
             {error ?? message}
           </div>
         )}
 
         <Button disabled={submitting} type="submit">
-          {submitting ? '正在保存' : '保存设置'}
+          {submitting ? '保存中…' : '保存'}
         </Button>
       </form>
     </div>
   )
 }
 
-interface FieldProps {
-  label: string
-  tip: string
-  children: ReactNode
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-xl border bg-[hsl(var(--panel))] p-5">
+      <div className="text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{title}</div>
+      <div className="mt-5 grid gap-5">{children}</div>
+    </section>
+  )
 }
 
-function Field({ label, tip, children }: FieldProps) {
+function Field({ label, tip, children }: { label: string; tip: string; children: ReactNode }) {
   return (
     <label className="block">
-      <div className="text-sm font-medium text-[hsl(var(--text))]">{label}</div>
-      <div className="mt-1 text-xs text-[hsl(var(--muted))]">{tip}</div>
-      <div className="mt-3">{children}</div>
+      <div className="text-[13px] font-medium">{label}</div>
+      <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{tip}</div>
+      <div className="mt-2">{children}</div>
     </label>
   )
 }
 
-interface SwitchRowProps {
-  label: string
-  description?: string
-  checked: boolean
-  onChange: (checked: boolean) => void
-}
-
-function SwitchRow({
-  label,
-  description,
-  checked,
-  onChange,
-}: SwitchRowProps) {
+function SwitchRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border border-[hsl(var(--border))] px-4 py-3">
-      <div>
-        <div className="text-sm font-medium text-[hsl(var(--text))]">{label}</div>
-        {description && <div className="mt-1 text-xs text-[hsl(var(--muted))]">{description}</div>}
-      </div>
-
-      <Switch checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <div className="flex items-center justify-between py-1">
+      <span className="text-[13px] font-medium">{label}</span>
+      <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
     </div>
   )
 }

@@ -22,39 +22,39 @@ export function DeviceCard({ device, isLocalDevice }: DeviceCardProps) {
   const status = getDeviceStatus(device, isLocalDevice)
 
   return (
-    <article className="surface rounded-lg border border-[hsl(var(--border))] p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-4">
-          <div className="surface-muted flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--border))]">
-            <Icon className="h-5 w-5 text-[hsl(var(--text))]" />
+    <article className="rounded-xl border bg-[hsl(var(--panel))] p-5 transition-colors hover:bg-[hsl(var(--panel-2)/0.5)]">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--panel-2))]">
+            <Icon className="h-[17px] w-[17px] text-[hsl(var(--text-secondary))]" />
           </div>
 
           <div>
-            <div className="text-base font-medium">{device.name}</div>
-            <div className="mt-1 text-sm text-[hsl(var(--muted))]">{formatPlatformName(device.type)}</div>
+            <div className="text-[14px] font-medium leading-tight">{device.name}</div>
+            <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">{formatPlatformName(device.type)}</div>
           </div>
         </div>
 
         <div
           className={
             status.online
-              ? 'flex items-center gap-2 text-sm text-[hsl(var(--accent))]'
-              : 'flex items-center gap-2 text-sm text-[hsl(var(--muted))]'
+              ? 'flex items-center gap-1.5 text-[12px] text-[hsl(var(--success))]'
+              : 'flex items-center gap-1.5 text-[12px] text-[hsl(var(--muted))]'
           }
         >
-          <status.Icon className="h-4 w-4" />
+          <status.Icon className="h-3.5 w-3.5" />
           {status.label}
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 text-sm text-[hsl(var(--muted))] md:grid-cols-2">
+      <div className="mt-4 grid gap-3 text-[12px] text-[hsl(var(--muted))] md:grid-cols-2">
         <div>
-          <div className="text-xs uppercase tracking-[0.1em]">Last Seen</div>
-          <div className="mt-2 text-[hsl(var(--text))]">{formatLastSeen(device.lastSeen)}</div>
+          <div className="text-[11px] uppercase tracking-widest">Last Seen</div>
+          <div className="mt-1 text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen)}</div>
         </div>
         <div>
-          <div className="text-xs uppercase tracking-[0.1em]">Device ID</div>
-          <div className="mt-2 break-all font-mono text-xs text-[hsl(var(--text))]">
+          <div className="text-[11px] uppercase tracking-widest">Device ID</div>
+          <div className="mt-1 break-all font-mono text-[11px] text-[hsl(var(--text-secondary))]">
             {device.deviceId}
           </div>
         </div>
@@ -83,14 +83,14 @@ function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean) {
   if (device.lanAvailable) {
     return {
       Icon: Wifi,
-      label: '云端在线 · 局域网在线',
+      label: '局域网',
       online: true,
     }
   }
 
   return {
     Icon: Wifi,
-    label: '云端在线',
+    label: '在线',
     online: true,
   }
 }

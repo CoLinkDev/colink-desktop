@@ -119,25 +119,24 @@ export function AuthPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[hsl(var(--background))] px-6 py-8">
-      <div className="w-full max-w-md rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--panel))] p-8">
-        <div className="text-xs uppercase tracking-[0.12em] text-[hsl(var(--muted))]">
-          CoLink Desktop
+    <div className="flex min-h-screen items-center justify-center bg-[hsl(var(--background))] px-6">
+      <div className="w-full max-w-sm animate-slide-up">
+        <div className="text-center">
+          <div className="text-[22px] font-semibold tracking-tight">CoLink</div>
+          <p className="mt-2 text-[13px] text-[hsl(var(--muted))]">
+            连接账户以同步设备
+          </p>
         </div>
-        <h1 className="mt-3 text-2xl font-semibold">账户连接</h1>
-        <p className="mt-2 text-sm text-[hsl(var(--muted))]">
-          先接入账户，再同步设备状态。
-        </p>
 
         {(bootstrapError || error) && (
-          <div className="mt-6 rounded-lg border border-[hsl(var(--danger)/0.5)] bg-[hsl(var(--danger)/0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+          <div className="mt-6 rounded-lg bg-[hsl(var(--danger)/0.08)] px-4 py-2.5 text-[13px] text-[hsl(var(--danger))]">
             {error ?? bootstrapError}
           </div>
         )}
 
         {mode === 'login' ? (
-          <form className="mt-6 space-y-4" onSubmit={handleLogin}>
-            <Field label="服务器地址">
+          <form className="mt-8 space-y-4" onSubmit={handleLogin}>
+            <Field label="服务器">
               <Input
                 onChange={(event) => setServerUrl(event.target.value)}
                 placeholder="http://127.0.0.1:8080"
@@ -145,7 +144,7 @@ export function AuthPage() {
               />
             </Field>
 
-            <Field label="邮箱或用户名">
+            <Field label="账户">
               <Input
                 autoComplete="username"
                 onChange={(event) =>
@@ -154,7 +153,7 @@ export function AuthPage() {
                     identifier: event.target.value,
                   }))
                 }
-                placeholder="user@example.com"
+                placeholder="邮箱或用户名"
                 value={loginForm.identifier}
               />
             </Field>
@@ -174,12 +173,14 @@ export function AuthPage() {
               />
             </Field>
 
-            <Button className="w-full" disabled={submitting} type="submit">
-              {submitting ? '正在登录' : '登录'}
-            </Button>
+            <div className="pt-2">
+              <Button className="w-full" disabled={submitting} type="submit">
+                {submitting ? '连接中…' : '登录'}
+              </Button>
+            </div>
           </form>
         ) : (
-          <form className="mt-6 space-y-4" onSubmit={handleRegister}>
+          <form className="mt-8 space-y-4" onSubmit={handleRegister}>
             <Field label="邮箱">
               <Input
                 autoComplete="email"
@@ -238,9 +239,11 @@ export function AuthPage() {
               />
             </Field>
 
-            <Button className="w-full" disabled={submitting} type="submit">
-              {submitting ? '正在创建账户' : '注册并登录'}
-            </Button>
+            <div className="pt-2">
+              <Button className="w-full" disabled={submitting} type="submit">
+                {submitting ? '正在创建…' : '注册'}
+              </Button>
+            </div>
           </form>
         )}
       </div>
@@ -255,8 +258,8 @@ interface FieldProps {
 
 function Field({ label, children }: FieldProps) {
   return (
-    <label className="block space-y-2">
-      <span className="text-sm text-[hsl(var(--muted))]">{label}</span>
+    <label className="block space-y-1.5">
+      <span className="text-[12px] font-medium text-[hsl(var(--text-secondary))]">{label}</span>
       {children}
     </label>
   )

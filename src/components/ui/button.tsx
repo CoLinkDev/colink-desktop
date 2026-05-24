@@ -4,22 +4,23 @@ import type { ButtonHTMLAttributes } from 'react'
 import { cn } from '../../lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex h-10 items-center justify-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+  'inline-flex items-center justify-center gap-2 rounded-lg text-[13px] font-medium transition-all duration-150 disabled:pointer-events-none disabled:opacity-40 active:scale-[0.98]',
   {
     variants: {
       variant: {
         primary:
-          'border-transparent bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] hover:bg-[hsl(var(--accent)/0.88)]',
+          'bg-[hsl(var(--text))] text-[hsl(var(--panel))] hover:opacity-85',
         secondary:
-          'surface border-[hsl(var(--border))] text-[hsl(var(--text))] hover:bg-[hsl(var(--panel-2))]',
+          'border border-[hsl(var(--border))] bg-transparent text-[hsl(var(--text-secondary))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]',
         ghost:
-          'border-transparent bg-transparent text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]',
+          'bg-transparent text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]',
         danger:
-          'border-transparent bg-[hsl(var(--danger))] text-white hover:bg-[hsl(var(--danger)/0.86)]',
+          'bg-[hsl(var(--danger))] text-white hover:opacity-85',
       },
       size: {
-        default: 'h-10 px-4',
+        default: 'h-9 px-4',
         sm: 'h-8 px-3 text-xs',
+        lg: 'h-10 px-5',
       },
     },
     defaultVariants: {

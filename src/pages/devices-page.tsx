@@ -31,41 +31,41 @@ export function DevicesPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 animate-fade-in">
       {error && (
-        <div className="rounded-lg border border-[hsl(var(--danger)/0.5)] bg-[hsl(var(--danger)/0.12)] px-4 py-2.5 text-sm text-[hsl(var(--danger))]">
+        <div className="rounded-lg bg-[hsl(var(--danger)/0.08)] px-4 py-2.5 text-[13px] text-[hsl(var(--danger))]">
           {error}
         </div>
       )}
 
       {devices.length === 0 ? (
-        <div className="surface rounded-lg border border-dashed border-[hsl(var(--border))] px-6 py-10 text-sm text-[hsl(var(--muted))]">
-          还没有拿到设备记录。
+        <div className="py-16 text-center text-[13px] text-[hsl(var(--muted))]">
+          还没有设备记录
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2">
           {devices.map((item) => (
-            <div className="space-y-3" key={item.deviceId}>
+            <div className="space-y-2" key={item.deviceId}>
               <DeviceCard
                 device={item}
                 isLocalDevice={item.deviceId === device?.deviceId}
               />
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-1.5 pl-1">
                 <Link
-                  className="inline-flex h-9 items-center justify-center rounded-lg border border-[hsl(var(--border))] px-4 py-2 text-sm text-[hsl(var(--muted))] transition hover:text-[hsl(var(--text))] hover:bg-[hsl(var(--panel-2))]"
+                  className="inline-flex h-7 items-center rounded-md px-2.5 text-[12px] text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
                   to={`/messages?deviceId=${item.deviceId}`}
                 >
-                  发送消息
+                  发消息
                 </Link>
                 {item.deviceId === device?.deviceId && (
-                  <Button
+                  <button
+                    className="inline-flex h-7 items-center rounded-md px-2.5 text-[12px] text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
                     disabled={actingId === item.deviceId}
                     onClick={() => void handleRotateKey(item.deviceId)}
-                    size="sm"
-                    variant="secondary"
+                    type="button"
                   >
                     轮换密钥
-                  </Button>
+                  </button>
                 )}
               </div>
             </div>
