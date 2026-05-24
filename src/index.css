@@ -12,11 +12,11 @@
     --text: 220 14% 10%;
     --text-secondary: 220 6% 44%;
     --muted: 220 6% 56%;
-    --accent: 215 20% 50%;
+    --accent: 220 14% 10%;
     --accent-foreground: 0 0% 100%;
     --danger: 0 60% 54%;
     --success: 145 40% 46%;
-    --ring: 215 20% 50%;
+    --ring: 220 14% 10%;
     --sidebar: 220 6% 98%;
   }
 
@@ -29,11 +29,11 @@
     --text: 220 10% 93%;
     --text-secondary: 220 6% 60%;
     --muted: 220 6% 48%;
-    --accent: 215 18% 58%;
+    --accent: 220 10% 93%;
     --accent-foreground: 0 0% 100%;
     --danger: 0 55% 58%;
     --success: 145 35% 50%;
-    --ring: 215 18% 58%;
+    --ring: 220 10% 93%;
     --sidebar: 220 10% 9%;
   }
 
