@@ -1,15 +1,17 @@
+import { useTranslation } from 'react-i18next'
 import { useAppState } from '../hooks/use-app-state'
 import { cn } from '../lib/utils'
 import { formatTimestamp } from '../lib/utils'
 
 export function LogsPage() {
   const { logs } = useAppState()
+  const { t } = useTranslation()
 
   return (
     <div className="animate-fade-in">
       <div className="rounded-xl border bg-[hsl(var(--panel))]">
         {logs.length === 0 ? (
-          <div className="py-16 text-center text-[13px] text-[hsl(var(--muted))]">暂无日志</div>
+          <div className="py-16 text-center text-[13px] text-[hsl(var(--muted))]">{t('logs.empty')}</div>
         ) : (
           <div className="divide-y divide-[hsl(var(--border))]">
             {logs.slice(0, 50).map((item) => (

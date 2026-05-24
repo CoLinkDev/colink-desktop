@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, Key } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
 import { formatLastSeen, formatPlatformName } from '../lib/utils'
@@ -20,8 +21,9 @@ interface DeviceCardProps {
 }
 
 export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: DeviceCardProps) {
+  const { t } = useTranslation()
   const Icon = iconByType[device.type]
-  const status = getDeviceStatus(device, isLocalDevice)
+  const status = getDeviceStatus(device, isLocalDevice, t)
 
   return (
     <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--text)/0.2)]">
@@ -51,11 +53,11 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
 
       <div className="mt-4 flex-1 space-y-3.5 text-[12px]">
         <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">上次在线</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">{t('devices.lastSeen')}</div>
           <div className="mt-1 text-[13px] font-medium text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen)}</div>
         </div>
         <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">设备 ID</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">{t('devices.deviceId')}</div>
           <div className="mt-1.5 break-all font-mono text-[11px] text-[hsl(var(--text-secondary))] bg-[hsl(var(--panel-2))] px-2.5 py-1.5 rounded-lg border select-all">
             {device.deviceId}
           </div>
@@ -71,7 +73,7 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
             type="button"
           >
             <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
-            {actingId === device.deviceId ? '轮换中...' : '轮换密钥'}
+            {actingId === device.deviceId ? t('devices.rotating') : t('devices.rotateKey')}
           </button>
         </div>
       )}
@@ -79,11 +81,11 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: Dev
   )
 }
 
-function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean) {
+function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean, t: any) {
   if (isLocalDevice) {
     return {
       Icon: Computer,
-      label: '本机',
+      label: t('devices.localDevice'),
       online: true,
     }
   }
@@ -91,7 +93,7 @@ function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean) {
   if (!device.online) {
     return {
       Icon: WifiOff,
-      label: '离线',
+      label: t('devices.offline'),
       online: false,
     }
   }
@@ -99,14 +101,14 @@ function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean) {
   if (device.lanAvailable) {
     return {
       Icon: Wifi,
-      label: '局域网',
+      label: t('devices.lan'),
       online: true,
     }
   }
 
   return {
     Icon: Wifi,
-    label: '在线',
+    label: t('devices.online'),
     online: true,
   }
 }

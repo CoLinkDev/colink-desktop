@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 
 import { DeviceCard } from '../components/device-card'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { Button } from '../components/ui/button'
 
 export function DevicesPage() {
+  const { t } = useTranslation()
   const {
     devices,
     device,
@@ -29,7 +31,7 @@ export function DevicesPage() {
     try {
       await rotateDeviceKey(rotateConfirmId)
       setRotateConfirmId(null)
-      toast.success('安全密钥已成功轮换')
+      toast.success(t('devices.rotateSuccess'))
     } catch (requestError) {
       toast.error(readErrorMessage(requestError))
     } finally {
@@ -49,7 +51,7 @@ export function DevicesPage() {
 
       {devices.length === 0 ? (
         <div className="py-16 text-center text-[13px] text-[hsl(var(--muted))]">
-          还没有设备记录
+          {t('devices.empty')}
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -69,9 +71,9 @@ export function DevicesPage() {
       {rotateConfirmId && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">轮换密钥确认</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.rotateConfirmTitle')}</div>
             <p className="mt-2 text-[13px] text-[hsl(var(--text-secondary))] leading-relaxed">
-              确定要轮换设备 <strong className="font-semibold text-[hsl(var(--text))]">“{rotatingDevice?.name || '未知设备'}”</strong> 的安全密钥吗？此操作将重新生成并同步该设备的安全凭证。
+              {t('devices.rotateConfirmDesc', { name: rotatingDevice?.name || t('messages.notSelected') })}
             </p>
 
             {error && (
@@ -89,14 +91,14 @@ export function DevicesPage() {
                 }}
                 disabled={!!actingId}
               >
-                取消
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="primary"
                 onClick={handleConfirmRotate}
                 disabled={!!actingId}
               >
-                {actingId ? '轮换中...' : '确认轮换'}
+                {actingId ? t('devices.rotating') : t('devices.rotateConfirmBtn')}
               </Button>
             </div>
           </div>

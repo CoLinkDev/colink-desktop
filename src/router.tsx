@@ -1,4 +1,5 @@
 import { createHashRouter, Navigate, Outlet } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { AppLayout } from './components/app-layout'
 import { LoadingScreen } from './components/loading-screen'
@@ -12,9 +13,10 @@ import { LogsPage } from './pages/logs-page'
 
 function RootRedirect() {
   const { session, status } = useAppState()
+  const { t } = useTranslation()
 
   if (status === 'booting') {
-    return <LoadingScreen label="正在加载本地状态" />
+    return <LoadingScreen label={t('logs.loadingState')} />
   }
 
   return <Navigate replace to={session ? '/devices' : '/login'} />
@@ -22,9 +24,10 @@ function RootRedirect() {
 
 function ProtectedShell() {
   const { session, status } = useAppState()
+  const { t } = useTranslation()
 
   if (status === 'booting') {
-    return <LoadingScreen label="正在准备桌面端" />
+    return <LoadingScreen label={t('logs.preparingState')} />
   }
 
   if (!session) {

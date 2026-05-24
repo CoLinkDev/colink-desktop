@@ -4,6 +4,7 @@ import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { Toaster } from 'sonner'
 
@@ -15,6 +16,7 @@ export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
   const { cloud, logout, refreshDevices, theme, setTheme, settingsDirty } = useAppState()
+  const { t } = useTranslation()
 
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
@@ -53,15 +55,15 @@ export function AppLayout({ children }: PropsWithChildren) {
   const getTitle = () => {
     switch (location.pathname) {
       case '/devices':
-        return '设备'
+        return t('nav.devices')
       case '/messages':
-        return '消息'
+        return t('nav.messages')
       case '/transfers':
-        return '文件传输'
+        return t('nav.transfers')
       case '/logs':
-        return '日志'
+        return t('nav.logs')
       case '/settings':
-        return '设置'
+        return t('nav.settings')
       default:
         return 'CoLink Desktop'
     }
@@ -81,11 +83,11 @@ export function AppLayout({ children }: PropsWithChildren) {
 
         {/* Navigation Items */}
         <nav className="flex flex-1 flex-col gap-1 px-3">
-          <SidebarLink icon={Computer} label="设备" to="/devices" />
-          <SidebarLink icon={MessagesSquare} label="消息" to="/messages" />
-          <SidebarLink icon={ArrowUpDown} label="文件传输" to="/transfers" />
-          <SidebarLink icon={ScrollText} label="日志" to="/logs" />
-          <SidebarLink icon={Settings2} label="设置" to="/settings" />
+          <SidebarLink icon={Computer} label={t('nav.devices')} to="/devices" />
+          <SidebarLink icon={MessagesSquare} label={t('nav.messages')} to="/messages" />
+          <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
+          <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
+          <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
         {/* Bottom area */}
@@ -94,7 +96,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <div className="rounded-lg bg-[hsl(var(--panel-2))] border p-2.5 select-none">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold text-[hsl(var(--muted))] uppercase tracking-wider">
-                连接状态
+                {t('cloud.status')}
               </span>
               <div className="flex items-center gap-1.5">
                 <span className="relative flex h-1.5 w-1.5">
@@ -107,7 +109,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                   )} />
                 </span>
                 <span className="text-[11px] font-medium text-[hsl(var(--text))]">
-                  {getCloudLabel(cloud.state, cloud.attempt)}
+                  {getCloudLabel(cloud.state, cloud.attempt, t)}
                 </span>
               </div>
             </div>
@@ -126,7 +128,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 {theme === 'auto' && <Laptop className="h-4 w-4 text-[hsl(var(--accent))]" />}
               </div>
               <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
-                外观
+                {t('nav.theme')}
               </span>
             </button>
 
@@ -142,7 +144,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 <LogOut className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--danger))]" />
               </div>
               <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
-                退出
+                {t('nav.logout')}
               </span>
             </button>
           </div>
@@ -165,7 +167,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                   variant="secondary"
                 >
                   <RefreshCw className={refreshing ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-                  刷新
+                  {t('common.refresh')}
                 </Button>
               </div>
             )}
@@ -178,7 +180,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 className="gap-1.5"
               >
                 <Save className="h-3.5 w-3.5" />
-                保存
+                {t('common.save')}
               </Button>
             )}
           </div>
@@ -199,27 +201,27 @@ export function AppLayout({ children }: PropsWithChildren) {
       {showThemeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-xs rounded-xl border bg-[hsl(var(--panel))] p-5 shadow-xl animate-scale-in">
-            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">外观</div>
+            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">{t('theme.title')}</div>
             <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
-              选择界面显示主题
+              {t('theme.subtitle')}
             </p>
             <div className="mt-5 grid grid-cols-3 gap-1.5">
               <ThemeOption
                 active={theme === 'light'}
                 icon={Sun}
-                label="浅色"
+                label={t('theme.light')}
                 onClick={() => setTheme('light')}
               />
               <ThemeOption
                 active={theme === 'dark'}
                 icon={Moon}
-                label="深色"
+                label={t('theme.dark')}
                 onClick={() => setTheme('dark')}
               />
               <ThemeOption
                 active={theme === 'auto'}
                 icon={Laptop}
-                label="系统"
+                label={t('theme.auto')}
                 onClick={() => setTheme('auto')}
               />
             </div>
@@ -230,7 +232,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 size="sm"
                 variant="secondary"
               >
-                完成
+                {t('theme.done')}
               </Button>
             </div>
           </div>
@@ -272,20 +274,20 @@ function ThemeOption({
 }
 
 
-function getCloudLabel(state: string, attempt: number) {
+function getCloudLabel(state: string, attempt: number, t: any) {
   if (state === 'connected') {
-    return '已连接'
+    return t('cloud.connected')
   }
 
   if (state === 'connecting') {
-    return '连接中'
+    return t('cloud.connecting')
   }
 
   if (state === 'reconnecting') {
-    return `重连中 #${attempt}`
+    return t('cloud.reconnecting', { attempt })
   }
 
-  return '未连接'
+  return t('cloud.disconnected')
 }
 
 interface SidebarLinkProps {
