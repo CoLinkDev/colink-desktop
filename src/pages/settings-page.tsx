@@ -169,11 +169,11 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function Field({ label, tip, children }: { label: string; tip: string; children: ReactNode }) {
   return (
-    <label className="block">
+    <div className="block">
       <div className="text-[13px] font-medium">{label}</div>
       <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{tip}</div>
       <div className="mt-2">{children}</div>
-    </label>
+    </div>
   )
 }
 
