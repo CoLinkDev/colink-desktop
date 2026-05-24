@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --background: 218 14% 8%;
+    --panel: 220 12% 11%;
+    --panel-2: 220 10% 15%;
+    --border: 218 10% 23%;
+    --text: 210 20% 96%;
+    --muted: 218 12% 66%;
+    --accent: 156 61% 46%;
+    --accent-foreground: 0 0% 100%;
+    --danger: 0 72% 58%;
+  }
+
+  * {
+    @apply border-[hsl(var(--border))];
+    box-sizing: border-box;
+  }
+
+  html {
+    min-width: 320px;
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+    background: hsl(var(--background));
+    color: hsl(var(--text));
+    font-family:
+      Inter,
+      'Microsoft YaHei UI',
+      'PingFang SC',
+      system-ui,
+      sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  .surface {
+    background: hsl(var(--panel));
+  }
+
+  .surface-muted {
+    background: hsl(var(--panel-2));
+  }
+}
