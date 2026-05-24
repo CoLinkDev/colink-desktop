@@ -98,6 +98,10 @@
   .surface-muted {
     background: hsl(var(--panel-2));
   }
+
+  .font-google-sans {
+    font-family: 'Google Sans Flex', 'Google Sans', 'Product Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  }
 }
 
 /* Refined scrollbar — thin, unobtrusive */

@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { DeviceCard } from '../components/device-card'
-import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 
 export function DevicesPage() {

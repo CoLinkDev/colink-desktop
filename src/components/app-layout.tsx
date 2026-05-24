@@ -67,13 +67,15 @@ export function AppLayout({ children }: PropsWithChildren) {
     <div className="grid h-screen w-screen grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
       {/* Sidebar */}
       <aside className="flex h-full flex-col border-r bg-[hsl(var(--sidebar))]">
+        {/* Logo/Brand Area */}
         <div className="flex flex-col px-4 pt-7 pb-5">
-          <div className="px-3 text-[15px] font-semibold tracking-tight text-[hsl(var(--text))]">
+          <div className="px-3 font-google-sans text-[18px] font-bold tracking-tight text-[hsl(var(--text))]">
             CoLink
           </div>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-0.5 px-3">
+        {/* Navigation Items */}
+        <nav className="flex flex-1 flex-col gap-1 px-3">
           <SidebarLink icon={Computer} label="设备" to="/devices" />
           <SidebarLink icon={MessagesSquare} label="消息" to="/messages" />
           <SidebarLink icon={ScrollText} label="日志" to="/logs" />
@@ -81,44 +83,70 @@ export function AppLayout({ children }: PropsWithChildren) {
         </nav>
 
         {/* Bottom area */}
-        <div className="mt-auto space-y-1 border-t px-3 py-3">
-          <div className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-[hsl(var(--muted))]">
-            <span className={cn(
-              "h-1.5 w-1.5 rounded-full transition-colors duration-300",
-              cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--muted))]"
-            )} />
-            <span>{getCloudLabel(cloud.state, cloud.attempt)}</span>
+        <div className="mt-auto border-t p-3 space-y-2">
+          {/* Connection Status Widget */}
+          <div className="rounded-lg bg-[hsl(var(--panel-2))] border p-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-[hsl(var(--muted))] uppercase tracking-wider">
+                连接状态
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="relative flex h-1.5 w-1.5">
+                  {cloud.connected && (
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--success))] opacity-75" />
+                  )}
+                  <span className={cn(
+                    "relative inline-flex h-1.5 w-1.5 rounded-full transition-colors duration-300",
+                    cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--muted))]"
+                  )} />
+                </span>
+                <span className="text-[11px] font-medium text-[hsl(var(--text))]">
+                  {getCloudLabel(cloud.state, cloud.attempt)}
+                </span>
+              </div>
+            </div>
           </div>
 
-          <button
-            onClick={() => setShowThemeModal(true)}
-            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
-            type="button"
-          >
-            {theme === 'dark' && <Moon className="h-3.5 w-3.5" />}
-            {theme === 'light' && <Sun className="h-3.5 w-3.5" />}
-            {theme === 'auto' && <Laptop className="h-3.5 w-3.5" />}
-            外观
-          </button>
+          {/* Action Buttons Stack */}
+          <div className="flex flex-col gap-1">
+            <button
+              onClick={() => setShowThemeModal(true)}
+              className="group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+              type="button"
+            >
+              <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+                {theme === 'dark' && <Moon className="h-4 w-4 text-[hsl(var(--accent))]" />}
+                {theme === 'light' && <Sun className="h-4 w-4 text-[hsl(var(--accent))]" />}
+                {theme === 'auto' && <Laptop className="h-4 w-4 text-[hsl(var(--accent))]" />}
+              </div>
+              <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
+                外观
+              </span>
+            </button>
 
-          <button
-            onClick={async () => {
-              await logout()
-              navigate('/login')
-            }}
-            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
-            type="button"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-            退出
-          </button>
+            <button
+              onClick={async () => {
+                await logout()
+                navigate('/login')
+              }}
+              className="group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--danger))]"
+              type="button"
+            >
+              <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+                <LogOut className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--danger))]" />
+              </div>
+              <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
+                退出
+              </span>
+            </button>
+          </div>
         </div>
       </aside>
 
       {/* Main content */}
       <div className="flex h-full flex-col overflow-hidden bg-[hsl(var(--background))]">
-        <header className="flex shrink-0 items-center justify-between px-8 pt-7 pb-0">
-          <h1 className="text-[20px] font-semibold tracking-tight">{getTitle()}</h1>
+        <header className="flex h-16 shrink-0 items-center justify-between border-b px-8">
+          <h1 className="text-[20px] font-semibold tracking-tight text-[hsl(var(--text))]">{getTitle()}</h1>
 
           <div className="flex items-center gap-2">
             {location.pathname === '/devices' && (
@@ -243,16 +271,33 @@ function SidebarLink({ icon: Icon, label, to }: SidebarLinkProps) {
     <NavLink
       className={({ isActive }) =>
         cn(
-          'flex h-9 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors',
+          'group relative flex h-[38px] items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium transition-all duration-200',
           isActive
-            ? 'bg-[hsl(var(--panel-2))] font-medium text-[hsl(var(--text))]'
-            : 'text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]',
+            ? 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]'
+            : 'text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))/0.4] hover:text-[hsl(var(--text))]',
         )
       }
       to={to}
     >
-      <Icon className="h-[15px] w-[15px]" />
-      {label}
+      {({ isActive }) => (
+        <>
+          {/* Active side indicator - pushed further to the left (from left-1.5 to left-1) */}
+          {isActive && (
+            <div className="absolute left-1 h-3.5 w-1 rounded-full bg-[hsl(var(--accent))]" />
+          )}
+          {/* Fixed-width icon wrapper for grid-perfect alignment */}
+          <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+            <Icon className={cn(
+              "h-4 w-4 transition-colors duration-200",
+              isActive ? "text-[hsl(var(--accent))]" : "text-[hsl(var(--muted))] group-hover:text-[hsl(var(--text))]"
+            )} />
+          </div>
+          {/* h-5 and items-center guarantees mathematical baseline vertical alignment with the icon wrapper */}
+          <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
+            {label}
+          </span>
+        </>
+      )}
     </NavLink>
   )
 }
