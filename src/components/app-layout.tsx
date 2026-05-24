@@ -59,7 +59,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       case '/settings':
         return '设置'
       default:
-        return 'CoLink'
+        return 'CoLink Desktop'
     }
   }
 
@@ -68,9 +68,9 @@ export function AppLayout({ children }: PropsWithChildren) {
       {/* Sidebar */}
       <aside className="flex h-full flex-col border-r bg-[hsl(var(--sidebar))]">
         {/* Logo/Brand Area */}
-        <div className="flex flex-col px-4 pt-7 pb-5">
-          <div className="px-3 font-google-sans text-[18px] font-bold tracking-tight text-[hsl(var(--text))]">
-            CoLink
+        <div className="flex flex-col px-4 pt-7 pb-5 select-none">
+          <div className="px-1 font-google-sans text-[18px] font-bold tracking-tight text-[hsl(var(--text))]">
+            CoLink Desktop
           </div>
         </div>
 
@@ -85,7 +85,7 @@ export function AppLayout({ children }: PropsWithChildren) {
         {/* Bottom area */}
         <div className="mt-auto border-t p-3 space-y-2">
           {/* Connection Status Widget */}
-          <div className="rounded-lg bg-[hsl(var(--panel-2))] border p-2.5">
+          <div className="rounded-lg bg-[hsl(var(--panel-2))] border p-2.5 select-none">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold text-[hsl(var(--muted))] uppercase tracking-wider">
                 连接状态
@@ -177,7 +177,6 @@ export function AppLayout({ children }: PropsWithChildren) {
             <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
               选择界面显示主题
             </p>
-
             <div className="mt-5 grid grid-cols-3 gap-1.5">
               <ThemeOption
                 active={theme === 'light'}
@@ -230,15 +229,15 @@ function ThemeOption({
     <button
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center justify-center gap-1.5 rounded-lg border py-3 text-[12px] font-medium transition-all",
+        "flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[12px] font-medium transition-all w-full",
         active
           ? "border-[hsl(var(--text))] bg-[hsl(var(--text)/0.06)] text-[hsl(var(--text))]"
-          : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))]"
+          : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
       )}
       type="button"
     >
-      <Icon className="h-4 w-4" />
-      {label}
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span>{label}</span>
     </button>
   )
 }

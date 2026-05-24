@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff } from 'lucide-react'
+import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, MessageSquare, Key } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
 import { formatLastSeen, formatPlatformName } from '../lib/utils'
@@ -15,14 +16,16 @@ const iconByType: Record<DevicePlatform, LucideIcon> = {
 interface DeviceCardProps {
   device: DeviceInfo
   isLocalDevice: boolean
+  onRotateKey?: (deviceId: string) => void
+  actingId?: string | null
 }
 
-export function DeviceCard({ device, isLocalDevice }: DeviceCardProps) {
+export function DeviceCard({ device, isLocalDevice, onRotateKey, actingId }: DeviceCardProps) {
   const Icon = iconByType[device.type]
   const status = getDeviceStatus(device, isLocalDevice)
 
   return (
-    <article className="rounded-xl border bg-[hsl(var(--panel))] p-5 transition-colors hover:bg-[hsl(var(--panel-2)/0.5)]">
+    <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--muted))]">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--panel-2))]">
@@ -47,17 +50,38 @@ export function DeviceCard({ device, isLocalDevice }: DeviceCardProps) {
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 text-[12px] text-[hsl(var(--muted))] md:grid-cols-2">
+      <div className="mt-4 flex-1 space-y-3.5 text-[12px]">
         <div>
-          <div className="text-[11px] uppercase tracking-widest">Last Seen</div>
-          <div className="mt-1 text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen)}</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">上次在线</div>
+          <div className="mt-1 text-[13px] font-medium text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen)}</div>
         </div>
         <div>
-          <div className="text-[11px] uppercase tracking-widest">Device ID</div>
-          <div className="mt-1 break-all font-mono text-[11px] text-[hsl(var(--text-secondary))]">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">设备 ID</div>
+          <div className="mt-1.5 break-all font-mono text-[11px] text-[hsl(var(--text-secondary))] bg-[hsl(var(--panel-2))] px-2.5 py-1.5 rounded-lg border select-all">
             {device.deviceId}
           </div>
         </div>
+      </div>
+
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <Link
+          to={`/messages?deviceId=${device.deviceId}`}
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[hsl(var(--panel-2))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border transition-all hover:bg-[hsl(var(--text)/0.05)] hover:border-[hsl(var(--text)/0.2)] active:scale-[0.98]"
+        >
+          <MessageSquare className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
+          发消息
+        </Link>
+        {isLocalDevice && onRotateKey && (
+          <button
+            onClick={() => onRotateKey(device.deviceId)}
+            disabled={actingId === device.deviceId}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[hsl(var(--panel-2))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border transition-all hover:bg-[hsl(var(--text)/0.05)] hover:border-[hsl(var(--text)/0.2)] active:scale-[0.98] disabled:opacity-40"
+            type="button"
+          >
+            <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
+            {actingId === device.deviceId ? '轮换中...' : '轮换密钥'}
+          </button>
+        )}
       </div>
     </article>
   )
