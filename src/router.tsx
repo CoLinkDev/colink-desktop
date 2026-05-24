@@ -6,6 +6,7 @@ import { useAppState } from './hooks/use-app-state'
 import { AuthPage } from './pages/auth-page'
 import { DevicesPage } from './pages/devices-page'
 import { MessagesPage } from './pages/messages-page'
+import { TransfersPage } from './pages/transfers-page'
 import { SettingsPage } from './pages/settings-page'
 import { LogsPage } from './pages/logs-page'
 
@@ -57,6 +58,10 @@ export const router = createHashRouter([
       {
         path: '/messages',
         element: <MessagesPage />,
+      },
+      {
+        path: '/transfers',
+        element: <TransfersPage />,
       },
       {
         path: '/logs',

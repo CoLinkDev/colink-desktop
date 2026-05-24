@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop } from 'lucide-react'
+import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown } from 'lucide-react'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
@@ -54,6 +54,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return '设备'
       case '/messages':
         return '消息'
+      case '/transfers':
+        return '文件传输'
       case '/logs':
         return '日志'
       case '/settings':
@@ -78,6 +80,7 @@ export function AppLayout({ children }: PropsWithChildren) {
         <nav className="flex flex-1 flex-col gap-1 px-3">
           <SidebarLink icon={Computer} label="设备" to="/devices" />
           <SidebarLink icon={MessagesSquare} label="消息" to="/messages" />
+          <SidebarLink icon={ArrowUpDown} label="传输" to="/transfers" />
           <SidebarLink icon={ScrollText} label="日志" to="/logs" />
           <SidebarLink icon={Settings2} label="设置" to="/settings" />
         </nav>
