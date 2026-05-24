@@ -35,7 +35,12 @@ impl HttpClient {
         Ok(Self { client })
     }
 
-    pub async fn get<T>(&self, base_url: &str, path: &str, access_token: Option<&str>) -> AppResult<T>
+    pub async fn get<T>(
+        &self,
+        base_url: &str,
+        path: &str,
+        access_token: Option<&str>,
+    ) -> AppResult<T>
     where
         T: DeserializeOwned,
     {
@@ -118,7 +123,9 @@ impl HttpClient {
         }
 
         if !status.is_success() {
-            return Err(AppError::message(format!("request failed with status {status}")));
+            return Err(AppError::message(format!(
+                "request failed with status {status}"
+            )));
         }
 
         Ok(envelope.data)

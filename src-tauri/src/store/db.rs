@@ -5,7 +5,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error::AppResult,
-    models::{AppSettings, DeviceIdentity, DeviceInfo, SessionRecord, unix_now},
+    models::{unix_now, AppSettings, DeviceIdentity, DeviceInfo, SessionRecord},
 };
 
 const SETTINGS_KEY: &str = "settings";

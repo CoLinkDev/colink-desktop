@@ -9,7 +9,7 @@ import { Button } from './ui/button'
 
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
-  const { device, logout, refreshBootstrap } = useAppState()
+  const { cloud, device, logout, refreshBootstrap } = useAppState()
 
   return (
     <div className="grid min-h-screen grid-cols-[248px_minmax(0,1fr)] bg-[hsl(var(--background))]">
@@ -49,6 +49,17 @@ export function AppLayout({ children }: PropsWithChildren) {
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm">
+              <span
+                className={
+                  cloud.connected
+                    ? 'text-[hsl(var(--accent))]'
+                    : 'text-[hsl(var(--muted))]'
+                }
+              >
+                云端：{getCloudLabel(cloud.state, cloud.attempt)}
+              </span>
+            </div>
             <Button onClick={() => void refreshBootstrap()} size="sm" variant="secondary">
               <RefreshCw className="h-4 w-4" />
               重载
@@ -71,6 +82,22 @@ export function AppLayout({ children }: PropsWithChildren) {
       </div>
     </div>
   )
+}
+
+function getCloudLabel(state: string, attempt: number) {
+  if (state === 'connected') {
+    return '已连接'
+  }
+
+  if (state === 'connecting') {
+    return '连接中'
+  }
+
+  if (state === 'reconnecting') {
+    return `重连中 #${attempt}`
+  }
+
+  return '未连接'
 }
 
 interface SidebarLinkProps {

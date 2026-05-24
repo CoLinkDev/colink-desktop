@@ -7,6 +7,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
   bootstrapApp,
@@ -18,9 +19,11 @@ import {
   updateSettings as updateSettingsRequest,
 } from '../lib/api'
 import {
+  defaultCloudStatus,
   defaultSettings,
   type AppSettings,
   type BootstrapPayload,
+  type CloudStatus,
   type DeviceInfo,
   type LocalDeviceSummary,
   type LoginPayload,
@@ -37,6 +40,7 @@ interface AppStateValue {
   settings: AppSettings
   device: LocalDeviceSummary | null
   devices: DeviceInfo[]
+  cloud: CloudStatus
   refreshBootstrap: () => Promise<void>
   login: (payload: LoginPayload) => Promise<void>
   register: (payload: RegisterPayload) => Promise<void>
@@ -66,12 +70,14 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
+  const [cloud, setCloud] = useState<CloudStatus>(defaultCloudStatus)
 
   const applyBootstrap = useCallback((payload: BootstrapPayload) => {
     setSession(payload.session)
     setSettings(payload.settings)
     setDevice(payload.device)
     setDevices(payload.devices)
+    setCloud(payload.cloud)
   }, [])
 
   const refreshBootstrap = useCallback(async () => {
@@ -94,6 +100,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       setSession(null)
       setDevice(null)
       setDevices([])
+      setCloud(defaultCloudStatus)
     } finally {
       setStatus('ready')
     }
@@ -105,6 +112,47 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     }, 0)
 
     return () => window.clearTimeout(timer)
+  }, [refreshBootstrap])
+
+  useEffect(() => {
+    let disposed = false
+    let unlistenCloud: (() => void) | null = null
+    let unlistenDevices: (() => void) | null = null
+    let unlistenAuth: (() => void) | null = null
+
+    void (async () => {
+      try {
+        unlistenCloud = await listen<CloudStatus>('cloud-status', (event) => {
+          if (!disposed) {
+            setCloud(event.payload)
+          }
+        })
+
+        unlistenDevices = await listen<DeviceInfo[]>('devices-updated', (event) => {
+          if (!disposed) {
+            setDevices(event.payload)
+          }
+        })
+
+        unlistenAuth = await listen('auth-invalidated', () => {
+          if (disposed) {
+            return
+          }
+
+          setBootstrapError('登录状态失效，请重新登录')
+          void refreshBootstrap()
+        })
+      } catch {
+        // Ignore browser-mode event failures. The desktop runtime provides these events.
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlistenCloud?.()
+      unlistenDevices?.()
+      unlistenAuth?.()
+    }
   }, [refreshBootstrap])
 
   const login = useCallback(
@@ -129,6 +177,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     await logoutRequest()
     setSession(null)
     setDevices([])
+    setCloud(defaultCloudStatus)
     setBootstrapError(null)
   }, [])
 
@@ -151,6 +200,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       settings,
       device,
       devices,
+      cloud,
       refreshBootstrap,
       login,
       register,
@@ -165,6 +215,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       settings,
       device,
       devices,
+      cloud,
       refreshBootstrap,
       login,
       register,

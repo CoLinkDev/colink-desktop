@@ -6,8 +6,8 @@ use crate::{
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     models::{
-        AppSettings, BootstrapPayload, DeviceIdentity, DeviceInfo, LoginPayload, RegisterPayload,
-        SessionRecord, unix_now,
+        unix_now, AppSettings, BootstrapPayload, DeviceIdentity, DeviceInfo, LoginPayload,
+        RegisterPayload, SessionRecord,
     },
     state::AppState,
 };
@@ -87,6 +87,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
                     .unwrap_or_else(|_| state.database.load_cached_devices().unwrap_or_default());
 
                 state.database.save_cached_devices(&fetched_devices)?;
+                state.cloud.start();
 
                 session_summary = Some(refreshed_session.summary());
                 device_summary = Some(identity.summary());
@@ -96,6 +97,8 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
                 clear_auth_state(state)?;
             }
         }
+    } else {
+        state.cloud.stop();
     }
 
     Ok(BootstrapPayload {
@@ -103,6 +106,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         session: session_summary,
         devices,
         device: device_summary,
+        cloud: state.cloud.snapshot(),
     })
 }
 
@@ -172,6 +176,11 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     Url::parse(&normalized.server_url)?;
 
     state.database.save_settings(&normalized)?;
+
+    if state.database.load_session()?.is_some() {
+        state.cloud.restart();
+    }
+
     Ok(normalized)
 }
 
@@ -183,6 +192,7 @@ fn load_settings(state: &AppState) -> AppResult<AppSettings> {
 }
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {
+    state.cloud.stop();
     state.database.clear_session()?;
     state.database.clear_cached_devices()?;
     Ok(())
@@ -204,12 +214,14 @@ async fn save_session_and_bootstrap(
     let identity = ensure_device_identity(state, &session).await?;
     let devices = fetch_devices(state, &session).await?;
     state.database.save_cached_devices(&devices)?;
+    state.cloud.start();
 
     Ok(BootstrapPayload {
         settings,
         session: Some(session.summary()),
         devices,
         device: Some(identity.summary()),
+        cloud: state.cloud.snapshot(),
     })
 }
 

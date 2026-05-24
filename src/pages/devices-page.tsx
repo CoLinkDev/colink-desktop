@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 
 export function DevicesPage() {
-  const { devices, device, settings, refreshDevices } = useAppState()
+  const { cloud, devices, device, settings, refreshDevices } = useAppState()
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -33,6 +33,7 @@ export function DevicesPage() {
             <span>本机：{device?.name ?? '未注册'}</span>
             <span>远端：{settings.serverUrl}</span>
             <span>设备数：{devices.length}</span>
+            <span>云端：{getCloudSummary(cloud.state, cloud.attempt)}</span>
           </div>
         </div>
 
@@ -48,6 +49,9 @@ export function DevicesPage() {
             {refreshing ? '正在刷新' : '刷新设备列表'}
           </Button>
           {error && <div className="mt-4 text-sm text-[hsl(var(--danger))]">{error}</div>}
+          {cloud.lastError && (
+            <div className="mt-4 text-sm text-[hsl(var(--muted))]">{cloud.lastError}</div>
+          )}
         </div>
       </section>
 
@@ -73,4 +77,20 @@ export function DevicesPage() {
       </section>
     </div>
   )
+}
+
+function getCloudSummary(state: string, attempt: number) {
+  if (state === 'connected') {
+    return '已连接'
+  }
+
+  if (state === 'connecting') {
+    return '连接中'
+  }
+
+  if (state === 'reconnecting') {
+    return `重连中 #${attempt}`
+  }
+
+  return '未连接'
 }

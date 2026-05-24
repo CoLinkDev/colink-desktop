@@ -5,13 +5,14 @@ use tauri::{AppHandle, Manager};
 use crate::{
     error::AppResult,
     models::AppSettings,
-    network::http::HttpClient,
+    network::{cloud::CloudConnectionManager, http::HttpClient},
     store::db::Database,
 };
 
 pub struct AppState {
     pub database: Database,
     pub http: HttpClient,
+    pub cloud: CloudConnectionManager,
 }
 
 impl AppState {
@@ -24,10 +25,13 @@ impl AppState {
 
         let default_download_path = resolve_download_path(&app_dir)?;
         database.ensure_settings(AppSettings::new(default_download_path).normalize())?;
+        let http = HttpClient::new()?;
+        let cloud = CloudConnectionManager::new(app.clone(), database.clone(), http.clone());
 
         Ok(Self {
             database,
-            http: HttpClient::new()?,
+            http,
+            cloud,
         })
     }
 }

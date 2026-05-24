@@ -103,11 +103,59 @@ pub struct DeviceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CloudStatus {
+    pub state: String,
+    pub connected: bool,
+    pub attempt: u32,
+    pub last_error: Option<String>,
+}
+
+impl CloudStatus {
+    pub fn disconnected() -> Self {
+        Self {
+            state: "disconnected".to_string(),
+            connected: false,
+            attempt: 0,
+            last_error: None,
+        }
+    }
+
+    pub fn connecting() -> Self {
+        Self {
+            state: "connecting".to_string(),
+            connected: false,
+            attempt: 0,
+            last_error: None,
+        }
+    }
+
+    pub fn connected() -> Self {
+        Self {
+            state: "connected".to_string(),
+            connected: true,
+            attempt: 0,
+            last_error: None,
+        }
+    }
+
+    pub fn reconnecting(attempt: u32, last_error: Option<String>) -> Self {
+        Self {
+            state: "reconnecting".to_string(),
+            connected: false,
+            attempt,
+            last_error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {
     pub settings: AppSettings,
     pub session: Option<SessionSummary>,
     pub devices: Vec<DeviceInfo>,
     pub device: Option<LocalDeviceSummary>,
+    pub cloud: CloudStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

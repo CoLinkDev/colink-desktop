@@ -28,11 +28,19 @@ export interface DeviceInfo {
   publicKey: string
 }
 
+export interface CloudStatus {
+  state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
+  connected: boolean
+  attempt: number
+  lastError: string | null
+}
+
 export interface BootstrapPayload {
   settings: AppSettings
   session: SessionSummary | null
   devices: DeviceInfo[]
   device: LocalDeviceSummary | null
+  cloud: CloudStatus
 }
 
 export interface LoginPayload {
@@ -53,4 +61,11 @@ export const defaultSettings: AppSettings = {
   lanDiscovery: true,
   downloadPath: '',
   notifications: true,
+}
+
+export const defaultCloudStatus: CloudStatus = {
+  state: 'disconnected',
+  connected: false,
+  attempt: 0,
+  lastError: null,
 }
