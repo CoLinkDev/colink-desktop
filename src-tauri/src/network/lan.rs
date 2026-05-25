@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex},
     time::Duration,
@@ -14,8 +14,16 @@ use tokio::{
     sync::{mpsc, watch},
     time::timeout,
 };
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message, WebSocketStream};
-use url::Url;
+use tokio_tungstenite::{
+    accept_hdr_async, connect_async,
+    tungstenite::{
+        handshake::server::{ErrorResponse, Request, Response},
+        http::StatusCode,
+        Message,
+    },
+    WebSocketStream,
+};
+use url::{form_urlencoded, Url};
 use uuid::Uuid;
 
 use crate::{
@@ -23,7 +31,8 @@ use crate::{
     error::{AppError, AppResult},
     models::{unix_now_millis, DeviceIdentity, LAN_PORT},
     protocol::{
-        AuthFailPayload, AuthRequestPayload, AuthResponsePayload, BusinessEnvelope, PeerEnvelope,
+        AuthFailPayload, AuthRequestPayload, AuthResponsePayload, BusinessEnvelope, FileDataFrame,
+        PeerEnvelope,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -44,14 +53,22 @@ pub struct LanManager {
 struct LanState {
     generation: u64,
     cancel: Option<watch::Sender<bool>>,
-    peers: std::collections::HashMap<String, mpsc::UnboundedSender<BusinessEnvelope>>,
-    blocked_until: std::collections::HashMap<String, i64>,
+    peers: HashMap<String, mpsc::UnboundedSender<BusinessEnvelope>>,
+    peer_endpoints: HashMap<String, (String, u16)>,
+    transfer_tokens: HashMap<String, String>,
+    transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
+    blocked_until: HashMap<String, i64>,
 }
 
 #[derive(Clone)]
 struct LanContext {
     device: DeviceIdentity,
     account_hash: String,
+}
+
+enum InboundRoute {
+    Peer,
+    Transfer { session_id: String },
 }
 
 impl LanManager {
@@ -62,8 +79,11 @@ impl LanManager {
             inner: Arc::new(Mutex::new(LanState {
                 generation: 0,
                 cancel: None,
-                peers: std::collections::HashMap::new(),
-                blocked_until: std::collections::HashMap::new(),
+                peers: HashMap::new(),
+                peer_endpoints: HashMap::new(),
+                transfer_tokens: HashMap::new(),
+                transfer_senders: HashMap::new(),
+                blocked_until: HashMap::new(),
             })),
         }
     }
@@ -101,6 +121,8 @@ impl LanManager {
             inner.generation += 1;
             inner.cancel = Some(cancel_tx);
             inner.peers.clear();
+            inner.transfer_tokens.clear();
+            inner.transfer_senders.clear();
             inner.generation
         };
         let manager = self.clone();
@@ -111,15 +133,20 @@ impl LanManager {
     }
 
     pub fn stop(&self) {
-        let peers = {
+        let (peers, transfer_senders) = {
             let mut inner = self.inner.lock().expect("lan manager poisoned");
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
             inner.generation += 1;
-            std::mem::take(&mut inner.peers)
+            inner.peer_endpoints.clear();
+            inner.transfer_tokens.clear();
+            (
+                std::mem::take(&mut inner.peers),
+                std::mem::take(&mut inner.transfer_senders),
+            )
         };
-        drop(peers);
+        drop((peers, transfer_senders));
     }
 
     pub fn has_peer(&self, device_id: &str) -> bool {
@@ -154,7 +181,69 @@ impl LanManager {
             .map_err(|_| AppError::message("LAN 对端不可用"))
     }
 
-    async fn run(&self, generation: u64, context: LanContext, mut cancel_rx: watch::Receiver<bool>) {
+    pub fn peer_endpoint(&self, device_id: &str) -> Option<(String, u16)> {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .peer_endpoints
+            .get(device_id)
+            .cloned()
+    }
+
+    pub fn register_transfer_token(&self, session_id: &str, token: &str) {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .transfer_tokens
+            .insert(session_id.to_string(), token.to_string());
+    }
+
+    pub fn unregister_transfer(&self, session_id: &str) {
+        let sender = {
+            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            inner.transfer_tokens.remove(session_id);
+            inner.transfer_senders.remove(session_id)
+        };
+        drop(sender);
+    }
+
+    pub fn send_transfer_frame(&self, session_id: &str, frame: FileDataFrame) -> AppResult<()> {
+        let sender = self
+            .inner
+            .lock()
+            .expect("lan manager poisoned")
+            .transfer_senders
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| AppError::message("LAN 数据连接不存在"))?;
+        sender
+            .send(frame)
+            .map_err(|_| AppError::message("LAN 数据连接不可用"))
+    }
+
+    pub async fn connect_transfer(
+        &self,
+        session_id: &str,
+        token: &str,
+        ip: &str,
+        port: u16,
+    ) -> AppResult<()> {
+        let url = Url::parse(&format!(
+            "ws://{ip}:{port}/transfer/{session_id}?token={token}"
+        ))?;
+        let (stream, _) = connect_async(url.as_str())
+            .await
+            .map_err(|error| AppError::message(error.to_string()))?;
+        self.attach_transfer_stream(session_id.to_string(), stream)
+            .await
+    }
+
+    async fn run(
+        &self,
+        generation: u64,
+        context: LanContext,
+        mut cancel_rx: watch::Receiver<bool>,
+    ) {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", LAN_PORT)).await else {
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
@@ -203,7 +292,7 @@ impl LanManager {
                     }
                 }
                 accepted = listener.accept() => {
-                    let Ok((stream, _)) = accepted else {
+                    let Ok((stream, _addr)) = accepted else {
                         continue;
                     };
                     let manager = self.clone();
@@ -316,6 +405,7 @@ impl LanManager {
             port,
             source: "mdns".to_string(),
         });
+        self.remember_peer_endpoint(&device_id, ip, port);
 
         if !should_initiate(&context.device.device_id, &device_id) {
             return;
@@ -345,7 +435,10 @@ impl LanManager {
             .await
             .map_err(|error| AppError::message(error.to_string()))?;
         match perform_outbound_handshake(stream, &context, &self.database).await {
-            Ok((stream, peer_device_id)) => self.attach_peer_stream(generation, peer_device_id, stream).await,
+            Ok((stream, peer_device_id)) => {
+                self.attach_peer_stream(generation, peer_device_id, stream)
+                    .await
+            }
             Err(error) => {
                 self.block_device(&device_id);
                 Err(error)
@@ -359,12 +452,41 @@ impl LanManager {
         context: LanContext,
         stream: TcpStream,
     ) -> AppResult<()> {
-        let stream = accept_async(stream)
+        let route = Arc::new(Mutex::new(None));
+        let route_for_callback = route.clone();
+        let manager = self.clone();
+        let stream =
+            accept_hdr_async(
+                stream,
+                move |request: &Request, response: Response| match manager
+                    .resolve_inbound_route(request)
+                {
+                    Ok(next_route) => {
+                        *route_for_callback.lock().expect("inbound route poisoned") =
+                            Some(next_route);
+                        Ok(response)
+                    }
+                    Err(response) => Err(response),
+                },
+            )
             .await
             .map_err(|error| AppError::message(error.to_string()))?;
-        let (stream, peer_device_id) =
-            perform_inbound_handshake(stream, &context, &self.database).await?;
-        self.attach_peer_stream(generation, peer_device_id, stream).await
+        let route = route
+            .lock()
+            .expect("inbound route poisoned")
+            .take()
+            .unwrap_or(InboundRoute::Peer);
+        match route {
+            InboundRoute::Peer => {
+                let (stream, peer_device_id) =
+                    perform_inbound_handshake(stream, &context, &self.database).await?;
+                self.attach_peer_stream(generation, peer_device_id, stream)
+                    .await
+            }
+            InboundRoute::Transfer { session_id } => {
+                self.attach_transfer_stream(session_id, stream).await
+            }
+        }
     }
 
     async fn attach_peer_stream<S>(
@@ -374,10 +496,8 @@ impl LanManager {
         stream: WebSocketStream<S>,
     ) -> AppResult<()>
     where
-        WebSocketStream<S>: futures_util::Sink<
-                Message,
-                Error = tokio_tungstenite::tungstenite::Error,
-            > + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+            + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
             + Unpin
             + Send
             + 'static,
@@ -445,6 +565,63 @@ impl LanManager {
         Ok(())
     }
 
+    async fn attach_transfer_stream<S>(
+        &self,
+        session_id: String,
+        stream: WebSocketStream<S>,
+    ) -> AppResult<()>
+    where
+        WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+            + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Unpin
+            + Send
+            + 'static,
+    {
+        let (tx, mut rx) = mpsc::unbounded_channel::<FileDataFrame>();
+        {
+            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            inner.transfer_senders.insert(session_id.clone(), tx);
+        }
+
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let (mut writer, mut reader) = stream.split();
+            loop {
+                tokio::select! {
+                    outbound = rx.recv() => {
+                        let Some(outbound) = outbound else {
+                            break;
+                        };
+                        if writer.send(Message::Binary(outbound.encode().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    inbound = reader.next() => {
+                        match inbound {
+                            Some(Ok(Message::Binary(bytes))) => {
+                                if let Some(frame) = FileDataFrame::decode(bytes.as_ref()) {
+                                    let _ = manager.event_tx.send(RuntimeEvent::LanTransferFrame {
+                                        session_id: session_id.clone(),
+                                        frame,
+                                    });
+                                }
+                            }
+                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                            Some(Ok(Message::Ping(payload))) => {
+                                if writer.send(Message::Pong(payload)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Ok(_)) => {}
+                        }
+                    }
+                }
+            }
+            manager.detach_transfer(&session_id);
+        });
+        Ok(())
+    }
+
     fn detach_peer(&self, generation: u64, device_id: &str) {
         let should_emit = {
             let mut inner = self.inner.lock().expect("lan manager poisoned");
@@ -460,6 +637,21 @@ impl LanManager {
         }
     }
 
+    fn detach_transfer(&self, session_id: &str) {
+        let should_emit = self
+            .inner
+            .lock()
+            .expect("lan manager poisoned")
+            .transfer_senders
+            .remove(session_id)
+            .is_some();
+        if should_emit {
+            let _ = self.event_tx.send(RuntimeEvent::LanTransferClosed {
+                session_id: session_id.to_string(),
+            });
+        }
+    }
+
     fn clear_peers_for_generation(&self, generation: u64) {
         let peer_ids = {
             let mut inner = self.inner.lock().expect("lan manager poisoned");
@@ -469,7 +661,9 @@ impl LanManager {
             inner.peers.drain().map(|(key, _)| key).collect::<Vec<_>>()
         };
         for device_id in peer_ids {
-            let _ = self.event_tx.send(RuntimeEvent::LanDisconnected { device_id });
+            let _ = self
+                .event_tx
+                .send(RuntimeEvent::LanDisconnected { device_id });
         }
     }
 
@@ -489,15 +683,83 @@ impl LanManager {
             .lock()
             .expect("lan manager poisoned")
             .blocked_until
-            .insert(device_id.to_string(), unix_now_millis() + FAILURE_COOLDOWN_MILLIS);
+            .insert(
+                device_id.to_string(),
+                unix_now_millis() + FAILURE_COOLDOWN_MILLIS,
+            );
     }
+
+    fn remember_peer_endpoint(&self, device_id: &str, ip: IpAddr, port: u16) {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .peer_endpoints
+            .insert(device_id.to_string(), (ip.to_string(), port));
+    }
+
+    fn resolve_inbound_route(&self, request: &Request) -> Result<InboundRoute, ErrorResponse> {
+        let path = request.uri().path();
+        if path == "/peer" || path == "/" {
+            return Ok(InboundRoute::Peer);
+        }
+
+        let Some(session_id) = path.strip_prefix("/transfer/") else {
+            return Err(reject_ws(StatusCode::NOT_FOUND, "unknown websocket path"));
+        };
+        if session_id.is_empty() {
+            return Err(reject_ws(StatusCode::BAD_REQUEST, "missing session id"));
+        }
+
+        let token = request
+            .uri()
+            .query()
+            .and_then(|query| {
+                form_urlencoded::parse(query.as_bytes())
+                    .find_map(|(key, value)| (key == "token").then(|| value.into_owned()))
+            })
+            .unwrap_or_default();
+        if token.is_empty() {
+            return Err(reject_ws(
+                StatusCode::UNAUTHORIZED,
+                "missing transfer token",
+            ));
+        }
+        if !self.consume_transfer_token(session_id, &token) {
+            return Err(reject_ws(StatusCode::FORBIDDEN, "invalid transfer token"));
+        }
+
+        Ok(InboundRoute::Transfer {
+            session_id: session_id.to_string(),
+        })
+    }
+
+    fn consume_transfer_token(&self, session_id: &str, token: &str) -> bool {
+        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        match inner.transfer_tokens.get(session_id) {
+            Some(expected) if expected == token => {
+                inner.transfer_tokens.remove(session_id);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn reject_ws(status: StatusCode, body: &str) -> ErrorResponse {
+    Response::builder()
+        .status(status)
+        .body(Some(body.to_string()))
+        .expect("valid websocket error response")
 }
 
 async fn perform_outbound_handshake(
     mut stream: WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     context: &LanContext,
     database: &Database,
-) -> AppResult<(WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>, String)> {
+) -> AppResult<(
+    WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    String,
+)> {
     let nonce = Uuid::new_v4().simple().to_string();
     let timestamp = unix_now_millis();
     let proof = format!("{}{}{}", context.device.device_id, timestamp, nonce);
@@ -559,7 +821,10 @@ async fn perform_inbound_handshake(
     let payload: AuthRequestPayload = serde_json::from_value(request.payload)?;
     ensure_timestamp(payload.timestamp)?;
     verify_known_peer(database, &payload.device_id, |public_key| {
-        let proof = format!("{}{}{}", payload.device_id, payload.timestamp, payload.nonce);
+        let proof = format!(
+            "{}{}{}",
+            payload.device_id, payload.timestamp, payload.nonce
+        );
         verify_signature(public_key, proof.as_bytes(), &payload.signature)
     })?;
 
@@ -593,8 +858,8 @@ async fn perform_inbound_handshake(
 
 async fn send_auth_fail<S>(stream: &mut WebSocketStream<S>, reason: &str) -> AppResult<()>
 where
-    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + Unpin,
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     let frame = PeerEnvelope {
         message_type: "auth.fail".to_string(),
@@ -605,10 +870,13 @@ where
     write_peer_message(stream, &frame).await
 }
 
-async fn write_peer_message<S>(stream: &mut WebSocketStream<S>, value: &PeerEnvelope) -> AppResult<()>
+async fn write_peer_message<S>(
+    stream: &mut WebSocketStream<S>,
+    value: &PeerEnvelope,
+) -> AppResult<()>
 where
-    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + Unpin,
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     let text = serde_json::to_string(value)?;
     stream
@@ -619,8 +887,8 @@ where
 
 async fn read_peer_message<S>(stream: &mut WebSocketStream<S>) -> AppResult<PeerEnvelope>
 where
-    WebSocketStream<S>: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+    WebSocketStream<S>:
+        futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     while let Some(message) = stream.next().await {
         match message.map_err(|error| AppError::message(error.to_string()))? {
@@ -665,12 +933,14 @@ async fn recv_monitor_event(
 
 fn pick_local_ipv4() -> Option<IpAddr> {
     get_if_addrs().ok().and_then(|interfaces| {
-        interfaces.into_iter().find_map(|interface| match interface.ip() {
-            IpAddr::V4(ipv4) if !ipv4.is_loopback() && ipv4 != Ipv4Addr::UNSPECIFIED => {
-                Some(IpAddr::V4(ipv4))
-            }
-            _ => None,
-        })
+        interfaces
+            .into_iter()
+            .find_map(|interface| match interface.ip() {
+                IpAddr::V4(ipv4) if !ipv4.is_loopback() && ipv4 != Ipv4Addr::UNSPECIFIED => {
+                    Some(IpAddr::V4(ipv4))
+                }
+                _ => None,
+            })
     })
 }
 

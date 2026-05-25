@@ -247,6 +247,11 @@ export function TransfersPage() {
                   const isFailed = item.status === 'failed' || item.status === 'cancelled'
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
                   const speed = inFlight ? transferSpeeds[item.fileId] : null
+                  const routeLabel = item.route === 'lan'
+                    ? t('transfers.routeLan', { defaultValue: 'LAN' })
+                    : item.route === 'cloud'
+                      ? t('transfers.routeCloud', { defaultValue: 'Cloud relay' })
+                      : item.route || '-'
 
                   return (
                     <div className="py-4 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4" key={item.fileId}>
@@ -267,6 +272,8 @@ export function TransfersPage() {
                             <span className="font-semibold">{item.direction === 'outbound' ? t('transfers.directionSend') : t('transfers.directionReceive')}</span>
                             <span>•</span>
                             <span>{formatBytes(item.fileSize)}</span>
+                            <span>•</span>
+                            <span>{routeLabel}</span>
                           </div>
                         </div>
                       </div>

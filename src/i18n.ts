@@ -99,6 +99,8 @@ const resources = {
         emptyList: '暂无传输文件记录',
         directionSend: '发送',
         directionReceive: '接收',
+        routeLan: '局域网',
+        routeCloud: '云端中继',
         cancelTitle: '取消传输',
         status: {
           offered: '等待接收',
@@ -255,6 +257,8 @@ const resources = {
         emptyList: 'No transfer records yet',
         directionSend: 'Send',
         directionReceive: 'Receive',
+        routeLan: 'LAN',
+        routeCloud: 'Cloud relay',
         cancelTitle: 'Cancel Transfer',
         status: {
           offered: 'Waiting',

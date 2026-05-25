@@ -1,4 +1,4 @@
-use crate::protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload};
+use crate::protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload, FileDataFrame};
 
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
@@ -29,6 +29,13 @@ pub enum RuntimeEvent {
     LanMessage {
         from: String,
         message: BusinessEnvelope,
+    },
+    LanTransferFrame {
+        session_id: String,
+        frame: FileDataFrame,
+    },
+    LanTransferClosed {
+        session_id: String,
     },
     LocalEndpoint {
         ip: String,
