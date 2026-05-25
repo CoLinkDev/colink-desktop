@@ -248,9 +248,9 @@ export function TransfersPage() {
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
                   const speed = inFlight ? transferSpeeds[item.fileId] : null
                   const routeLabel = item.route === 'lan'
-                    ? t('transfers.routeLan', { defaultValue: 'LAN' })
+                    ? t('transfers.routeLan', { defaultValue: 'Transferred via LAN' })
                     : item.route === 'cloud'
-                      ? t('transfers.routeCloud', { defaultValue: 'Cloud relay' })
+                      ? t('transfers.routeCloud', { defaultValue: 'Transferred via Cloud relay' })
                       : item.route || '-'
 
                   return (

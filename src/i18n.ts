@@ -99,8 +99,8 @@ const resources = {
         emptyList: '暂无传输文件记录',
         directionSend: '发送',
         directionReceive: '接收',
-        routeLan: '局域网',
-        routeCloud: '云端中继',
+        routeLan: '通过局域网传输',
+        routeCloud: '通过云端中继传输',
         cancelTitle: '取消传输',
         status: {
           offered: '等待接收',
@@ -257,8 +257,8 @@ const resources = {
         emptyList: 'No transfer records yet',
         directionSend: 'Send',
         directionReceive: 'Receive',
-        routeLan: 'LAN',
-        routeCloud: 'Cloud relay',
+        routeLan: 'Transferred via LAN',
+        routeCloud: 'Transferred via Cloud relay',
         cancelTitle: 'Cancel Transfer',
         status: {
           offered: 'Waiting',
@@ -415,6 +415,8 @@ const resources = {
         emptyList: '暫無傳輸檔案記錄',
         directionSend: '傳送',
         directionReceive: '接收',
+        routeLan: '通過區域網路傳輸',
+        routeCloud: '通過雲端中繼傳輸',
         cancelTitle: '取消傳輸',
         status: {
           offered: '等待接收',
@@ -571,6 +573,8 @@ const resources = {
         emptyList: '転送履歴はありません',
         directionSend: '送信',
         directionReceive: '受信',
+        routeLan: 'ローカルネットワーク経由で転送',
+        routeCloud: 'クラウド中継経由で転送',
         cancelTitle: '転送をキャンセル',
         status: {
           offered: '待機中',
@@ -725,6 +729,8 @@ const resources = {
         emptyList: '전송 기록이 없습니다',
         directionSend: '보내기',
         directionReceive: '받기',
+        routeLan: '로컬 네트워크를 통해 전송됨',
+        routeCloud: '클라우드 릴레이를 통해 전송됨',
         cancelTitle: '전송 취소',
         status: {
           offered: '대기 중',
@@ -879,6 +885,8 @@ const resources = {
         emptyList: 'No hay registros de transferencia',
         directionSend: 'Enviar',
         directionReceive: 'Recibir',
+        routeLan: 'Transferido a través de red local',
+        routeCloud: 'Transferido a través de retransmisión en la nube',
         cancelTitle: 'Cancelar transferencia',
         status: {
           offered: 'Esperando',
@@ -1033,6 +1041,8 @@ const resources = {
         emptyList: 'Keine Übertragungen gefunden',
         directionSend: 'Senden',
         directionReceive: 'Empfangen',
+        routeLan: 'Übertragen über lokales Netzwerk',
+        routeCloud: 'Übertragen über Cloud-Relais',
         cancelTitle: 'Übertragung abbrechen',
         status: {
           offered: 'Warten',
@@ -1187,6 +1197,8 @@ const resources = {
         emptyList: 'История передач пуста',
         directionSend: 'Отправить',
         directionReceive: 'Получить',
+        routeLan: 'Передано через локальную сеть',
+        routeCloud: 'Передано через облачный ретранслятор',
         cancelTitle: 'Отменить передачу',
         status: {
           offered: 'Ожидание',

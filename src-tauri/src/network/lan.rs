@@ -40,8 +40,14 @@ use crate::{
 
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPLAY_DRIFT_MILLIS: i64 = 30_000;
 const FAILURE_COOLDOWN_MILLIS: i64 = 60_000;
+
+enum TransferStreamEvent {
+    Activity,
+    Closed,
+}
 
 #[derive(Clone)]
 pub struct LanManager {
@@ -587,34 +593,45 @@ impl LanManager {
         tauri::async_runtime::spawn(async move {
             let (mut writer, mut reader) = stream.split();
             loop {
-                tokio::select! {
-                    outbound = rx.recv() => {
-                        let Some(outbound) = outbound else {
-                            break;
-                        };
-                        if writer.send(Message::Binary(outbound.encode().into())).await.is_err() {
-                            break;
+                let event = timeout(TRANSFER_IDLE_TIMEOUT, async {
+                    tokio::select! {
+                        outbound = rx.recv() => {
+                            let Some(outbound) = outbound else {
+                                return TransferStreamEvent::Closed;
+                            };
+                            if writer.send(Message::Binary(outbound.encode().into())).await.is_err() {
+                                return TransferStreamEvent::Closed;
+                            }
+                            TransferStreamEvent::Activity
+                        }
+                        inbound = reader.next() => {
+                            match inbound {
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    if let Some(frame) = FileDataFrame::decode(bytes.as_ref()) {
+                                        let _ = manager.event_tx.send(RuntimeEvent::LanTransferFrame {
+                                            session_id: session_id.clone(),
+                                            frame,
+                                        });
+                                    }
+                                    TransferStreamEvent::Activity
+                                }
+                                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => TransferStreamEvent::Closed,
+                                Some(Ok(Message::Ping(payload))) => {
+                                    if writer.send(Message::Pong(payload)).await.is_err() {
+                                        return TransferStreamEvent::Closed;
+                                    }
+                                    TransferStreamEvent::Activity
+                                }
+                                Some(Ok(_)) => TransferStreamEvent::Activity,
+                            }
                         }
                     }
-                    inbound = reader.next() => {
-                        match inbound {
-                            Some(Ok(Message::Binary(bytes))) => {
-                                if let Some(frame) = FileDataFrame::decode(bytes.as_ref()) {
-                                    let _ = manager.event_tx.send(RuntimeEvent::LanTransferFrame {
-                                        session_id: session_id.clone(),
-                                        frame,
-                                    });
-                                }
-                            }
-                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                            Some(Ok(Message::Ping(payload))) => {
-                                if writer.send(Message::Pong(payload)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Ok(_)) => {}
-                        }
-                    }
+                })
+                .await;
+
+                match event {
+                    Ok(TransferStreamEvent::Activity) => {}
+                    Ok(TransferStreamEvent::Closed) | Err(_) => break,
                 }
             }
             manager.detach_transfer(&session_id);
