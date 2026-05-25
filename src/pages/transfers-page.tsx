@@ -1,6 +1,6 @@
 import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
@@ -18,6 +18,7 @@ export function TransfersPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
 
   const targetDevices = useMemo(() => devices.filter((i) => i.deviceId !== device?.deviceId), [device?.deviceId, devices])
   const selectedDeviceId = useMemo(() => {
@@ -62,6 +63,77 @@ export function TransfersPage() {
     }
   }, [])
 
+  // Ref to hold selectedDeviceId for the async drop listener closure
+  const selectedDeviceIdRef = useRef(selectedDeviceId)
+  useEffect(() => {
+    selectedDeviceIdRef.current = selectedDeviceId
+  }, [selectedDeviceId])
+
+  // System Drag and Drop listener setup
+  useEffect(() => {
+    let disposed = false
+    const unlisteners: (() => void)[] = []
+
+    void (async () => {
+      try {
+        const enter = await listen('tauri://drag-enter', () => {
+          if (!disposed) setIsDragging(true)
+        })
+        if (disposed) {
+          enter()
+        } else {
+          unlisteners.push(enter)
+        }
+
+        const leave = await listen('tauri://drag-leave', () => {
+          if (!disposed) setIsDragging(false)
+        })
+        if (disposed) {
+          leave()
+        } else {
+          unlisteners.push(leave)
+        }
+
+        const drop = await listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
+          if (disposed) return
+          setIsDragging(false)
+
+          const paths = event.payload.paths
+          const currentDeviceId = selectedDeviceIdRef.current
+          if (paths && paths.length > 0) {
+            if (!currentDeviceId) {
+              setError(t('transfers.errorSelectDevice'))
+              return
+            }
+            setSubmitting(true)
+            setPreparing(null)
+            setError(null)
+            try {
+              await sendFiles({ deviceId: currentDeviceId, paths })
+            } catch (e) {
+              setError(readErrorMessage(e))
+            } finally {
+              setSubmitting(false)
+              setPreparing(null)
+            }
+          }
+        })
+        if (disposed) {
+          drop()
+        } else {
+          unlisteners.push(drop)
+        }
+      } catch {
+        // Ignore browser mode failures
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlisteners.forEach((fn) => fn())
+    }
+  }, [])
+
   async function handleSendFiles() {
     if (!selectedDeviceId) { setError(t('transfers.errorSelectDevice')); return }
     setSubmitting(true); setPreparing(null); setError(null)
@@ -102,33 +174,54 @@ export function TransfersPage() {
       </aside>
 
       <div className="h-full overflow-y-auto py-6 pr-8 pl-1 space-y-5 scrollbar-thin">
-        {/* File Drop/Picker Card */}
-        <section className="rounded-xl border bg-[hsl(var(--panel))] p-6 text-center">
-          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[hsl(var(--panel-2))]">
-            <HardDriveUpload className="h-5 w-5 text-[hsl(var(--text-secondary))]" />
-          </div>
-          <div className="mt-3">
-            <h2 className="text-[14px] font-semibold">
-              {t('transfers.sendTitle', { name: selectedDevice?.name || t('transfers.notSelected') })}
-            </h2>
-            <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
-              {t('transfers.sendSubtitle')}
-            </p>
-          </div>
-          <div className="mt-4 flex flex-col items-center justify-center gap-2">
-            <Button
-              disabled={submitting || !selectedDeviceId}
-              onClick={() => void handleSendFiles()}
-              className="px-6"
-            >
-              {submitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-              {submitLabel}
-            </Button>
-            {error && (
-              <div className="mt-2 text-[12px] text-[hsl(var(--danger))]">
-                {error}
+        <section 
+          className={cn(
+            "rounded-xl border p-6 text-center transition-all duration-300 relative overflow-hidden",
+            isDragging 
+              ? "border-[hsl(var(--text)/0.5)] bg-[hsl(var(--panel-2)/0.3)] shadow-[0_0_20px_rgba(255,255,255,0.05)]" 
+              : "border-[hsl(var(--border))] bg-[hsl(var(--panel))]"
+          )}
+        >
+          {isDragging && (
+            <div className="absolute inset-0 bg-[hsl(var(--panel-2)/0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center pointer-events-none z-10 animate-fade-in border-2 border-dashed border-[hsl(var(--text)/0.35)] rounded-xl">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[hsl(var(--text)/0.08)] border border-[hsl(var(--text)/0.15)] mb-2">
+                <HardDriveUpload className="h-6 w-6 text-[hsl(var(--text))]" />
               </div>
-            )}
+              <p className="text-[13px] font-semibold text-[hsl(var(--text))]">
+                {selectedDevice 
+                  ? t('transfers.dropToDevice', { name: selectedDevice.name, defaultValue: `释放文件发送至 ${selectedDevice.name}` })
+                  : t('transfers.errorSelectDevice')}
+              </p>
+            </div>
+          )}
+
+          <div className={cn("transition-all duration-300", isDragging && "opacity-0")}>
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[hsl(var(--panel-2))]">
+              <HardDriveUpload className="h-5 w-5 text-[hsl(var(--text-secondary))]" />
+            </div>
+            <div className="mt-3">
+              <h2 className="text-[14px] font-semibold">
+                {t('transfers.sendTitle', { name: selectedDevice?.name || t('transfers.notSelected') })}
+              </h2>
+              <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
+                {t('transfers.sendSubtitle')}
+              </p>
+            </div>
+            <div className="mt-4 flex flex-col items-center justify-center gap-2">
+              <Button
+                disabled={submitting || !selectedDeviceId}
+                onClick={() => void handleSendFiles()}
+                className="px-6"
+              >
+                {submitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                {submitLabel}
+              </Button>
+              {error && (
+                <div className="mt-2 text-[12px] text-[hsl(var(--danger))]">
+                  {error}
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
