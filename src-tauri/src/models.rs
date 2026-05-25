@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
 pub const LAN_PORT: u16 = 27_777;
 pub const MAX_TEXT_LENGTH: usize = 10_000;
-pub const FILE_CHUNK_SIZE: usize = 524_288;
+pub const FILE_CHUNK_SIZE: usize = 1_048_576;
 pub const CLIPBOARD_MAX_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -59,8 +59,9 @@ pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
 const FILE_CHECKSUM_ALGORITHM: &str = "blake3";
 const FILE_HASH_BUFFER_SIZE: usize = 1_048_576;
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
+const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
-const RELAY_SEND_WINDOW_CHUNKS: i64 = 4;
+const RELAY_SEND_WINDOW_CHUNKS: i64 = FILE_ACK_INTERVAL_CHUNKS;
 
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -934,7 +935,10 @@ impl AppRuntime {
             self.inner.database.save_transfer(&record)?;
             self.emit_transfer_progress(record.clone(), bytes_per_second);
         }
-        self.send_file_ack(&record.device_id, &session_id, payload.chunk_index + 1)?;
+        let next_expected_index = payload.chunk_index + 1;
+        if should_send_file_ack(next_expected_index, record.total_chunks) {
+            self.send_file_ack(&record.device_id, &session_id, next_expected_index)?;
+        }
 
         if finished {
             self.finish_incoming_transfer(&session_id).await?;
@@ -1007,7 +1011,10 @@ impl AppRuntime {
             self.inner.database.save_transfer(&record)?;
             self.emit_transfer_progress(record.clone(), bytes_per_second);
         }
-        self.send_file_ack(&record.device_id, session_id, chunk_index + 1)?;
+        let next_expected_index = chunk_index + 1;
+        if should_send_file_ack(next_expected_index, record.total_chunks) {
+            self.send_file_ack(&record.device_id, session_id, next_expected_index)?;
+        }
         Ok(())
     }
 
@@ -1930,4 +1937,8 @@ fn acknowledged_file_bytes(file_size: i64, total_chunks: i64, next_expected_inde
         .min(total_chunks)
         .saturating_mul(FILE_CHUNK_SIZE as i64);
     acknowledged.min(file_size)
+}
+
+fn should_send_file_ack(next_expected_index: i64, total_chunks: i64) -> bool {
+    next_expected_index >= total_chunks || next_expected_index % FILE_ACK_INTERVAL_CHUNKS == 0
 }
