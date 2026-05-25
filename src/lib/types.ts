@@ -89,6 +89,11 @@ export interface FileTransferRecord {
   updatedAt: number
 }
 
+export interface TransferProgressPayload {
+  record: FileTransferRecord
+  bytesPerSecond: number
+}
+
 export interface AppLogEntry {
   id: string
   level: string

@@ -42,6 +42,7 @@ import {
   type SendTextPayload,
   type SessionSummary,
   type TextMessageRecord,
+  type TransferProgressPayload,
 } from '../lib/types'
 
 type AppStatus = 'booting' | 'ready'
@@ -56,6 +57,7 @@ interface AppStateValue {
   cloud: CloudStatus
   messages: TextMessageRecord[]
   transfers: FileTransferRecord[]
+  transferSpeeds: Record<string, number>
   logs: AppLogEntry[]
   theme: 'light' | 'dark' | 'auto'
   setTheme: (theme: 'light' | 'dark' | 'auto') => void
@@ -78,6 +80,39 @@ interface AppStateValue {
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null)
+
+function isTransferInFlight(record: FileTransferRecord) {
+  return record.status === 'sending' || record.status === 'receiving'
+}
+
+function mergeTransferRecord(current: FileTransferRecord[], nextRecord: FileTransferRecord) {
+  const next = [...current]
+  const index = next.findIndex((item) => item.fileId === nextRecord.fileId)
+
+  if (index >= 0) {
+    next[index] = nextRecord
+  } else {
+    next.push(nextRecord)
+  }
+
+  next.sort((left, right) => right.updatedAt - left.updatedAt)
+  return next
+}
+
+function pruneTransferSpeeds(current: Record<string, number>, transfers: FileTransferRecord[]) {
+  const activeIds = new Set(
+    transfers.filter((record) => isTransferInFlight(record)).map((record) => record.fileId),
+  )
+  const next: Record<string, number> = {}
+
+  for (const [fileId, speed] of Object.entries(current)) {
+    if (activeIds.has(fileId)) {
+      next[fileId] = speed
+    }
+  }
+
+  return next
+}
 
 export function readErrorMessage(error: unknown) {
   if (typeof error === 'string') {
@@ -102,6 +137,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [cloud, setCloud] = useState<CloudStatus>(defaultCloudStatus)
   const [messages, setMessages] = useState<TextMessageRecord[]>([])
   const [transfers, setTransfers] = useState<FileTransferRecord[]>([])
+  const [transferSpeeds, setTransferSpeeds] = useState<Record<string, number>>({})
   const [logs, setLogs] = useState<AppLogEntry[]>([])
 
   const [theme, setThemeState] = useState<'light' | 'dark' | 'auto'>(() => {
@@ -166,6 +202,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setCloud(payload.cloud)
     setMessages(payload.messages)
     setTransfers(payload.transfers)
+    setTransferSpeeds({})
     setLogs(payload.logs)
   }, [])
 
@@ -192,6 +229,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       setCloud(defaultCloudStatus)
       setMessages([])
       setTransfers([])
+      setTransferSpeeds({})
       setLogs([])
     } finally {
       setStatus('ready')
@@ -213,6 +251,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     let unlistenAuth: (() => void) | null = null
     let unlistenMessages: (() => void) | null = null
     let unlistenTransfers: (() => void) | null = null
+    let unlistenTransferProgress: (() => void) | null = null
     let unlistenLogs: (() => void) | null = null
 
     void (async () => {
@@ -247,6 +286,17 @@ export function AppStateProvider({ children }: PropsWithChildren) {
         unlistenTransfers = await listen<FileTransferRecord[]>('transfers-updated', (event) => {
           if (!disposed) {
             setTransfers(event.payload)
+            setTransferSpeeds((current) => pruneTransferSpeeds(current, event.payload))
+          }
+        })
+
+        unlistenTransferProgress = await listen<TransferProgressPayload>('transfer-progress', (event) => {
+          if (!disposed) {
+            setTransfers((current) => mergeTransferRecord(current, event.payload.record))
+            setTransferSpeeds((current) => ({
+              ...current,
+              [event.payload.record.fileId]: event.payload.bytesPerSecond,
+            }))
           }
         })
 
@@ -267,6 +317,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       unlistenAuth?.()
       unlistenMessages?.()
       unlistenTransfers?.()
+      unlistenTransferProgress?.()
       unlistenLogs?.()
     }
   }, [refreshBootstrap])
@@ -296,6 +347,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setCloud(defaultCloudStatus)
     setMessages([])
     setTransfers([])
+    setTransferSpeeds({})
     setLogs([])
     setBootstrapError(null)
   }, [])
@@ -357,6 +409,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       cloud,
       messages,
       transfers,
+      transferSpeeds,
       logs,
       theme,
       setTheme,
@@ -387,6 +440,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       cloud,
       messages,
       transfers,
+      transferSpeeds,
       logs,
       theme,
       setTheme,

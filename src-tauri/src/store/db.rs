@@ -246,6 +246,55 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn load_transfer(&self, file_id: &str) -> AppResult<Option<FileTransferRecord>> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "
+                SELECT
+                    file_id,
+                    device_id,
+                    direction,
+                    file_name,
+                    file_size,
+                    transferred_bytes,
+                    total_chunks,
+                    status,
+                    checksum,
+                    route,
+                    temp_path,
+                    final_path,
+                    error,
+                    created_at,
+                    updated_at
+                FROM file_transfers
+                WHERE file_id = ?1
+                ",
+                params![file_id],
+                |row| {
+                    Ok(FileTransferRecord {
+                        file_id: row.get(0)?,
+                        device_id: row.get(1)?,
+                        direction: row.get(2)?,
+                        file_name: row.get(3)?,
+                        file_size: row.get(4)?,
+                        transferred_bytes: row.get(5)?,
+                        total_chunks: row.get(6)?,
+                        status: row.get(7)?,
+                        checksum: row.get(8)?,
+                        route: row.get(9)?,
+                        temp_path: row.get(10)?,
+                        final_path: row.get(11)?,
+                        error: row.get(12)?,
+                        created_at: row.get(13)?,
+                        updated_at: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn save_transfer(&self, transfer: &FileTransferRecord) -> AppResult<()> {
         let connection = self.open()?;
         connection.execute(

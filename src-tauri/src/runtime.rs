@@ -14,12 +14,13 @@ use clipboard_rs::{
 };
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use sanitize_filename::sanitize;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, Mutex as AsyncMutex},
 };
 use uuid::Uuid;
 
@@ -49,7 +50,9 @@ use crate::{
 
 pub const MESSAGES_UPDATED_EVENT: &str = "messages-updated";
 pub const TRANSFERS_UPDATED_EVENT: &str = "transfers-updated";
+pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
 pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
+const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -76,19 +79,25 @@ struct RuntimeState {
 }
 
 struct OutgoingFileState {
-    device_id: String,
     source_path: PathBuf,
-    route: String,
+    record: FileTransferRecord,
+    last_reported_bytes: i64,
+    last_progress_at: i64,
 }
 
 struct IncomingFileState {
-    device_id: String,
-    file_name: String,
-    total_chunks: i64,
+    writer: Arc<AsyncMutex<tokio::fs::File>>,
+    record: FileTransferRecord,
     received_chunks: i64,
-    checksum: String,
-    route: String,
-    temp_path: PathBuf,
+    last_reported_bytes: i64,
+    last_progress_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferProgressPayload {
+    record: FileTransferRecord,
+    bytes_per_second: f64,
 }
 
 struct ClipboardWatcherHandler {
@@ -210,6 +219,7 @@ impl AppRuntime {
                 .to_string();
             let file_id = Uuid::new_v4().to_string();
             let created_at = unix_now_millis();
+            let route = self.preferred_route(&payload.device_id);
 
             let record = FileTransferRecord {
                 file_id: file_id.clone(),
@@ -221,7 +231,7 @@ impl AppRuntime {
                 total_chunks,
                 status: "offered".to_string(),
                 checksum: checksum.clone(),
-                route: self.preferred_route(&payload.device_id),
+                route: route.clone(),
                 temp_path: None,
                 final_path: Some(source_path.to_string_lossy().to_string()),
                 error: None,
@@ -232,9 +242,10 @@ impl AppRuntime {
             self.inner.state.lock().expect("runtime state poisoned").outgoing_files.insert(
                 file_id.clone(),
                 OutgoingFileState {
-                    device_id: payload.device_id.clone(),
                     source_path: source_path.clone(),
-                    route: self.preferred_route(&payload.device_id),
+                    record: record.clone(),
+                    last_reported_bytes: 0,
+                    last_progress_at: created_at,
                 },
             );
 
@@ -260,15 +271,27 @@ impl AppRuntime {
 
     pub fn cancel_transfer(&self, file_id: &str) -> AppResult<()> {
         let mut outgoing_target = None;
+        let mut active_record = None;
         {
             let mut state = self.inner.state.lock().expect("runtime state poisoned");
             state.cancelled_files.insert(file_id.to_string());
             if let Some(outgoing) = state.outgoing_files.get(file_id) {
-                outgoing_target = Some(outgoing.device_id.clone());
+                outgoing_target = Some(outgoing.record.device_id.clone());
+                active_record = Some(outgoing.record.clone());
+            }
+            if active_record
+                .as_ref()
+                .map(|record| record.status == "offered")
+                .unwrap_or(false)
+            {
+                state.outgoing_files.remove(file_id);
             }
             if let Some(incoming) = state.incoming_files.remove(file_id) {
-                let _ = fs::remove_file(&incoming.temp_path);
-                outgoing_target = Some(incoming.device_id);
+                if let Some(temp_path) = incoming.record.temp_path.as_ref() {
+                    let _ = fs::remove_file(temp_path);
+                }
+                outgoing_target = Some(incoming.record.device_id.clone());
+                active_record = Some(incoming.record);
             }
         }
 
@@ -283,17 +306,16 @@ impl AppRuntime {
             let _ = self.send_business_message(&device_id, envelope);
         }
 
-        if let Some(mut record) = self
-            .inner
-            .database
-            .load_transfers(500)?
-            .into_iter()
-            .find(|item| item.file_id == file_id)
-        {
+        let mut record = match active_record {
+            Some(record) => Some(record),
+            None => self.inner.database.load_transfer(file_id)?,
+        };
+
+        if let Some(record) = record.as_mut() {
             record.status = "cancelled".to_string();
             record.error = Some("user cancelled".to_string());
             record.updated_at = unix_now_millis();
-            self.inner.database.save_transfer(&record)?;
+            self.inner.database.save_transfer(record)?;
             self.emit_transfers()?;
         }
 
@@ -569,20 +591,18 @@ impl AppRuntime {
             created_at,
             updated_at: created_at,
         };
+        let writer = Arc::new(AsyncMutex::new(tokio::fs::File::create(&temp_path).await?));
         self.inner.database.save_transfer(&record)?;
         self.inner.state.lock().expect("runtime state poisoned").incoming_files.insert(
             payload.file_id.clone(),
             IncomingFileState {
-                device_id: from.to_string(),
-                file_name: payload.file_name.clone(),
-                total_chunks: payload.total_chunks,
+                writer,
+                record: record.clone(),
                 received_chunks: 0,
-                checksum: payload.checksum.clone(),
-                route: route.to_string(),
-                temp_path: temp_path.clone(),
+                last_reported_bytes: 0,
+                last_progress_at: created_at,
             },
         );
-        tokio::fs::File::create(&temp_path).await?;
 
         let envelope = BusinessEnvelope::from_payload(
             FILE_ACCEPT_TYPE,
@@ -597,34 +617,33 @@ impl AppRuntime {
     }
 
     async fn start_file_send(&self, file_id: String) -> AppResult<()> {
-        let outgoing = {
-            let state = self.inner.state.lock().expect("runtime state poisoned");
-            state
+        let (source_path, mut record) = {
+            let mut state = self.inner.state.lock().expect("runtime state poisoned");
+            let outgoing = state
                 .outgoing_files
-                .get(&file_id)
-                .map(|item| (item.device_id.clone(), item.source_path.clone(), item.route.clone()))
-        }
-        .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
-
-        let mut record = self
-            .inner
-            .database
-            .load_transfers(500)?
-            .into_iter()
-            .find(|item| item.file_id == file_id)
-            .ok_or_else(|| AppError::message("传输记录不存在"))?;
-        record.status = "sending".to_string();
-        record.updated_at = unix_now_millis();
+                .get_mut(&file_id)
+                .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+            let now = unix_now_millis();
+            outgoing.record.status = "sending".to_string();
+            outgoing.record.updated_at = now;
+            outgoing.last_reported_bytes = outgoing.record.transferred_bytes;
+            outgoing.last_progress_at = now;
+            (outgoing.source_path.clone(), outgoing.record.clone())
+        };
         self.inner.database.save_transfer(&record)?;
         self.emit_transfers()?;
 
-        let mut file = tokio::fs::File::open(&outgoing.1).await?;
+        let mut file = tokio::fs::File::open(&source_path).await?;
         let mut index = 0_i64;
         let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
         loop {
             {
                 let state = self.inner.state.lock().expect("runtime state poisoned");
                 if state.cancelled_files.contains(&file_id) {
+                    drop(state);
+                    let mut state = self.inner.state.lock().expect("runtime state poisoned");
+                    state.cancelled_files.remove(&file_id);
+                    state.outgoing_files.remove(&file_id);
                     return Ok(());
                 }
             }
@@ -643,13 +662,23 @@ impl AppRuntime {
                     data: STANDARD.encode(&buffer[..read]),
                 },
             )?;
-            let _ = self.send_business_message(&outgoing.0, chunk)?;
+            let _ = self.send_business_message(&record.device_id, chunk)?;
 
-            record.transferred_bytes += read as i64;
-            record.updated_at = unix_now_millis();
-            self.inner.database.save_transfer(&record)?;
-            self.emit_transfers()?;
+            let updated_at = unix_now_millis();
+            let (snapshot, bytes_per_second) =
+                self.update_outgoing_progress(&file_id, read as i64, updated_at)?;
+            record = snapshot;
+            if let Some(bytes_per_second) = bytes_per_second {
+                self.inner.database.save_transfer(&record)?;
+                self.emit_transfer_progress(record.clone(), bytes_per_second);
+            }
             index += 1;
+        }
+
+        let (record, bytes_per_second) = self.flush_outgoing_progress(&file_id)?;
+        self.inner.database.save_transfer(&record)?;
+        if let Some(bytes_per_second) = bytes_per_second {
+            self.emit_transfer_progress(record.clone(), bytes_per_second);
         }
 
         self.append_log("info", "file", format!("文件 {} 已发送完成，等待确认", record.file_name))?;
@@ -657,56 +686,32 @@ impl AppRuntime {
     }
 
     async fn handle_file_chunk(&self, payload: FileChunkPayload) -> AppResult<()> {
-        let incoming = {
+        let (writer, received_chunks) = {
             let state = self.inner.state.lock().expect("runtime state poisoned");
             state
                 .incoming_files
                 .get(&payload.file_id)
-                .map(|item| IncomingFileState {
-                    device_id: item.device_id.clone(),
-                    file_name: item.file_name.clone(),
-                    total_chunks: item.total_chunks,
-                    received_chunks: item.received_chunks,
-                    checksum: item.checksum.clone(),
-                    route: item.route.clone(),
-                    temp_path: item.temp_path.clone(),
-                })
+                .map(|item| (item.writer.clone(), item.received_chunks))
         }
         .ok_or_else(|| AppError::message("接收中的文件不存在"))?;
 
-        if payload.index != incoming.received_chunks {
+        if payload.index != received_chunks {
             self.handle_file_cancel(&payload.file_id, "chunk order mismatch".to_string())?;
             return Err(AppError::message("文件分块顺序错误"));
         }
 
         let bytes = STANDARD.decode(payload.data)?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&incoming.temp_path)
-            .await?;
+        let mut file = writer.lock().await;
         file.write_all(&bytes).await?;
+        drop(file);
 
-        let mut record = self
-            .inner
-            .database
-            .load_transfers(500)?
-            .into_iter()
-            .find(|item| item.file_id == payload.file_id)
-            .ok_or_else(|| AppError::message("传输记录不存在"))?;
-        record.transferred_bytes += bytes.len() as i64;
-        record.updated_at = unix_now_millis();
-        self.inner.database.save_transfer(&record)?;
-
-        let finished = {
-            let mut state = self.inner.state.lock().expect("runtime state poisoned");
-            let Some(item) = state.incoming_files.get_mut(&payload.file_id) else {
-                return Err(AppError::message("接收状态不存在"));
-            };
-            item.received_chunks += 1;
-            item.received_chunks >= item.total_chunks
-        };
-
-        self.emit_transfers()?;
+        let updated_at = unix_now_millis();
+        let (record, bytes_per_second, finished) =
+            self.update_incoming_progress(&payload.file_id, bytes.len() as i64, updated_at)?;
+        if let Some(bytes_per_second) = bytes_per_second {
+            self.inner.database.save_transfer(&record)?;
+            self.emit_transfer_progress(record.clone(), bytes_per_second);
+        }
 
         if finished {
             self.finish_incoming_transfer(&payload.file_id).await?;
@@ -724,6 +729,10 @@ impl AppRuntime {
             .incoming_files
             .remove(file_id)
             .ok_or_else(|| AppError::message("接收状态不存在"))?;
+        {
+            let mut writer = incoming.writer.lock().await;
+            writer.flush().await?;
+        }
 
         let settings = self
             .inner
@@ -733,30 +742,31 @@ impl AppRuntime {
         let download_dir = PathBuf::from(settings.download_path);
         fs::create_dir_all(&download_dir)?;
 
-        let computed = hash_file_sha256(&incoming.temp_path)?;
+        let temp_path = incoming
+            .record
+            .temp_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::message("临时文件路径不存在"))?;
+        let computed = hash_file_sha256(&temp_path)?;
         let expected = incoming
+            .record
             .checksum
             .strip_prefix("sha256:")
-            .unwrap_or(&incoming.checksum)
+            .unwrap_or(&incoming.record.checksum)
             .to_string();
         let success = computed.eq_ignore_ascii_case(&expected);
 
         let final_path = if success {
-            let path = unique_download_path(&download_dir, &incoming.file_name);
-            tokio::fs::rename(&incoming.temp_path, &path).await?;
+            let path = unique_download_path(&download_dir, &incoming.record.file_name);
+            tokio::fs::rename(&temp_path, &path).await?;
             Some(path.to_string_lossy().to_string())
         } else {
-            let _ = tokio::fs::remove_file(&incoming.temp_path).await;
+            let _ = tokio::fs::remove_file(&temp_path).await;
             None
         };
 
-        let mut record = self
-            .inner
-            .database
-            .load_transfers(500)?
-            .into_iter()
-            .find(|item| item.file_id == file_id)
-            .ok_or_else(|| AppError::message("传输记录不存在"))?;
+        let mut record = incoming.record;
         record.status = if success {
             "completed".to_string()
         } else {
@@ -785,13 +795,19 @@ impl AppRuntime {
                 },
             },
         )?;
-        let _ = self.send_business_message(&incoming.device_id, done)?;
+        let _ = self.send_business_message(&record.device_id, done)?;
 
         if success {
-            self.notify("文件接收完成", &format!("已保存 {}", incoming.file_name))?;
+            self.notify("文件接收完成", &format!("已保存 {}", record.file_name))?;
         } else {
-            self.notify("文件接收失败", &format!("{} 校验失败", incoming.file_name))?;
+            self.notify("文件接收失败", &format!("{} 校验失败", record.file_name))?;
         }
+        self.inner
+            .state
+            .lock()
+            .expect("runtime state poisoned")
+            .cancelled_files
+            .remove(file_id);
 
         Ok(())
     }
@@ -803,19 +819,16 @@ impl AppRuntime {
         error: Option<String>,
         final_path: Option<String>,
     ) -> AppResult<()> {
-        self.inner
+        let record = self
+            .inner
             .state
             .lock()
             .expect("runtime state poisoned")
             .outgoing_files
-            .remove(file_id);
-
-        let mut record = self
-            .inner
-            .database
-            .load_transfers(500)?
-            .into_iter()
-            .find(|item| item.file_id == file_id)
+            .remove(file_id)
+            .map(|item| item.record);
+        let mut record = record
+            .or(self.inner.database.load_transfer(file_id)?)
             .ok_or_else(|| AppError::message("传输记录不存在"))?;
         record.status = status.to_string();
         if let Some(error) = error {
@@ -827,6 +840,12 @@ impl AppRuntime {
         record.updated_at = unix_now_millis();
         self.inner.database.save_transfer(&record)?;
         self.emit_transfers()?;
+        self.inner
+            .state
+            .lock()
+            .expect("runtime state poisoned")
+            .cancelled_files
+            .remove(file_id);
         Ok(())
     }
 
@@ -839,9 +858,97 @@ impl AppRuntime {
             .incoming_files
             .remove(file_id)
         {
-            let _ = fs::remove_file(&incoming.temp_path);
+            if let Some(temp_path) = incoming.record.temp_path.as_ref() {
+                let _ = fs::remove_file(temp_path);
+            }
         }
         self.finish_outgoing_transfer(file_id, "cancelled", Some(reason), None)
+    }
+
+    fn update_outgoing_progress(
+        &self,
+        file_id: &str,
+        delta_bytes: i64,
+        updated_at: i64,
+    ) -> AppResult<(FileTransferRecord, Option<f64>)> {
+        let mut state = self.inner.state.lock().expect("runtime state poisoned");
+        let outgoing = state
+            .outgoing_files
+            .get_mut(file_id)
+            .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+        outgoing.record.transferred_bytes += delta_bytes;
+        outgoing.record.updated_at = updated_at;
+        let should_report = updated_at - outgoing.last_progress_at >= TRANSFER_PROGRESS_INTERVAL_MS;
+        let bytes_per_second = if should_report {
+            let delta = outgoing.record.transferred_bytes - outgoing.last_reported_bytes;
+            let duration = updated_at - outgoing.last_progress_at;
+            outgoing.last_reported_bytes = outgoing.record.transferred_bytes;
+            outgoing.last_progress_at = updated_at;
+            Some(calculate_bytes_per_second(delta, duration))
+        } else {
+            None
+        };
+        Ok((outgoing.record.clone(), bytes_per_second))
+    }
+
+    fn flush_outgoing_progress(&self, file_id: &str) -> AppResult<(FileTransferRecord, Option<f64>)> {
+        let mut state = self.inner.state.lock().expect("runtime state poisoned");
+        let outgoing = state
+            .outgoing_files
+            .get_mut(file_id)
+            .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+        let delta = outgoing.record.transferred_bytes - outgoing.last_reported_bytes;
+        let duration = outgoing.record.updated_at - outgoing.last_progress_at;
+        let bytes_per_second = if delta > 0 {
+            outgoing.last_reported_bytes = outgoing.record.transferred_bytes;
+            Some(calculate_bytes_per_second(delta, duration))
+        } else {
+            None
+        };
+        outgoing.last_progress_at = outgoing.record.updated_at;
+        Ok((outgoing.record.clone(), bytes_per_second))
+    }
+
+    fn update_incoming_progress(
+        &self,
+        file_id: &str,
+        delta_bytes: i64,
+        updated_at: i64,
+    ) -> AppResult<(FileTransferRecord, Option<f64>, bool)> {
+        let mut state = self.inner.state.lock().expect("runtime state poisoned");
+        let incoming = state
+            .incoming_files
+            .get_mut(file_id)
+            .ok_or_else(|| AppError::message("接收状态不存在"))?;
+        incoming.record.transferred_bytes += delta_bytes;
+        incoming.record.updated_at = updated_at;
+        incoming.received_chunks += 1;
+        let finished = incoming.received_chunks >= incoming.record.total_chunks;
+        let should_report =
+            finished || updated_at - incoming.last_progress_at >= TRANSFER_PROGRESS_INTERVAL_MS;
+        let bytes_per_second = if should_report {
+            let delta = incoming.record.transferred_bytes - incoming.last_reported_bytes;
+            let duration = updated_at - incoming.last_progress_at;
+            incoming.last_reported_bytes = incoming.record.transferred_bytes;
+            incoming.last_progress_at = updated_at;
+            Some(calculate_bytes_per_second(delta, duration))
+        } else {
+            None
+        };
+        Ok((incoming.record.clone(), bytes_per_second, finished))
+    }
+
+    fn emit_transfer_progress(&self, record: FileTransferRecord, bytes_per_second: f64) {
+        let _ = self
+            .inner
+            .app
+            .emit(
+                TRANSFER_PROGRESS_EVENT,
+                TransferProgressPayload {
+                    record,
+                    bytes_per_second,
+                },
+            );
     }
 
     fn broadcast_clipboard(&self, payload: ClipboardSyncPayload) -> AppResult<()> {
@@ -1186,4 +1293,16 @@ fn unique_download_path(download_dir: &Path, file_name: &str) -> PathBuf {
     }
 
     download_dir.join(format!("{}-{}", Uuid::new_v4(), safe_name))
+}
+
+fn calculate_bytes_per_second(delta_bytes: i64, duration_ms: i64) -> f64 {
+    if delta_bytes <= 0 {
+        return 0.0;
+    }
+
+    if duration_ms <= 0 {
+        return delta_bytes as f64 * 1000.0;
+    }
+
+    delta_bytes as f64 * 1000.0 / duration_ms as f64
 }

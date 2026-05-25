@@ -1,5 +1,5 @@
 import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
@@ -10,17 +10,18 @@ import { cn, formatBytes, formatPlatformName } from '../lib/utils'
 export function TransfersPage() {
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { device, devices, transfers, pickFiles, sendFiles, cancelTransfer } = useAppState()
-  const [selectedDeviceId, setSelectedDeviceId] = useState(searchParams.get('deviceId') ?? '')
+  const { device, devices, transfers, transferSpeeds, pickFiles, sendFiles, cancelTransfer } = useAppState()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const targetDevices = useMemo(() => devices.filter((i) => i.deviceId !== device?.deviceId), [device?.deviceId, devices])
-
-  useEffect(() => {
-    if (selectedDeviceId && targetDevices.some((i) => i.deviceId === selectedDeviceId)) return
-    setSelectedDeviceId(searchParams.get('deviceId') ?? targetDevices[0]?.deviceId ?? '')
-  }, [searchParams, selectedDeviceId, targetDevices])
+  const selectedDeviceId = useMemo(() => {
+    const requestedDeviceId = searchParams.get('deviceId')
+    if (requestedDeviceId && targetDevices.some((item) => item.deviceId === requestedDeviceId)) {
+      return requestedDeviceId
+    }
+    return targetDevices[0]?.deviceId ?? ''
+  }, [searchParams, targetDevices])
 
   const selectedDevice = targetDevices.find((i) => i.deviceId === selectedDeviceId) ?? null
   const transferItems = useMemo(() => transfers.filter((i) => selectedDeviceId ? i.deviceId === selectedDeviceId : true), [selectedDeviceId, transfers])
@@ -52,7 +53,7 @@ export function TransfersPage() {
                 : "border-transparent hover:bg-[hsl(var(--panel-2)/0.5)] bg-transparent"
             )}
             key={item.deviceId}
-            onClick={() => { setSelectedDeviceId(item.deviceId); setSearchParams({ deviceId: item.deviceId }) }}
+            onClick={() => { setSearchParams({ deviceId: item.deviceId }) }}
             type="button"
           >
             <div className="flex items-center justify-between">
@@ -111,9 +112,11 @@ export function TransfersPage() {
                 {transferItems.map((item) => {
                   const progress = item.fileSize > 0 ? item.transferredBytes / item.fileSize : 0
                   const active = item.status === 'offered' || item.status === 'sending' || item.status === 'receiving'
+                  const inFlight = item.status === 'sending' || item.status === 'receiving'
                   const isDone = item.status === 'completed'
                   const isFailed = item.status === 'failed' || item.status === 'cancelled'
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
+                  const speed = inFlight ? transferSpeeds[item.fileId] : null
 
                   return (
                     <div className="py-4 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4" key={item.fileId}>
@@ -147,7 +150,10 @@ export function TransfersPage() {
                           )} title={isFailed ? (item.error || statusLabel) : statusLabel}>
                             {isFailed ? (item.error || statusLabel) : statusLabel}
                           </span>
-                          <span className="shrink-0">{formatBytes(item.transferredBytes)} / {formatBytes(item.fileSize)}</span>
+                          <span className="shrink-0">
+                            {formatBytes(item.transferredBytes)} / {formatBytes(item.fileSize)}
+                            {speed !== null ? ` • ${formatBytes(Math.max(0, speed))}/s` : ''}
+                          </span>
                         </div>
                         {/* Progress Bar */}
                         <div className="h-1 w-full overflow-hidden rounded-full bg-[hsl(var(--border))]">
