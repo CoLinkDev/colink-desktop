@@ -8,6 +8,7 @@ tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
+blake3 = "1.8.2"
 clipboard-rs = "0.3.4"
 dirs = "5.0.1"
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }

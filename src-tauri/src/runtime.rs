@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -8,9 +9,8 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clipboard_rs::{
-    common::RustImage,
-    Clipboard, ClipboardContext, ClipboardHandler, ClipboardWatcher, ClipboardWatcherContext,
-    RustImageData, WatcherShutdown,
+    common::RustImage, Clipboard, ClipboardContext, ClipboardHandler, ClipboardWatcher,
+    ClipboardWatcherContext, RustImageData, WatcherShutdown,
 };
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use sanitize_filename::sanitize;
@@ -38,10 +38,9 @@ use crate::{
     },
     protocol::{
         AnnouncePayload, BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload,
-        FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload,
-        FileRejectPayload, TextMessagePayload,
-        CLIPBOARD_SYNC_TYPE, FILE_ACCEPT_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
-        FILE_OFFER_TYPE, FILE_REJECT_TYPE, TEXT_MESSAGE_TYPE,
+        FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileRejectPayload,
+        TextMessagePayload, CLIPBOARD_SYNC_TYPE, FILE_ACCEPT_TYPE, FILE_CANCEL_TYPE,
+        FILE_CHUNK_TYPE, FILE_DONE_TYPE, FILE_OFFER_TYPE, FILE_REJECT_TYPE, TEXT_MESSAGE_TYPE,
     },
     runtime_events::RuntimeEvent,
     shell,
@@ -52,6 +51,8 @@ pub const MESSAGES_UPDATED_EVENT: &str = "messages-updated";
 pub const TRANSFERS_UPDATED_EVENT: &str = "transfers-updated";
 pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
 pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
+const FILE_CHECKSUM_ALGORITHM: &str = "blake3";
+const FILE_HASH_BUFFER_SIZE: usize = 1_048_576;
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 
 #[derive(Clone)]
@@ -114,7 +115,11 @@ impl ClipboardHandler for ClipboardWatcherHandler {
 }
 
 impl AppRuntime {
-    pub fn build(app: AppHandle, database: Database, http: HttpClient) -> (Self, CloudConnectionManager) {
+    pub fn build(
+        app: AppHandle,
+        database: Database,
+        http: HttpClient,
+    ) -> (Self, CloudConnectionManager) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let lan = LanManager::new(database.clone(), event_tx.clone());
         let cloud = CloudConnectionManager::new(
@@ -191,7 +196,11 @@ impl AppRuntime {
             },
         )?;
         let _ = self.send_business_message(&payload.device_id, envelope)?;
-        self.append_log("info", "message", format!("已发送文本消息到 {}", payload.device_id))?;
+        self.append_log(
+            "info",
+            "message",
+            format!("已发送文本消息到 {}", payload.device_id),
+        )?;
         Ok(record)
     }
 
@@ -211,7 +220,7 @@ impl AppRuntime {
             let file_size = metadata.len() as i64;
             let chunk_size = FILE_CHUNK_SIZE as i64;
             let total_chunks = ((file_size + chunk_size - 1) / chunk_size).max(1);
-            let checksum = format!("sha256:{}", hash_file_sha256(&source_path)?);
+            let checksum = build_file_checksum(&source_path)?;
             let file_name = source_path
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -239,15 +248,20 @@ impl AppRuntime {
                 updated_at: created_at,
             };
             self.inner.database.save_transfer(&record)?;
-            self.inner.state.lock().expect("runtime state poisoned").outgoing_files.insert(
-                file_id.clone(),
-                OutgoingFileState {
-                    source_path: source_path.clone(),
-                    record: record.clone(),
-                    last_reported_bytes: 0,
-                    last_progress_at: created_at,
-                },
-            );
+            self.inner
+                .state
+                .lock()
+                .expect("runtime state poisoned")
+                .outgoing_files
+                .insert(
+                    file_id.clone(),
+                    OutgoingFileState {
+                        source_path: source_path.clone(),
+                        record: record.clone(),
+                        last_reported_bytes: 0,
+                        last_progress_at: created_at,
+                    },
+                );
 
             let envelope = BusinessEnvelope::from_payload(
                 FILE_OFFER_TYPE,
@@ -265,7 +279,11 @@ impl AppRuntime {
         }
 
         self.emit_transfers()?;
-        self.append_log("info", "file", format!("已发送 {} 个文件邀请", records.len()))?;
+        self.append_log(
+            "info",
+            "file",
+            format!("已发送 {} 个文件邀请", records.len()),
+        )?;
         Ok(records)
     }
 
@@ -346,7 +364,10 @@ impl AppRuntime {
         let previous = self.inner.database.load_cached_devices()?;
         let reconciled = reconcile_devices(devices, &previous, &self.inner.lan.peer_ids());
         self.inner.database.save_cached_devices(&reconciled)?;
-        let _ = self.inner.app.emit(DEVICES_UPDATED_EVENT, reconciled.clone());
+        let _ = self
+            .inner
+            .app
+            .emit(DEVICES_UPDATED_EVENT, reconciled.clone());
         let _ = shell::refresh_tray(&self.inner.app);
         Ok(reconciled)
     }
@@ -392,7 +413,8 @@ impl AppRuntime {
                     .load_cached_devices()
                     .ok()
                     .and_then(|items| {
-                        items.into_iter()
+                        items
+                            .into_iter()
                             .find(|item| item.device_id == device_id)
                             .map(|item| item.name)
                     })
@@ -473,7 +495,11 @@ impl AppRuntime {
                     let _ = self.emit_messages();
                     let sender_name = self.lookup_device_name(from);
                     let _ = self.notify(&format!("来自 {sender_name} 的消息"), &payload.text);
-                    let _ = self.append_log("info", "message", format!("收到来自 {sender_name} 的文本消息"));
+                    let _ = self.append_log(
+                        "info",
+                        "message",
+                        format!("收到来自 {sender_name} 的文本消息"),
+                    );
                 }
             }
             FILE_OFFER_TYPE => {
@@ -506,7 +532,11 @@ impl AppRuntime {
             }
             FILE_DONE_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileDonePayload>(message.payload) {
-                    let status = if payload.success { "completed" } else { "failed" };
+                    let status = if payload.success {
+                        "completed"
+                    } else {
+                        "failed"
+                    };
                     let _ = self.finish_outgoing_transfer(
                         &payload.file_id,
                         status,
@@ -521,7 +551,8 @@ impl AppRuntime {
                 }
             }
             CLIPBOARD_SYNC_TYPE => {
-                if let Ok(payload) = serde_json::from_value::<ClipboardSyncPayload>(message.payload) {
+                if let Ok(payload) = serde_json::from_value::<ClipboardSyncPayload>(message.payload)
+                {
                     let _ = self.apply_remote_clipboard(from, payload);
                 }
             }
@@ -593,16 +624,21 @@ impl AppRuntime {
         };
         let writer = Arc::new(AsyncMutex::new(tokio::fs::File::create(&temp_path).await?));
         self.inner.database.save_transfer(&record)?;
-        self.inner.state.lock().expect("runtime state poisoned").incoming_files.insert(
-            payload.file_id.clone(),
-            IncomingFileState {
-                writer,
-                record: record.clone(),
-                received_chunks: 0,
-                last_reported_bytes: 0,
-                last_progress_at: created_at,
-            },
-        );
+        self.inner
+            .state
+            .lock()
+            .expect("runtime state poisoned")
+            .incoming_files
+            .insert(
+                payload.file_id.clone(),
+                IncomingFileState {
+                    writer,
+                    record: record.clone(),
+                    received_chunks: 0,
+                    last_reported_bytes: 0,
+                    last_progress_at: created_at,
+                },
+            );
 
         let envelope = BusinessEnvelope::from_payload(
             FILE_ACCEPT_TYPE,
@@ -681,7 +717,11 @@ impl AppRuntime {
             self.emit_transfer_progress(record.clone(), bytes_per_second);
         }
 
-        self.append_log("info", "file", format!("文件 {} 已发送完成，等待确认", record.file_name))?;
+        self.append_log(
+            "info",
+            "file",
+            format!("文件 {} 已发送完成，等待确认", record.file_name),
+        )?;
         Ok(())
     }
 
@@ -748,14 +788,7 @@ impl AppRuntime {
             .as_deref()
             .map(PathBuf::from)
             .ok_or_else(|| AppError::message("临时文件路径不存在"))?;
-        let computed = hash_file_sha256(&temp_path)?;
-        let expected = incoming
-            .record
-            .checksum
-            .strip_prefix("sha256:")
-            .unwrap_or(&incoming.record.checksum)
-            .to_string();
-        let success = computed.eq_ignore_ascii_case(&expected);
+        let success = verify_file_checksum(&temp_path, &incoming.record.checksum)?;
 
         let final_path = if success {
             let path = unique_download_path(&download_dir, &incoming.record.file_name);
@@ -891,7 +924,10 @@ impl AppRuntime {
         Ok((outgoing.record.clone(), bytes_per_second))
     }
 
-    fn flush_outgoing_progress(&self, file_id: &str) -> AppResult<(FileTransferRecord, Option<f64>)> {
+    fn flush_outgoing_progress(
+        &self,
+        file_id: &str,
+    ) -> AppResult<(FileTransferRecord, Option<f64>)> {
         let mut state = self.inner.state.lock().expect("runtime state poisoned");
         let outgoing = state
             .outgoing_files
@@ -939,16 +975,13 @@ impl AppRuntime {
     }
 
     fn emit_transfer_progress(&self, record: FileTransferRecord, bytes_per_second: f64) {
-        let _ = self
-            .inner
-            .app
-            .emit(
-                TRANSFER_PROGRESS_EVENT,
-                TransferProgressPayload {
-                    record,
-                    bytes_per_second,
-                },
-            );
+        let _ = self.inner.app.emit(
+            TRANSFER_PROGRESS_EVENT,
+            TransferProgressPayload {
+                record,
+                bytes_per_second,
+            },
+        );
     }
 
     fn broadcast_clipboard(&self, payload: ClipboardSyncPayload) -> AppResult<()> {
@@ -998,8 +1031,8 @@ impl AppRuntime {
                     .data
                     .ok_or_else(|| AppError::message("剪贴板图片数据缺失"))?;
                 let bytes = STANDARD.decode(data)?;
-                let image =
-                    RustImageData::from_bytes(&bytes).map_err(|error| AppError::message(error.to_string()))?;
+                let image = RustImageData::from_bytes(&bytes)
+                    .map_err(|error| AppError::message(error.to_string()))?;
                 ctx.set_image(image)
                     .map_err(|error| AppError::message(error.to_string()))?;
             }
@@ -1043,7 +1076,11 @@ impl AppRuntime {
             watcher.start_watch();
         });
 
-        self.inner.state.lock().expect("runtime state poisoned").watcher_shutdown = Some(shutdown);
+        self.inner
+            .state
+            .lock()
+            .expect("runtime state poisoned")
+            .watcher_shutdown = Some(shutdown);
         Ok(())
     }
 
@@ -1092,7 +1129,8 @@ impl AppRuntime {
             .load_cached_devices()
             .ok()
             .and_then(|items| {
-                items.into_iter()
+                items
+                    .into_iter()
                     .find(|item| item.device_id == device_id)
                     .map(|item| item.name)
             })
@@ -1149,7 +1187,11 @@ impl AppRuntime {
         Ok(())
     }
 
-    fn send_business_message(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<String> {
+    fn send_business_message(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+    ) -> AppResult<String> {
         if self.inner.lan.has_peer(device_id) {
             self.inner.lan.send(device_id, message)?;
             Ok("lan".to_string())
@@ -1260,11 +1302,54 @@ fn hash_clipboard_payload(payload: &ClipboardSyncPayload) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn hash_file_sha256(path: &Path) -> AppResult<String> {
-    let bytes = fs::read(path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+fn build_file_checksum(path: &Path) -> AppResult<String> {
+    let digest = hash_file_by_algorithm(path, FILE_CHECKSUM_ALGORITHM)?;
+    Ok(format!("{FILE_CHECKSUM_ALGORITHM}:{digest}"))
+}
+
+fn verify_file_checksum(path: &Path, checksum: &str) -> AppResult<bool> {
+    let (algorithm, expected) = split_checksum(checksum);
+    let actual = hash_file_by_algorithm(path, algorithm)?;
+    Ok(actual.eq_ignore_ascii_case(expected))
+}
+
+fn split_checksum(checksum: &str) -> (&str, &str) {
+    if let Some((algorithm, digest)) = checksum.split_once(':') {
+        return (algorithm, digest);
+    }
+
+    ("sha256", checksum)
+}
+
+fn hash_file_by_algorithm(path: &Path, algorithm: &str) -> AppResult<String> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = vec![0_u8; FILE_HASH_BUFFER_SIZE];
+
+    match algorithm {
+        "sha256" => {
+            let mut hasher = Sha256::new();
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        "blake3" => {
+            let mut hasher = blake3::Hasher::new();
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            Ok(hasher.finalize().to_hex().to_string())
+        }
+        _ => Err(AppError::message(format!("不支持的校验算法: {algorithm}"))),
+    }
 }
 
 fn unique_download_path(download_dir: &Path, file_name: &str) -> PathBuf {
