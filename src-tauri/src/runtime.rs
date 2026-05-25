@@ -50,6 +50,7 @@ use crate::{
 pub const MESSAGES_UPDATED_EVENT: &str = "messages-updated";
 pub const TRANSFERS_UPDATED_EVENT: &str = "transfers-updated";
 pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
+pub const TRANSFER_PREPARING_EVENT: &str = "transfer-preparing";
 pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
 const FILE_CHECKSUM_ALGORITHM: &str = "blake3";
 const FILE_HASH_BUFFER_SIZE: usize = 1_048_576;
@@ -99,6 +100,13 @@ struct IncomingFileState {
 struct TransferProgressPayload {
     record: FileTransferRecord,
     bytes_per_second: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferPreparingPayload {
+    current: usize,
+    total: usize,
 }
 
 struct ClipboardWatcherHandler {
@@ -210,11 +218,13 @@ impl AppRuntime {
         }
 
         let mut records = Vec::new();
-        for raw_path in payload.paths {
+        let total = payload.paths.len();
+        for (index, raw_path) in payload.paths.into_iter().enumerate() {
             let source_path = PathBuf::from(&raw_path);
             if !source_path.is_file() {
                 return Err(AppError::message(format!("文件不存在: {raw_path}")));
             }
+            self.emit_transfer_preparing(index + 1, total);
 
             let metadata = fs::metadata(&source_path)?;
             let file_size = metadata.len() as i64;
@@ -981,6 +991,13 @@ impl AppRuntime {
                 record,
                 bytes_per_second,
             },
+        );
+    }
+
+    fn emit_transfer_preparing(&self, current: usize, total: usize) {
+        let _ = self.inner.app.emit(
+            TRANSFER_PREPARING_EVENT,
+            TransferPreparingPayload { current, total },
         );
     }
 

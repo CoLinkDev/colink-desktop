@@ -1,11 +1,15 @@
-import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle } from 'lucide-react'
+import { listen } from '@tauri-apps/api/event'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { cn, formatBytes, formatPlatformName } from '../lib/utils'
+import type { TransferPreparingPayload } from '../lib/types'
+
+const TRANSFER_PREPARING_EVENT = 'transfer-preparing'
 
 export function TransfersPage() {
   const { t } = useTranslation()
@@ -13,6 +17,7 @@ export function TransfersPage() {
   const { device, devices, transfers, transferSpeeds, pickFiles, sendFiles, cancelTransfer } = useAppState()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
 
   const targetDevices = useMemo(() => devices.filter((i) => i.deviceId !== device?.deviceId), [device?.deviceId, devices])
   const selectedDeviceId = useMemo(() => {
@@ -25,16 +30,47 @@ export function TransfersPage() {
 
   const selectedDevice = targetDevices.find((i) => i.deviceId === selectedDeviceId) ?? null
   const transferItems = useMemo(() => transfers.filter((i) => selectedDeviceId ? i.deviceId === selectedDeviceId : true), [selectedDeviceId, transfers])
+  const submitLabel = submitting
+    ? preparing
+      ? t('transfers.hashingProgress', {
+        current: preparing.current,
+        total: preparing.total,
+        defaultValue: `正在计算哈希（${preparing.current}/${preparing.total}）`,
+      })
+      : t('transfers.preparingSend', { defaultValue: '正在准备发送...' })
+    : t('transfers.selectBtn')
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+
+    void (async () => {
+      try {
+        unlisten = await listen<TransferPreparingPayload>(TRANSFER_PREPARING_EVENT, (event) => {
+          if (!disposed) {
+            setPreparing(event.payload)
+          }
+        })
+      } catch {
+        // Ignore browser-mode event failures. The desktop runtime provides this event.
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   async function handleSendFiles() {
     if (!selectedDeviceId) { setError(t('transfers.errorSelectDevice')); return }
-    setSubmitting(true); setError(null)
+    setSubmitting(true); setPreparing(null); setError(null)
     try {
       const paths = await pickFiles(true)
       if (paths.length === 0) return
       await sendFiles({ deviceId: selectedDeviceId, paths })
     } catch (e) { setError(readErrorMessage(e)) }
-    finally { setSubmitting(false) }
+    finally { setSubmitting(false); setPreparing(null) }
   }
 
   return (
@@ -85,7 +121,8 @@ export function TransfersPage() {
               onClick={() => void handleSendFiles()}
               className="px-6"
             >
-              {t('transfers.selectBtn')}
+              {submitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+              {submitLabel}
             </Button>
             {error && (
               <div className="mt-2 text-[12px] text-[hsl(var(--danger))]">

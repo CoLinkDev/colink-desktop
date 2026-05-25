@@ -28,13 +28,14 @@ pub fn pick_files(
 }
 
 #[tauri::command]
-pub fn send_files(
+pub async fn send_files(
     state: State<'_, AppState>,
     payload: SendFilePayload,
 ) -> Result<Vec<FileTransferRecord>, String> {
-    state
-        .runtime
-        .send_files(payload)
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.send_files(payload))
+        .await
+        .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
 }
 

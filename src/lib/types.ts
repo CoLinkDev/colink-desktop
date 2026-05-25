@@ -94,6 +94,11 @@ export interface TransferProgressPayload {
   bytesPerSecond: number
 }
 
+export interface TransferPreparingPayload {
+  current: number
+  total: number
+}
+
 export interface AppLogEntry {
   id: string
   level: string
