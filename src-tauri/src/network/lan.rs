@@ -12,7 +12,7 @@ use serde_json::json;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
-    time::timeout,
+    time::{sleep, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
@@ -43,10 +43,20 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPLAY_DRIFT_MILLIS: i64 = 30_000;
 const FAILURE_COOLDOWN_MILLIS: i64 = 60_000;
+const PING_INTERVAL_SECS: u64 = 15;
+const PING_TIMEOUT_SECS: u64 = 45;
+const RECONNECT_MAX_ATTEMPTS: u32 = 5;
+const RECONNECT_BASE_DELAY_MS: u64 = 2_000;
+const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
 
 enum TransferStreamEvent {
     Activity,
     Closed,
+}
+
+enum LanCommand {
+    PeerDisconnected { generation: u64, device_id: String },
+    RestartBrowse { generation: u64 },
 }
 
 #[derive(Clone)]
@@ -59,11 +69,13 @@ pub struct LanManager {
 struct LanState {
     generation: u64,
     cancel: Option<watch::Sender<bool>>,
+    command_tx: Option<mpsc::UnboundedSender<LanCommand>>,
     peers: HashMap<String, mpsc::UnboundedSender<BusinessEnvelope>>,
     peer_endpoints: HashMap<String, (String, u16)>,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
     blocked_until: HashMap<String, i64>,
+    reconnecting: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -85,11 +97,13 @@ impl LanManager {
             inner: Arc::new(Mutex::new(LanState {
                 generation: 0,
                 cancel: None,
+                command_tx: None,
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
                 blocked_until: HashMap::new(),
+                reconnecting: HashSet::new(),
             })),
         }
     }
@@ -119,6 +133,7 @@ impl LanManager {
             device,
         };
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
         let generation = {
             let mut inner = self.inner.lock().expect("lan manager poisoned");
             if let Some(cancel) = inner.cancel.take() {
@@ -126,14 +141,16 @@ impl LanManager {
             }
             inner.generation += 1;
             inner.cancel = Some(cancel_tx);
+            inner.command_tx = Some(command_tx);
             inner.peers.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
+            inner.reconnecting.clear();
             inner.generation
         };
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager.run(generation, context, cancel_rx).await;
+            manager.run(generation, context, cancel_rx, command_rx).await;
         });
         Ok(())
     }
@@ -145,8 +162,10 @@ impl LanManager {
                 let _ = cancel.send(true);
             }
             inner.generation += 1;
+            inner.command_tx = None;
             inner.peer_endpoints.clear();
             inner.transfer_tokens.clear();
+            inner.reconnecting.clear();
             (
                 std::mem::take(&mut inner.peers),
                 std::mem::take(&mut inner.transfer_senders),
@@ -249,6 +268,7 @@ impl LanManager {
         generation: u64,
         context: LanContext,
         mut cancel_rx: watch::Receiver<bool>,
+        mut command_rx: mpsc::UnboundedReceiver<LanCommand>,
     ) {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", LAN_PORT)).await else {
             let _ = self.event_tx.send(RuntimeEvent::Log {
@@ -269,7 +289,7 @@ impl LanManager {
         };
 
         let _ = mdns.set_ip_check_interval(5);
-        let browse_rx = match mdns.browse(SERVICE_TYPE) {
+        let mut browse_rx = match mdns.browse(SERVICE_TYPE) {
             Ok(receiver) => receiver,
             Err(error) => {
                 let _ = self.event_tx.send(RuntimeEvent::Log {
@@ -315,6 +335,26 @@ impl LanManager {
                         self.handle_service_resolved(generation, context.clone(), *service);
                     }
                 }
+                command = command_rx.recv() => {
+                    let Some(command) = command else {
+                        break;
+                    };
+                    match command {
+                        LanCommand::PeerDisconnected { generation: command_generation, device_id }
+                            if command_generation == generation =>
+                        {
+                            self.handle_peer_disconnected(generation, context.clone(), device_id);
+                        }
+                        LanCommand::RestartBrowse { generation: command_generation }
+                            if command_generation == generation =>
+                        {
+                            if let Some(receiver) = self.restart_browse(&mdns) {
+                                browse_rx = receiver;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 event = recv_monitor_event(&monitor_rx), if monitor_rx.is_some() => {
                     if let Some(event) = event {
                         match event {
@@ -342,6 +382,7 @@ impl LanManager {
         }
 
         let _ = mdns.shutdown();
+        self.finalize_generation(generation);
         self.clear_peers_for_generation(generation);
     }
 
@@ -416,14 +457,14 @@ impl LanManager {
         if !should_initiate(&context.device.device_id, &device_id) {
             return;
         }
-        if self.has_peer(&device_id) || self.is_blocked(&device_id) {
+        if self.has_peer(&device_id) || self.is_blocked(&device_id) || self.is_reconnecting(&device_id) {
             return;
         }
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             let _ = manager
-                .connect_outbound(generation, context, device_id, ip, port)
+                .connect_outbound(generation, context, device_id, ip, port, true)
                 .await;
         });
     }
@@ -435,6 +476,7 @@ impl LanManager {
         device_id: String,
         ip: IpAddr,
         port: u16,
+        block_on_failure: bool,
     ) -> AppResult<()> {
         let url = Url::parse(&format!("ws://{ip}:{port}/peer"))?;
         let (stream, _) = connect_async(url.as_str())
@@ -446,7 +488,9 @@ impl LanManager {
                     .await
             }
             Err(error) => {
-                self.block_device(&device_id);
+                if block_on_failure {
+                    self.block_device(&device_id);
+                }
                 Err(error)
             }
         }
@@ -533,7 +577,14 @@ impl LanManager {
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             let (mut writer, mut reader) = stream.split();
+            let mut last_activity = Instant::now();
+            let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+            ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            ping_interval.tick().await;
             loop {
+                if last_activity.elapsed() >= Duration::from_secs(PING_TIMEOUT_SECS) {
+                    break;
+                }
                 tokio::select! {
                     outbound = rx.recv() => {
                         let Some(outbound) = outbound else {
@@ -545,9 +596,15 @@ impl LanManager {
                             }
                         }
                     }
+                    _ = ping_interval.tick() => {
+                        if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                            break;
+                        }
+                    }
                     inbound = reader.next() => {
                         match inbound {
                             Some(Ok(Message::Text(text))) => {
+                                last_activity = Instant::now();
                                 if let Ok(message) = serde_json::from_str::<BusinessEnvelope>(&text) {
                                     let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
                                         from: peer_device_id.clone(),
@@ -555,13 +612,19 @@ impl LanManager {
                                     });
                                 }
                             }
+                            Some(Ok(Message::Pong(_))) => {
+                                last_activity = Instant::now();
+                            }
                             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                             Some(Ok(Message::Ping(payload))) => {
+                                last_activity = Instant::now();
                                 if writer.send(Message::Pong(payload)).await.is_err() {
                                     break;
                                 }
                             }
-                            Some(Ok(_)) => {}
+                            Some(Ok(_)) => {
+                                last_activity = Instant::now();
+                            }
                         }
                     }
                 }
@@ -651,6 +714,10 @@ impl LanManager {
             let _ = self.event_tx.send(RuntimeEvent::LanDisconnected {
                 device_id: device_id.to_string(),
             });
+            self.send_command(LanCommand::PeerDisconnected {
+                generation,
+                device_id: device_id.to_string(),
+            });
         }
     }
 
@@ -712,6 +779,155 @@ impl LanManager {
             .expect("lan manager poisoned")
             .peer_endpoints
             .insert(device_id.to_string(), (ip.to_string(), port));
+    }
+
+    fn handle_peer_disconnected(&self, generation: u64, context: LanContext, device_id: String) {
+        if !should_initiate(&context.device.device_id, &device_id) {
+            return;
+        }
+        if self.has_peer(&device_id) || self.is_blocked(&device_id) {
+            return;
+        }
+        if !self.begin_reconnect(generation, &device_id) {
+            return;
+        }
+
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            manager
+                .reconnect_peer(generation, context, device_id)
+                .await;
+        });
+    }
+
+    async fn reconnect_peer(&self, generation: u64, context: LanContext, device_id: String) {
+        for attempt in 0..RECONNECT_MAX_ATTEMPTS {
+            if !self.is_generation_current(generation) || self.has_peer(&device_id) || self.is_blocked(&device_id) {
+                self.finish_reconnect(&device_id);
+                return;
+            }
+
+            let Some((ip, port)) = self.peer_endpoint(&device_id) else {
+                break;
+            };
+            let Ok(ip) = ip.parse::<IpAddr>() else {
+                break;
+            };
+
+            if self
+                .connect_outbound(
+                    generation,
+                    context.clone(),
+                    device_id.clone(),
+                    ip,
+                    port,
+                    false,
+                )
+                .await
+                .is_ok()
+            {
+                self.finish_reconnect(&device_id);
+                return;
+            }
+
+            if self.has_peer(&device_id) {
+                self.finish_reconnect(&device_id);
+                return;
+            }
+
+            if attempt + 1 >= RECONNECT_MAX_ATTEMPTS {
+                break;
+            }
+
+            let delay_ms = (RECONNECT_BASE_DELAY_MS << attempt).min(RECONNECT_MAX_DELAY_MS);
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        self.block_device(&device_id);
+        self.finish_reconnect(&device_id);
+        self.send_command(LanCommand::RestartBrowse { generation });
+    }
+
+    fn restart_browse(
+        &self,
+        mdns: &ServiceDaemon,
+    ) -> Option<mdns_sd::Receiver<ServiceEvent>> {
+        if let Err(error) = mdns.stop_browse(SERVICE_TYPE) {
+            let _ = self.event_tx.send(RuntimeEvent::Log {
+                level: "warn".to_string(),
+                source: "lan".to_string(),
+                message: format!("mDNS 浏览停止失败: {error}"),
+            });
+        }
+
+        match mdns.browse(SERVICE_TYPE) {
+            Ok(receiver) => Some(receiver),
+            Err(error) => {
+                let _ = self.event_tx.send(RuntimeEvent::Log {
+                    level: "warn".to_string(),
+                    source: "lan".to_string(),
+                    message: format!("mDNS 浏览重启失败: {error}"),
+                });
+                None
+            }
+        }
+    }
+
+    fn is_generation_current(&self, generation: u64) -> bool {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .generation
+            == generation
+    }
+
+    fn send_command(&self, command: LanCommand) {
+        let sender = self
+            .inner
+            .lock()
+            .expect("lan manager poisoned")
+            .command_tx
+            .clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(command);
+        }
+    }
+
+    fn begin_reconnect(&self, generation: u64, device_id: &str) -> bool {
+        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        if inner.generation != generation
+            || inner.reconnecting.contains(device_id)
+            || !inner.peer_endpoints.contains_key(device_id)
+        {
+            return false;
+        }
+        inner.reconnecting.insert(device_id.to_string());
+        true
+    }
+
+    fn finish_reconnect(&self, device_id: &str) {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .reconnecting
+            .remove(device_id);
+    }
+
+    fn is_reconnecting(&self, device_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("lan manager poisoned")
+            .reconnecting
+            .contains(device_id)
+    }
+
+    fn finalize_generation(&self, generation: u64) {
+        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        if inner.generation != generation {
+            return;
+        }
+        inner.command_tx = None;
+        inner.reconnecting.clear();
     }
 
     fn resolve_inbound_route(&self, request: &Request) -> Result<InboundRoute, ErrorResponse> {
