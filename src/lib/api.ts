@@ -84,3 +84,7 @@ export function sendFiles(payload: SendFilePayload) {
 export function cancelTransfer(fileId: string) {
   return invoke<void>('cancel_transfer', { fileId })
 }
+
+export function clearTransfers() {
+  return invoke<void>('clear_transfers')
+}

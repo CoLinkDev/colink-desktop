@@ -12,6 +12,7 @@ import { listen } from '@tauri-apps/api/event'
 import {
   bootstrapApp,
   cancelTransfer as cancelTransferRequest,
+  clearTransfers as clearTransfersRequest,
   deleteDevice as deleteDeviceRequest,
   getSettings,
   listDevices,
@@ -75,6 +76,7 @@ interface AppStateValue {
   pickFiles: (multiple?: boolean) => Promise<string[]>
   sendFiles: (payload: SendFilePayload) => Promise<void>
   cancelTransfer: (fileId: string) => Promise<void>
+  clearTransfers: () => Promise<void>
   settingsDirty: boolean
   setSettingsDirty: (dirty: boolean) => void
 }
@@ -394,6 +396,10 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     await sendFilesRequest(payload)
   }, [])
 
+  const clearTransfers = useCallback(async () => {
+    await clearTransfersRequest()
+  }, [])
+
   const cancelTransfer = useCallback(async (fileId: string) => {
     await cancelTransferRequest(fileId)
   }, [])
@@ -427,6 +433,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       pickFiles,
       sendFiles,
       cancelTransfer,
+      clearTransfers,
       settingsDirty,
       setSettingsDirty,
     }),
@@ -458,6 +465,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       pickFiles,
       sendFiles,
       cancelTransfer,
+      clearTransfers,
       settingsDirty,
       setSettingsDirty,
     ],

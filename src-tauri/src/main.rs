@@ -17,7 +17,7 @@ mod store;
 mod sync;
 
 use commands::{
-    bootstrap_app, cancel_transfer, delete_device, get_settings, list_devices, login, logout,
+    bootstrap_app, cancel_transfer, clear_transfers, delete_device, get_settings, list_devices, login, logout,
     pick_download_directory, pick_files, register_account, rotate_device_key, send_files,
     send_text, update_device_name, update_settings,
 };
@@ -69,7 +69,8 @@ fn main() {
             send_text,
             pick_files,
             send_files,
-            cancel_transfer
+            cancel_transfer,
+            clear_transfers
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

@@ -229,6 +229,15 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn clear_transfers(&self) -> AppResult<()> {
+        let connection = self.open()?;
+        connection.execute(
+            "DELETE FROM file_transfers WHERE status NOT IN ('pending', 'offered', 'sending', 'receiving')",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub fn load_transfer(&self, file_id: &str) -> AppResult<Option<FileTransferRecord>> {
         let connection = self.open()?;
         connection

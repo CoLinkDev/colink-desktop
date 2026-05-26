@@ -1,4 +1,4 @@
-import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle } from 'lucide-react'
+import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2 } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -14,7 +14,7 @@ const TRANSFER_PREPARING_EVENT = 'transfer-preparing'
 export function TransfersPage() {
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { device, devices, transfers, transferSpeeds, pickFiles, sendFiles, cancelTransfer } = useAppState()
+  const { device, devices, transfers, transferSpeeds, pickFiles, sendFiles, cancelTransfer, clearTransfers } = useAppState()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
@@ -31,6 +31,9 @@ export function TransfersPage() {
 
   const selectedDevice = targetDevices.find((i) => i.deviceId === selectedDeviceId) ?? null
   const transferItems = useMemo(() => transfers.filter((i) => selectedDeviceId ? i.deviceId === selectedDeviceId : true), [selectedDeviceId, transfers])
+  const hasClearableTransfers = useMemo(() => {
+    return transferItems.some((i) => i.status === 'completed' || i.status === 'failed' || i.status === 'cancelled' || i.status === 'rejected')
+  }, [transferItems])
   const submitLabel = submitting
     ? preparing
       ? t('transfers.hashingProgress', {
@@ -229,6 +232,16 @@ export function TransfersPage() {
         <div className="rounded-xl border bg-[hsl(var(--panel))]">
           <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b bg-[hsl(var(--panel-2)/0.2)]">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-[hsl(var(--muted))]">{t('transfers.listTitle', { count: transferItems.length })}</span>
+            {hasClearableTransfers && (
+              <Button
+                variant="ghost"
+                onClick={() => void clearTransfers()}
+                className="h-6 px-2 text-[11px] font-medium text-[hsl(var(--muted))] hover:text-[hsl(var(--danger))] hover:bg-[hsl(var(--danger)/0.08)] transition-all flex items-center gap-1.5"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('transfers.clearBtn', { defaultValue: '清空已完成' })}
+              </Button>
+            )}
           </div>
 
           <div className="p-5">

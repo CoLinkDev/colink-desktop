@@ -49,3 +49,11 @@ pub fn cancel_transfer(
         .cancel_transfer(&file_id)
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn clear_transfers(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .runtime
+        .clear_transfers()
+        .map_err(|error| error.to_string())
+}

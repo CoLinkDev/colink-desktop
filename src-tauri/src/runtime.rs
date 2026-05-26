@@ -219,6 +219,12 @@ impl AppRuntime {
             .map(|item| item.to_string_lossy().to_string()))
     }
 
+    pub fn clear_transfers(&self) -> AppResult<()> {
+        self.inner.database.clear_transfers()?;
+        self.emit_transfers()?;
+        Ok(())
+    }
+
     pub fn replace_cached_devices(&self, devices: Vec<DeviceInfo>) -> AppResult<Vec<DeviceInfo>> {
         device_presence::replace_all(
             &self.inner.database,
