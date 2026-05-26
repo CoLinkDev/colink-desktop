@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
+const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60;
 pub const LAN_PORT: u16 = 27_777;
 pub const MAX_TEXT_LENGTH: usize = 10_000;
 pub const FILE_CHUNK_SIZE: usize = 1_048_576;
@@ -47,7 +48,7 @@ pub struct SessionRecord {
 
 impl SessionRecord {
     pub fn is_expiring_soon(&self) -> bool {
-        self.access_token_expires_at <= unix_now() + 60
+        self.access_token_expires_at <= unix_now() + TOKEN_EXPIRY_BUFFER_SECONDS
     }
 
     pub fn summary(&self) -> SessionSummary {

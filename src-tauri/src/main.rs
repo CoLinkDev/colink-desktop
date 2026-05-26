@@ -1,3 +1,4 @@
+mod api;
 mod commands;
 mod crypto;
 mod device_cache;
@@ -11,6 +12,7 @@ mod shell;
 mod service;
 mod state;
 mod store;
+mod sync;
 
 use commands::{
     bootstrap_app, cancel_transfer, delete_device, get_settings, list_devices, login, logout,

@@ -3,12 +3,16 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
+    api::{
+        DeviceListResponse, RefreshRequest, RefreshResponse, ACCESS_TOKEN_TTL_SECONDS,
+        AUTH_REFRESH_PATH, DEVICES_PATH,
+    },
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     models::{
-        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity,
-        DeviceInfo, DeviceNameUpdatePayload, LoginPayload, RegisterPayload,
-        RotateDeviceKeyPayload, SessionRecord,
+        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity, DeviceInfo,
+        DeviceNameUpdatePayload, LoginPayload, RegisterPayload, RotateDeviceKeyPayload,
+        SessionRecord,
     },
     shell,
     state::AppState,
@@ -16,10 +20,7 @@ use crate::{
 
 const AUTH_LOGIN_PATH: &str = "/api/v1/auth/login";
 const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
-const AUTH_REFRESH_PATH: &str = "/api/v1/auth/refresh";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
-const DEVICES_PATH: &str = "/api/v1/devices";
-const ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,28 +32,9 @@ struct SessionExchangeResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RefreshResponse {
-    token: String,
-    refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DeviceRegisterResponse {
     device_id: String,
     device_secret: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceListResponse {
-    devices: Vec<DeviceInfo>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshRequest<'a> {
-    refresh_token: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,7 +163,12 @@ pub async fn update_device_name(
     let request = serde_json::json!({ "name": payload.name });
     state
         .http
-        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
         .await?;
 
     if let Some(mut identity) = state.database.load_device_identity()? {
@@ -234,7 +221,12 @@ pub async fn rotate_device_key(
     let request = serde_json::json!({ "publicKey": generated.public_key });
     state
         .http
-        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
         .await?;
 
     if let Some(mut identity) = state.database.load_device_identity()? {

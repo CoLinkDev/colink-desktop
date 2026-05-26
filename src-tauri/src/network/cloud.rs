@@ -15,6 +15,10 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    api::{
+        DeviceListResponse, RefreshRequest, RefreshResponse, ACCESS_TOKEN_TTL_SECONDS,
+        AUTH_REFRESH_PATH, DEVICES_PATH,
+    },
     device_cache::reconcile_devices,
     error::{AppError, AppResult},
     models::{unix_now, AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
@@ -27,13 +31,11 @@ use crate::{
     runtime_events::RuntimeEvent,
     shell,
     store::db::Database,
+    sync::MutexExt,
 };
 
-const AUTH_REFRESH_PATH: &str = "/api/v1/auth/refresh";
-const DEVICES_PATH: &str = "/api/v1/devices";
 const WS_TICKET_PATH: &str = "/api/v1/ws/ticket";
 const WS_CONNECT_PATH: &str = "/ws/v1";
-const ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
 pub const AUTH_INVALIDATED_EVENT: &str = "auth-invalidated";
 pub const CLOUD_STATUS_EVENT: &str = "cloud-status";
@@ -86,19 +88,6 @@ enum CloudCommand {
     Announce(AnnouncePayload),
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshResponse {
-    token: String,
-    refresh_token: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshRequest<'a> {
-    refresh_token: &'a str,
-}
-
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TicketRequest<'a> {
@@ -109,12 +98,6 @@ struct TicketRequest<'a> {
 #[serde(rename_all = "camelCase")]
 struct TicketResponse {
     ticket: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceListResponse {
-    devices: Vec<DeviceInfo>,
 }
 
 impl CloudConnectionManager {
@@ -141,17 +124,13 @@ impl CloudConnectionManager {
     }
 
     pub fn snapshot(&self) -> CloudStatus {
-        self.inner
-            .lock()
-            .expect("cloud manager poisoned")
-            .status
-            .clone()
+        self.inner.lock_unpoisoned().status.clone()
     }
 
     pub fn start(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let generation = {
-            let mut inner = self.inner.lock().expect("cloud manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -176,7 +155,7 @@ impl CloudConnectionManager {
 
     pub fn stop(&self) {
         {
-            let mut inner = self.inner.lock().expect("cloud manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -186,9 +165,9 @@ impl CloudConnectionManager {
         }
 
         self.emit_status(CloudStatus::disconnected());
-        let _ = self
-            .event_tx
-            .send(RuntimeEvent::CloudDisconnected(Some("云端连接已停止".to_string())));
+        let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(
+            "云端连接已停止".to_string(),
+        )));
     }
 
     pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
@@ -277,7 +256,9 @@ impl CloudConnectionManager {
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
-                    let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(message)));
+                    let _ = self
+                        .event_tx
+                        .send(RuntimeEvent::CloudDisconnected(Some(message)));
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -498,7 +479,8 @@ impl CloudConnectionManager {
                     .payload
                     .and_then(|value| serde_json::from_value::<DeviceOnlinePayload>(value).ok());
                 if let Some(device_id) = message.from {
-                    self.update_device_presence(&device_id, true, payload.clone()).await;
+                    self.update_device_presence(&device_id, true, payload.clone())
+                        .await;
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
                         online: true,
@@ -593,8 +575,7 @@ impl CloudConnectionManager {
     fn send_command(&self, command: CloudCommand) -> AppResult<()> {
         let sender = self
             .inner
-            .lock()
-            .expect("cloud manager poisoned")
+            .lock_unpoisoned()
             .command_tx
             .clone()
             .ok_or_else(|| AppError::message("云端连接尚未建立"))?;
@@ -604,19 +585,15 @@ impl CloudConnectionManager {
             .map_err(|_| AppError::message("云端连接不可用"))
     }
 
-    fn install_command_sender(
-        &self,
-        generation: u64,
-        sender: mpsc::UnboundedSender<CloudCommand>,
-    ) {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+    fn install_command_sender(&self, generation: u64, sender: mpsc::UnboundedSender<CloudCommand>) {
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = Some(sender);
         }
     }
 
     fn clear_command_sender(&self, generation: u64) {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = None;
         }
@@ -628,12 +605,14 @@ impl CloudConnectionManager {
         let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());
         self.emit_status(CloudStatus::disconnected());
-        let _ = self.event_tx.send(RuntimeEvent::AuthInvalidated(message.clone()));
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::AuthInvalidated(message.clone()));
         let _ = self.app.emit(AUTH_INVALIDATED_EVENT, message);
     }
 
     fn update_status_if_current(&self, generation: u64, status: CloudStatus) -> bool {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation != generation {
             return false;
         }
