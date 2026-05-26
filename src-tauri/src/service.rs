@@ -3,10 +3,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    api::{
-        DeviceListResponse, RefreshRequest, RefreshResponse, ACCESS_TOKEN_TTL_SECONDS,
-        AUTH_REFRESH_PATH, DEVICES_PATH,
-    },
+    api::{DeviceListResponse, ACCESS_TOKEN_TTL_SECONDS, DEVICES_PATH},
+    auth,
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     models::{
@@ -62,9 +60,10 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let mut device_summary = stored_device.as_ref().map(DeviceIdentity::summary);
 
     if let Some(session) = stored_session {
-        match refresh_session(state, &session).await {
+        match auth::refresh_session_if_needed(&state.database, &state.http, &settings, session)
+            .await
+        {
             Ok(refreshed_session) => {
-                state.database.save_session(&refreshed_session)?;
                 let identity = ensure_device_identity(state, &refreshed_session).await?;
                 let fetched_devices = fetch_devices(state, &refreshed_session)
                     .await
@@ -321,33 +320,9 @@ async fn current_session(state: &AppState) -> AppResult<SessionRecord> {
         .database
         .load_session()?
         .ok_or_else(|| AppError::message("尚未登录"))?;
-
-    if !session.is_expiring_soon() {
-        return Ok(session);
-    }
-
-    let refreshed = refresh_session(state, &session).await?;
-    state.database.save_session(&refreshed)?;
-    Ok(refreshed)
-}
-
-async fn refresh_session(state: &AppState, session: &SessionRecord) -> AppResult<SessionRecord> {
     let settings = load_settings(state)?;
-    let request = RefreshRequest {
-        refresh_token: &session.refresh_token,
-    };
 
-    let response: RefreshResponse = state
-        .http
-        .post(&settings.server_url, AUTH_REFRESH_PATH, &request, None)
-        .await?;
-
-    Ok(SessionRecord {
-        user_id: session.user_id.clone(),
-        access_token: response.token,
-        refresh_token: response.refresh_token,
-        access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
-    })
+    auth::refresh_session_if_needed(&state.database, &state.http, &settings, session).await
 }
 
 async fn ensure_device_identity(

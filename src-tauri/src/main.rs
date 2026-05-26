@@ -1,7 +1,9 @@
 mod api;
+mod auth;
 mod commands;
 mod crypto;
 mod device_cache;
+mod device_presence;
 mod error;
 mod models;
 mod network;
@@ -26,13 +28,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let state = AppState::initialize(&app.handle())?;
+            let state = AppState::initialize(app.handle())?;
             let settings = state.database.load_settings()?.unwrap_or_else(|| {
                 panic!("application settings should exist after initialization")
             });
             app.manage(state);
             shell::apply_auto_start(settings.auto_start)?;
-            let shell_state = shell::initialize(&app.handle(), &settings)?;
+            let shell_state = shell::initialize(app.handle(), &settings)?;
             app.manage(shell_state);
             Ok(())
         })

@@ -59,7 +59,7 @@ pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellSta
                 ..
             } = event
             {
-                let _ = show_main_window(&tray.app_handle(), None);
+                let _ = show_main_window(tray.app_handle(), None);
             }
         })
         .build(app)?;

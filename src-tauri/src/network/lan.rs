@@ -488,6 +488,7 @@ impl LanManager {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     async fn handle_inbound(
         &self,
         generation: u64,
@@ -894,6 +895,7 @@ impl LanManager {
         inner.reconnecting.clear();
     }
 
+    #[allow(clippy::result_large_err)]
     fn resolve_inbound_route(&self, request: &Request) -> Result<InboundRoute, ErrorResponse> {
         let path = request.uri().path();
         if path == "/peer" || path == "/" {

@@ -1,4 +1,7 @@
-use crate::protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload, FileDataFrame};
+use crate::{
+    models::DeviceInfo,
+    protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload, FileDataFrame},
+};
 
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
@@ -14,6 +17,7 @@ pub enum RuntimeEvent {
         online: bool,
         payload: Option<DeviceOnlinePayload>,
     },
+    DevicesSnapshot(Vec<DeviceInfo>),
     LanDiscovered {
         device_id: String,
         ip: String,

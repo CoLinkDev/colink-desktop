@@ -27,14 +27,14 @@ use self::clipboard::{
 use self::route::TransferRoute;
 
 use crate::{
-    device_cache::reconcile_devices,
+    device_presence,
     error::{AppError, AppResult},
     models::{
         unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, SendTextPayload,
         TextMessageRecord, MAX_TEXT_LENGTH,
     },
     network::{
-        cloud::{CloudConnectionManager, DEVICES_UPDATED_EVENT},
+        cloud::CloudConnectionManager,
         http::HttpClient,
         lan::LanManager,
     },
@@ -47,7 +47,6 @@ use crate::{
         TEXT_MESSAGE_TYPE,
     },
     runtime_events::RuntimeEvent,
-    shell,
     store::db::Database,
     sync::MutexExt,
 };
@@ -115,7 +114,6 @@ impl AppRuntime {
             app.clone(),
             database.clone(),
             http.clone(),
-            lan.clone(),
             event_tx.clone(),
         );
         let runtime = Self {
@@ -222,15 +220,12 @@ impl AppRuntime {
     }
 
     pub fn replace_cached_devices(&self, devices: Vec<DeviceInfo>) -> AppResult<Vec<DeviceInfo>> {
-        let previous = self.inner.database.load_cached_devices()?;
-        let reconciled = reconcile_devices(devices, &previous, &self.inner.lan.peer_ids());
-        self.inner.database.save_cached_devices(&reconciled)?;
-        let _ = self
-            .inner
-            .app
-            .emit(DEVICES_UPDATED_EVENT, reconciled.clone());
-        let _ = shell::refresh_tray(&self.inner.app);
-        Ok(reconciled)
+        device_presence::replace_all(
+            &self.inner.database,
+            &self.inner.app,
+            &self.inner.lan.peer_ids(),
+            devices,
+        )
     }
 
     fn spawn_event_loop(&self, mut event_rx: mpsc::UnboundedReceiver<RuntimeEvent>) {
@@ -267,7 +262,14 @@ impl AppRuntime {
                 online,
                 payload,
             } => {
-                let _ = self.update_device_presence_cache(&device_id, online, payload.clone());
+                let _ = device_presence::update_one(
+                    &self.inner.database,
+                    &self.inner.app,
+                    &self.inner.lan.peer_ids(),
+                    &device_id,
+                    online,
+                    payload.clone(),
+                );
                 let device_name = self
                     .inner
                     .database
@@ -290,6 +292,9 @@ impl AppRuntime {
                 let _ = self.append_log("info", "device", body.clone());
                 let _ = self.notify("设备状态变化", &body);
             }
+            RuntimeEvent::DevicesSnapshot(devices) => {
+                let _ = self.replace_cached_devices(devices);
+            }
             RuntimeEvent::ClipboardChanged(payload) => {
                 let _ = self.broadcast_clipboard(payload);
             }
@@ -306,7 +311,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanConnected { device_id } => {
-                let _ = self.update_device_route(&device_id, true);
+                let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
                     "info",
                     "lan",
@@ -314,7 +319,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
-                let _ = self.update_device_route(&device_id, false);
+                let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
                     "warn",
                     "lan",
@@ -632,44 +637,12 @@ impl AppRuntime {
         }
     }
 
-    fn update_device_presence_cache(
-        &self,
-        device_id: &str,
-        online: bool,
-        payload: Option<crate::protocol::DeviceOnlinePayload>,
-    ) -> AppResult<()> {
-        let mut devices = self.inner.database.load_cached_devices()?;
-        let previous = devices.clone();
-        let Some(device) = devices.iter_mut().find(|item| item.device_id == device_id) else {
-            return Ok(());
-        };
-        device.online = online;
-        if let Some(payload) = payload {
-            device.local_ip = payload.local_ip;
-            device.local_port = payload.local_port;
-            device.name = payload.name;
-            device.device_type = payload.device_type;
-            if !device.lan_available {
-                device.active_route = Some("cloud".to_string());
-            }
-        } else if !online {
-            device.local_ip = None;
-            device.local_port = None;
-        }
-
-        let devices = reconcile_devices(devices, &previous, &self.inner.lan.peer_ids());
-        self.inner.database.save_cached_devices(&devices)?;
-        let _ = self.inner.app.emit(DEVICES_UPDATED_EVENT, devices);
-        let _ = shell::refresh_tray(&self.inner.app);
-        Ok(())
-    }
-
-    fn update_device_route(&self, _device_id: &str, _lan_available: bool) -> AppResult<()> {
-        let devices = self.inner.database.load_cached_devices()?;
-        let reconciled = reconcile_devices(devices.clone(), &devices, &self.inner.lan.peer_ids());
-        self.inner.database.save_cached_devices(&reconciled)?;
-        let _ = self.inner.app.emit(DEVICES_UPDATED_EVENT, reconciled);
-        let _ = shell::refresh_tray(&self.inner.app);
+    fn reconcile_device_routes(&self) -> AppResult<()> {
+        device_presence::reconcile_routes(
+            &self.inner.database,
+            &self.inner.app,
+            &self.inner.lan.peer_ids(),
+        )?;
         Ok(())
     }
 }

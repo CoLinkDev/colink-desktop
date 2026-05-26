@@ -35,6 +35,12 @@ use super::{
     TRANSFER_PROGRESS_INTERVAL_MS,
 };
 
+#[derive(Clone, Copy)]
+enum ChunkTransport {
+    Relay,
+    Lan,
+}
+
 impl AppRuntime {
     pub fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
         if payload.paths.is_empty() {
@@ -348,54 +354,14 @@ impl AppRuntime {
         source_path: PathBuf,
         record: FileTransferRecord,
     ) -> AppResult<()> {
-        let mut file = tokio::fs::File::open(&source_path).await?;
-        let mut index = 0_i64;
-        let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
-        loop {
-            {
-                let state = self.inner.state.lock_unpoisoned();
-                if state.cancelled_files.contains(&file_id) {
-                    drop(state);
-                    let mut state = self.inner.state.lock_unpoisoned();
-                    state.cancelled_files.remove(&file_id);
-                    state.outgoing_files.remove(&file_id);
-                    return Ok(());
-                }
-            }
-
-            let read = file.read(&mut buffer).await?;
-            if read == 0 {
-                break;
-            }
-
-            if !self
-                .wait_for_send_window(&file_id, index, RELAY_SEND_WINDOW_CHUNKS)
-                .await?
-            {
-                let mut state = self.inner.state.lock_unpoisoned();
-                state.cancelled_files.remove(&file_id);
-                state.outgoing_files.remove(&file_id);
-                return Ok(());
-            }
-
-            let chunk = BusinessEnvelope::from_payload(
-                FILE_CHUNK_TYPE,
-                FileChunkPayload {
-                    session_id: file_id.clone(),
-                    chunk_index: index,
-                    data: STANDARD.encode(&buffer[..read]),
-                },
-            )?;
-            let _ = self.send_business_message(&record.device_id, chunk)?;
-            index += 1;
-        }
-
-        self.append_log(
-            "info",
-            "file",
-            format!("文件 {} 已发送完成，等待确认", record.file_name),
-        )?;
-        Ok(())
+        self.send_file_chunks(
+            file_id,
+            source_path,
+            record,
+            RELAY_SEND_WINDOW_CHUNKS,
+            ChunkTransport::Relay,
+        )
+        .await
     }
 
     async fn send_file_data_lan(
@@ -404,24 +370,31 @@ impl AppRuntime {
         source_path: PathBuf,
         record: FileTransferRecord,
     ) -> AppResult<()> {
+        self.send_file_chunks(
+            file_id,
+            source_path,
+            record,
+            LAN_SEND_WINDOW_CHUNKS,
+            ChunkTransport::Lan,
+        )
+        .await
+    }
+
+    async fn send_file_chunks(
+        &self,
+        file_id: String,
+        source_path: PathBuf,
+        record: FileTransferRecord,
+        window_size: i64,
+        transport: ChunkTransport,
+    ) -> AppResult<()> {
         let mut file = tokio::fs::File::open(&source_path).await?;
-        let mut index = 0_u32;
+        let mut index = 0_i64;
         let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
         loop {
-            {
-                let state = self.inner.state.lock_unpoisoned();
-                if state.cancelled_files.contains(&file_id) {
-                    drop(state);
-                    let _ = self
-                        .inner
-                        .lan
-                        .send_transfer_frame(&file_id, FileDataFrame::cancel("user cancelled"));
-                    let mut state = self.inner.state.lock_unpoisoned();
-                    state.cancelled_files.remove(&file_id);
-                    state.outgoing_files.remove(&file_id);
-                    self.inner.lan.unregister_transfer(&file_id);
-                    return Ok(());
-                }
+            if self.take_cancelled_outgoing(&file_id) {
+                self.cleanup_transport_after_cancel(&file_id, transport);
+                return Ok(());
             }
 
             let read = file.read(&mut buffer).await?;
@@ -430,35 +403,19 @@ impl AppRuntime {
             }
 
             if !self
-                .wait_for_send_window(&file_id, index as i64, LAN_SEND_WINDOW_CHUNKS)
+                .wait_for_send_window(&file_id, index, window_size)
                 .await?
             {
-                let _ = self
-                    .inner
-                    .lan
-                    .send_transfer_frame(&file_id, FileDataFrame::cancel("user cancelled"));
-                let mut state = self.inner.state.lock_unpoisoned();
-                state.cancelled_files.remove(&file_id);
-                state.outgoing_files.remove(&file_id);
-                self.inner.lan.unregister_transfer(&file_id);
+                self.clear_outgoing_transfer_state(&file_id);
+                self.cleanup_transport_after_cancel(&file_id, transport);
                 return Ok(());
             }
 
-            self.inner.lan.send_transfer_frame(
-                &file_id,
-                FileDataFrame::chunk(index, buffer[..read].to_vec()),
-            )?;
+            self.send_transport_chunk(&file_id, &record, index, &buffer[..read], transport)?;
             index += 1;
         }
 
-        self.inner.lan.send_transfer_frame(
-            &file_id,
-            FileDataFrame::finish(
-                u32::try_from(record.total_chunks)
-                    .map_err(|_| AppError::message("文件分块数量超过协议限制"))?,
-            ),
-        )?;
-
+        self.send_transport_finish(&file_id, &record, transport)?;
         self.append_log(
             "info",
             "file",
@@ -467,51 +424,86 @@ impl AppRuntime {
         Ok(())
     }
 
+    fn send_transport_chunk(
+        &self,
+        file_id: &str,
+        record: &FileTransferRecord,
+        index: i64,
+        bytes: &[u8],
+        transport: ChunkTransport,
+    ) -> AppResult<()> {
+        match transport {
+            ChunkTransport::Relay => {
+                let chunk = BusinessEnvelope::from_payload(
+                    FILE_CHUNK_TYPE,
+                    FileChunkPayload {
+                        session_id: file_id.to_string(),
+                        chunk_index: index,
+                        data: STANDARD.encode(bytes),
+                    },
+                )?;
+                let _ = self.send_business_message(&record.device_id, chunk)?;
+            }
+            ChunkTransport::Lan => {
+                let index =
+                    u32::try_from(index).map_err(|_| AppError::message("文件分块索引过大"))?;
+                self.inner.lan.send_transfer_frame(
+                    file_id,
+                    FileDataFrame::chunk(index, bytes.to_vec()),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn send_transport_finish(
+        &self,
+        file_id: &str,
+        record: &FileTransferRecord,
+        transport: ChunkTransport,
+    ) -> AppResult<()> {
+        if let ChunkTransport::Lan = transport {
+            self.inner.lan.send_transfer_frame(
+                file_id,
+                FileDataFrame::finish(
+                    u32::try_from(record.total_chunks)
+                        .map_err(|_| AppError::message("文件分块数量超过协议限制"))?,
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn cleanup_transport_after_cancel(&self, file_id: &str, transport: ChunkTransport) {
+        if let ChunkTransport::Lan = transport {
+            let _ = self
+                .inner
+                .lan
+                .send_transfer_frame(file_id, FileDataFrame::cancel("user cancelled"));
+            self.inner.lan.unregister_transfer(file_id);
+        }
+    }
+
+    fn take_cancelled_outgoing(&self, file_id: &str) -> bool {
+        let mut state = self.inner.state.lock_unpoisoned();
+        if !state.cancelled_files.remove(file_id) {
+            return false;
+        }
+        state.outgoing_files.remove(file_id);
+        true
+    }
+
+    fn clear_outgoing_transfer_state(&self, file_id: &str) {
+        let mut state = self.inner.state.lock_unpoisoned();
+        state.cancelled_files.remove(file_id);
+        state.outgoing_files.remove(file_id);
+    }
+
     pub(super) async fn handle_file_chunk(&self, payload: FileChunkPayload) -> AppResult<()> {
         let session_id = payload.session_id;
-        let (writer, received_chunks, device_id) = {
-            let state = self.inner.state.lock_unpoisoned();
-            state.incoming_files.get(&session_id).map(|item| {
-                (
-                    item.writer.clone(),
-                    item.received_chunks,
-                    item.record.device_id.clone(),
-                )
-            })
-        }
-        .ok_or_else(|| AppError::message("接收中的文件不存在"))?;
-
-        if payload.chunk_index < received_chunks {
-            self.send_file_ack(&device_id, &session_id, received_chunks)?;
-            return Ok(());
-        }
-        if payload.chunk_index > received_chunks {
-            self.send_file_retransmit(&device_id, &session_id, received_chunks)?;
-            return Ok(());
-        }
-
         let bytes = STANDARD.decode(payload.data)?;
-        let mut file = writer.lock().await;
-        file.write_all(&bytes).await?;
-        drop(file);
-
-        let updated_at = unix_now_millis();
-        let (record, bytes_per_second, finished) =
-            self.update_incoming_progress(&session_id, bytes.len() as i64, updated_at)?;
-        if let Some(bytes_per_second) = bytes_per_second {
-            self.inner.database.save_transfer(&record)?;
-            self.emit_transfer_progress(record.clone(), bytes_per_second);
-        }
-        let next_expected_index = payload.chunk_index + 1;
-        if should_send_file_ack(next_expected_index, record.total_chunks) {
-            self.send_file_ack(&record.device_id, &session_id, next_expected_index)?;
-        }
-
-        if finished {
-            self.finish_incoming_transfer(&session_id).await?;
-        }
-
-        Ok(())
+        self.process_incoming_chunk(&session_id, payload.chunk_index, &bytes, true)
+            .await
     }
 
     pub(super) async fn handle_lan_transfer_frame(
@@ -546,6 +538,17 @@ impl AppRuntime {
         chunk_index: i64,
         bytes: Vec<u8>,
     ) -> AppResult<()> {
+        self.process_incoming_chunk(session_id, chunk_index, &bytes, false)
+            .await
+    }
+
+    async fn process_incoming_chunk(
+        &self,
+        session_id: &str,
+        chunk_index: i64,
+        bytes: &[u8],
+        finish_when_complete: bool,
+    ) -> AppResult<()> {
         let (writer, received_chunks, device_id) = {
             let state = self.inner.state.lock_unpoisoned();
             state.incoming_files.get(session_id).map(|item| {
@@ -568,11 +571,11 @@ impl AppRuntime {
         }
 
         let mut file = writer.lock().await;
-        file.write_all(&bytes).await?;
+        file.write_all(bytes).await?;
         drop(file);
 
         let updated_at = unix_now_millis();
-        let (record, bytes_per_second, _) =
+        let (record, bytes_per_second, finished) =
             self.update_incoming_progress(session_id, bytes.len() as i64, updated_at)?;
         if let Some(bytes_per_second) = bytes_per_second {
             self.inner.database.save_transfer(&record)?;
@@ -581,6 +584,9 @@ impl AppRuntime {
         let next_expected_index = chunk_index + 1;
         if should_send_file_ack(next_expected_index, record.total_chunks) {
             self.send_file_ack(&record.device_id, session_id, next_expected_index)?;
+        }
+        if finish_when_complete && finished {
+            self.finish_incoming_transfer(session_id).await?;
         }
         Ok(())
     }
