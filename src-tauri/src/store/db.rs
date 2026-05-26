@@ -15,6 +15,7 @@ const SETTINGS_KEY: &str = "settings";
 const SESSION_KEY: &str = "session";
 const DEVICE_IDENTITY_KEY: &str = "device_identity";
 const DEVICE_CACHE_KEY: &str = "device_cache";
+const MAX_LOG_ENTRIES: i64 = 300;
 
 #[derive(Clone)]
 pub struct Database {
@@ -223,27 +224,18 @@ impl Database {
             ",
         )?;
 
-        let rows = statement.query_map(params![limit as i64], |row| {
-            Ok(FileTransferRecord {
-                file_id: row.get(0)?,
-                device_id: row.get(1)?,
-                direction: row.get(2)?,
-                file_name: row.get(3)?,
-                file_size: row.get(4)?,
-                transferred_bytes: row.get(5)?,
-                total_chunks: row.get(6)?,
-                status: row.get(7)?,
-                checksum: row.get(8)?,
-                route: row.get(9)?,
-                temp_path: row.get(10)?,
-                final_path: row.get(11)?,
-                error: row.get(12)?,
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
-            })
-        })?;
+        let rows = statement.query_map(params![limit as i64], map_file_transfer_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn clear_transfers(&self) -> AppResult<()> {
+        let connection = self.open()?;
+        connection.execute(
+            "DELETE FROM file_transfers WHERE status NOT IN ('pending', 'offered', 'sending', 'receiving')",
+            [],
+        )?;
+        Ok(())
     }
 
     pub fn load_transfer(&self, file_id: &str) -> AppResult<Option<FileTransferRecord>> {
@@ -271,25 +263,7 @@ impl Database {
                 WHERE file_id = ?1
                 ",
                 params![file_id],
-                |row| {
-                    Ok(FileTransferRecord {
-                        file_id: row.get(0)?,
-                        device_id: row.get(1)?,
-                        direction: row.get(2)?,
-                        file_name: row.get(3)?,
-                        file_size: row.get(4)?,
-                        transferred_bytes: row.get(5)?,
-                        total_chunks: row.get(6)?,
-                        status: row.get(7)?,
-                        checksum: row.get(8)?,
-                        route: row.get(9)?,
-                        temp_path: row.get(10)?,
-                        final_path: row.get(11)?,
-                        error: row.get(12)?,
-                        created_at: row.get(13)?,
-                        updated_at: row.get(14)?,
-                    })
-                },
+                map_file_transfer_row,
             )
             .optional()
             .map_err(Into::into)
@@ -404,10 +378,10 @@ impl Database {
             WHERE id NOT IN (
                 SELECT id FROM app_logs
                 ORDER BY created_at DESC
-                LIMIT 300
+                LIMIT ?1
             )
             ",
-            [],
+            params![MAX_LOG_ENTRIES],
         )?;
         Ok(())
     }
@@ -438,25 +412,7 @@ impl Database {
             ",
         )?;
 
-        let rows = statement.query_map([], |row| {
-            Ok(FileTransferRecord {
-                file_id: row.get(0)?,
-                device_id: row.get(1)?,
-                direction: row.get(2)?,
-                file_name: row.get(3)?,
-                file_size: row.get(4)?,
-                transferred_bytes: row.get(5)?,
-                total_chunks: row.get(6)?,
-                status: row.get(7)?,
-                checksum: row.get(8)?,
-                route: row.get(9)?,
-                temp_path: row.get(10)?,
-                final_path: row.get(11)?,
-                error: row.get(12)?,
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
-            })
-        })?;
+        let rows = statement.query_map([], map_file_transfer_row)?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -507,6 +463,26 @@ impl Database {
         connection.execute("DELETE FROM kv_store WHERE key = ?1", params![key])?;
         Ok(())
     }
+}
+
+fn map_file_transfer_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileTransferRecord> {
+    Ok(FileTransferRecord {
+        file_id: row.get(0)?,
+        device_id: row.get(1)?,
+        direction: row.get(2)?,
+        file_name: row.get(3)?,
+        file_size: row.get(4)?,
+        transferred_bytes: row.get(5)?,
+        total_chunks: row.get(6)?,
+        status: row.get(7)?,
+        checksum: row.get(8)?,
+        route: row.get(9)?,
+        temp_path: row.get(10)?,
+        final_path: row.get(11)?,
+        error: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
 }
 
 #[cfg(test)]

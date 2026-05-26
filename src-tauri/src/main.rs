@@ -1,6 +1,9 @@
+mod api;
+mod auth;
 mod commands;
 mod crypto;
 mod device_cache;
+mod device_presence;
 mod error;
 mod models;
 mod network;
@@ -11,9 +14,10 @@ mod shell;
 mod service;
 mod state;
 mod store;
+mod sync;
 
 use commands::{
-    bootstrap_app, cancel_transfer, delete_device, get_settings, list_devices, login, logout,
+    bootstrap_app, cancel_transfer, clear_transfers, delete_device, get_settings, list_devices, login, logout,
     pick_download_directory, pick_files, register_account, rotate_device_key, send_files,
     send_text, update_device_name, update_settings,
 };
@@ -24,13 +28,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let state = AppState::initialize(&app.handle())?;
+            let state = AppState::initialize(app.handle())?;
             let settings = state.database.load_settings()?.unwrap_or_else(|| {
                 panic!("application settings should exist after initialization")
             });
             app.manage(state);
             shell::apply_auto_start(settings.auto_start)?;
-            let shell_state = shell::initialize(&app.handle(), &settings)?;
+            let shell_state = shell::initialize(app.handle(), &settings)?;
             app.manage(shell_state);
             Ok(())
         })
@@ -65,7 +69,8 @@ fn main() {
             send_text,
             pick_files,
             send_files,
-            cancel_transfer
+            cancel_transfer,
+            clear_transfers
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

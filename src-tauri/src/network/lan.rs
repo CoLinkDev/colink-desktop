@@ -36,6 +36,7 @@ use crate::{
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
+    sync::MutexExt,
 };
 
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
@@ -135,7 +136,7 @@ impl LanManager {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let generation = {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -150,14 +151,16 @@ impl LanManager {
         };
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager.run(generation, context, cancel_rx, command_rx).await;
+            manager
+                .run(generation, context, cancel_rx, command_rx)
+                .await;
         });
         Ok(())
     }
 
     pub fn stop(&self) {
         let (peers, transfer_senders) = {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -175,28 +178,17 @@ impl LanManager {
     }
 
     pub fn has_peer(&self, device_id: &str) -> bool {
-        self.inner
-            .lock()
-            .expect("lan manager poisoned")
-            .peers
-            .contains_key(device_id)
+        self.inner.lock_unpoisoned().peers.contains_key(device_id)
     }
 
     pub fn peer_ids(&self) -> HashSet<String> {
-        self.inner
-            .lock()
-            .expect("lan manager poisoned")
-            .peers
-            .keys()
-            .cloned()
-            .collect()
+        self.inner.lock_unpoisoned().peers.keys().cloned().collect()
     }
 
     pub fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<()> {
         let sender = self
             .inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .peers
             .get(device_id)
             .cloned()
@@ -208,8 +200,7 @@ impl LanManager {
 
     pub fn peer_endpoint(&self, device_id: &str) -> Option<(String, u16)> {
         self.inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .peer_endpoints
             .get(device_id)
             .cloned()
@@ -217,15 +208,14 @@ impl LanManager {
 
     pub fn register_transfer_token(&self, session_id: &str, token: &str) {
         self.inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .transfer_tokens
             .insert(session_id.to_string(), token.to_string());
     }
 
     pub fn unregister_transfer(&self, session_id: &str) {
         let sender = {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             inner.transfer_tokens.remove(session_id);
             inner.transfer_senders.remove(session_id)
         };
@@ -235,8 +225,7 @@ impl LanManager {
     pub fn send_transfer_frame(&self, session_id: &str, frame: FileDataFrame) -> AppResult<()> {
         let sender = self
             .inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .transfer_senders
             .get(session_id)
             .cloned()
@@ -457,7 +446,10 @@ impl LanManager {
         if !should_initiate(&context.device.device_id, &device_id) {
             return;
         }
-        if self.has_peer(&device_id) || self.is_blocked(&device_id) || self.is_reconnecting(&device_id) {
+        if self.has_peer(&device_id)
+            || self.is_blocked(&device_id)
+            || self.is_reconnecting(&device_id)
+        {
             return;
         }
 
@@ -496,6 +488,7 @@ impl LanManager {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     async fn handle_inbound(
         &self,
         generation: u64,
@@ -512,8 +505,7 @@ impl LanManager {
                     .resolve_inbound_route(request)
                 {
                     Ok(next_route) => {
-                        *route_for_callback.lock().expect("inbound route poisoned") =
-                            Some(next_route);
+                        *route_for_callback.lock_unpoisoned() = Some(next_route);
                         Ok(response)
                     }
                     Err(response) => Err(response),
@@ -521,11 +513,7 @@ impl LanManager {
             )
             .await
             .map_err(|error| AppError::message(error.to_string()))?;
-        let route = route
-            .lock()
-            .expect("inbound route poisoned")
-            .take()
-            .unwrap_or(InboundRoute::Peer);
+        let route = route.lock_unpoisoned().take().unwrap_or(InboundRoute::Peer);
         match route {
             InboundRoute::Peer => {
                 let (stream, peer_device_id) =
@@ -554,7 +542,7 @@ impl LanManager {
     {
         let now = unix_now_millis();
         {
-            let inner = self.inner.lock().expect("lan manager poisoned");
+            let inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
                 return Ok(());
             }
@@ -567,7 +555,7 @@ impl LanManager {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<BusinessEnvelope>();
         {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             inner.peers.insert(peer_device_id.clone(), tx);
         }
         let _ = self.event_tx.send(RuntimeEvent::LanConnected {
@@ -648,7 +636,7 @@ impl LanManager {
     {
         let (tx, mut rx) = mpsc::unbounded_channel::<FileDataFrame>();
         {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             inner.transfer_senders.insert(session_id.clone(), tx);
         }
 
@@ -704,7 +692,7 @@ impl LanManager {
 
     fn detach_peer(&self, generation: u64, device_id: &str) {
         let should_emit = {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
                 return;
             }
@@ -724,8 +712,7 @@ impl LanManager {
     fn detach_transfer(&self, session_id: &str) {
         let should_emit = self
             .inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .transfer_senders
             .remove(session_id)
             .is_some();
@@ -738,7 +725,7 @@ impl LanManager {
 
     fn clear_peers_for_generation(&self, generation: u64) {
         let peer_ids = {
-            let mut inner = self.inner.lock().expect("lan manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
                 return;
             }
@@ -754,8 +741,7 @@ impl LanManager {
     fn is_blocked(&self, device_id: &str) -> bool {
         let now = unix_now_millis();
         self.inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .blocked_until
             .get(device_id)
             .map(|until| *until > now)
@@ -763,20 +749,15 @@ impl LanManager {
     }
 
     fn block_device(&self, device_id: &str) {
-        self.inner
-            .lock()
-            .expect("lan manager poisoned")
-            .blocked_until
-            .insert(
-                device_id.to_string(),
-                unix_now_millis() + FAILURE_COOLDOWN_MILLIS,
-            );
+        self.inner.lock_unpoisoned().blocked_until.insert(
+            device_id.to_string(),
+            unix_now_millis() + FAILURE_COOLDOWN_MILLIS,
+        );
     }
 
     fn remember_peer_endpoint(&self, device_id: &str, ip: IpAddr, port: u16) {
         self.inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .peer_endpoints
             .insert(device_id.to_string(), (ip.to_string(), port));
     }
@@ -794,15 +775,16 @@ impl LanManager {
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager
-                .reconnect_peer(generation, context, device_id)
-                .await;
+            manager.reconnect_peer(generation, context, device_id).await;
         });
     }
 
     async fn reconnect_peer(&self, generation: u64, context: LanContext, device_id: String) {
         for attempt in 0..RECONNECT_MAX_ATTEMPTS {
-            if !self.is_generation_current(generation) || self.has_peer(&device_id) || self.is_blocked(&device_id) {
+            if !self.is_generation_current(generation)
+                || self.has_peer(&device_id)
+                || self.is_blocked(&device_id)
+            {
                 self.finish_reconnect(&device_id);
                 return;
             }
@@ -848,10 +830,7 @@ impl LanManager {
         self.send_command(LanCommand::RestartBrowse { generation });
     }
 
-    fn restart_browse(
-        &self,
-        mdns: &ServiceDaemon,
-    ) -> Option<mdns_sd::Receiver<ServiceEvent>> {
+    fn restart_browse(&self, mdns: &ServiceDaemon) -> Option<mdns_sd::Receiver<ServiceEvent>> {
         if let Err(error) = mdns.stop_browse(SERVICE_TYPE) {
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
@@ -874,27 +853,18 @@ impl LanManager {
     }
 
     fn is_generation_current(&self, generation: u64) -> bool {
-        self.inner
-            .lock()
-            .expect("lan manager poisoned")
-            .generation
-            == generation
+        self.inner.lock_unpoisoned().generation == generation
     }
 
     fn send_command(&self, command: LanCommand) {
-        let sender = self
-            .inner
-            .lock()
-            .expect("lan manager poisoned")
-            .command_tx
-            .clone();
+        let sender = self.inner.lock_unpoisoned().command_tx.clone();
         if let Some(sender) = sender {
             let _ = sender.send(command);
         }
     }
 
     fn begin_reconnect(&self, generation: u64, device_id: &str) -> bool {
-        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation != generation
             || inner.reconnecting.contains(device_id)
             || !inner.peer_endpoints.contains_key(device_id)
@@ -906,23 +876,18 @@ impl LanManager {
     }
 
     fn finish_reconnect(&self, device_id: &str) {
-        self.inner
-            .lock()
-            .expect("lan manager poisoned")
-            .reconnecting
-            .remove(device_id);
+        self.inner.lock_unpoisoned().reconnecting.remove(device_id);
     }
 
     fn is_reconnecting(&self, device_id: &str) -> bool {
         self.inner
-            .lock()
-            .expect("lan manager poisoned")
+            .lock_unpoisoned()
             .reconnecting
             .contains(device_id)
     }
 
     fn finalize_generation(&self, generation: u64) {
-        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation != generation {
             return;
         }
@@ -930,6 +895,7 @@ impl LanManager {
         inner.reconnecting.clear();
     }
 
+    #[allow(clippy::result_large_err)]
     fn resolve_inbound_route(&self, request: &Request) -> Result<InboundRoute, ErrorResponse> {
         let path = request.uri().path();
         if path == "/peer" || path == "/" {
@@ -967,7 +933,7 @@ impl LanManager {
     }
 
     fn consume_transfer_token(&self, session_id: &str, token: &str) -> bool {
-        let mut inner = self.inner.lock().expect("lan manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         match inner.transfer_tokens.get(session_id) {
             Some(expected) if expected == token => {
                 inner.transfer_tokens.remove(session_id);

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path};
 
 use tauri::{AppHandle, Manager};
 
@@ -41,7 +41,7 @@ impl AppState {
     }
 }
 
-fn resolve_download_path(app_dir: &PathBuf) -> AppResult<String> {
+fn resolve_download_path(app_dir: &Path) -> AppResult<String> {
     let path = dirs::download_dir().unwrap_or_else(|| app_dir.join("downloads"));
 
     if !path.exists() {

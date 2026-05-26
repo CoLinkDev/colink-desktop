@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use reqwest::RequestBuilder;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
 use url::Url;
 
 use crate::error::{AppError, AppResult};
@@ -20,9 +19,8 @@ struct ApiEnvelope<T> {
 }
 
 #[derive(Debug, Deserialize)]
-struct ApiOptionalEnvelope<T> {
+struct ApiStatusEnvelope {
     code: i32,
-    _data: Option<T>,
     message: String,
 }
 
@@ -89,14 +87,7 @@ impl HttpClient {
             )
             .json(body);
 
-        let (_, payload) = self.send_raw(request).await?;
-        let envelope: ApiOptionalEnvelope<Value> = serde_json::from_str(&payload)?;
-
-        if envelope.code != 0 {
-            return Err(AppError::message(envelope.message));
-        }
-
-        Ok(())
+        self.send_empty(request).await
     }
 
     pub async fn put_empty<Req>(
@@ -116,14 +107,7 @@ impl HttpClient {
             )
             .json(body);
 
-        let (_, payload) = self.send_raw(request).await?;
-        let envelope: ApiOptionalEnvelope<Value> = serde_json::from_str(&payload)?;
-
-        if envelope.code != 0 {
-            return Err(AppError::message(envelope.message));
-        }
-
-        Ok(())
+        self.send_empty(request).await
     }
 
     pub async fn delete_empty(
@@ -137,14 +121,7 @@ impl HttpClient {
             access_token,
         );
 
-        let (_, payload) = self.send_raw(request).await?;
-        let envelope: ApiOptionalEnvelope<Value> = serde_json::from_str(&payload)?;
-
-        if envelope.code != 0 {
-            return Err(AppError::message(envelope.message));
-        }
-
-        Ok(())
+        self.send_empty(request).await
     }
 
     fn authorized(&self, request: RequestBuilder, access_token: Option<&str>) -> RequestBuilder {
@@ -177,6 +154,23 @@ impl HttpClient {
         }
 
         Ok(envelope.data)
+    }
+
+    async fn send_empty(&self, request: RequestBuilder) -> AppResult<()> {
+        let (status, payload) = self.send_raw(request).await?;
+        let envelope: ApiStatusEnvelope = serde_json::from_str(&payload)?;
+
+        if envelope.code != 0 {
+            return Err(AppError::message(envelope.message));
+        }
+
+        if !status.is_success() {
+            return Err(AppError::message(format!(
+                "request failed with status {status}"
+            )));
+        }
+
+        Ok(())
     }
 
     async fn send_raw(&self, request: RequestBuilder) -> AppResult<(reqwest::StatusCode, String)> {

@@ -15,11 +15,11 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    device_cache::reconcile_devices,
+    api::{DeviceListResponse, DEVICES_PATH},
+    auth,
     error::{AppError, AppResult},
-    models::{unix_now, AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
+    models::{AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
-    network::lan::LanManager,
     protocol::{
         AnnouncePayload, BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope,
         DeviceOnlinePayload,
@@ -27,13 +27,11 @@ use crate::{
     runtime_events::RuntimeEvent,
     shell,
     store::db::Database,
+    sync::MutexExt,
 };
 
-const AUTH_REFRESH_PATH: &str = "/api/v1/auth/refresh";
-const DEVICES_PATH: &str = "/api/v1/devices";
 const WS_TICKET_PATH: &str = "/api/v1/ws/ticket";
 const WS_CONNECT_PATH: &str = "/ws/v1";
-const ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
 pub const AUTH_INVALIDATED_EVENT: &str = "auth-invalidated";
 pub const CLOUD_STATUS_EVENT: &str = "cloud-status";
@@ -44,7 +42,6 @@ pub struct CloudConnectionManager {
     app: AppHandle,
     database: Database,
     http: HttpClient,
-    lan: LanManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     inner: Arc<Mutex<ManagerState>>,
 }
@@ -64,7 +61,7 @@ struct ConnectionContext {
 }
 
 enum ContextLoad {
-    Ready(ConnectionContext),
+    Ready(Box<ConnectionContext>),
     NoSession,
     Invalidated(String),
     Retryable(String),
@@ -86,19 +83,6 @@ enum CloudCommand {
     Announce(AnnouncePayload),
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshResponse {
-    token: String,
-    refresh_token: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshRequest<'a> {
-    refresh_token: &'a str,
-}
-
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TicketRequest<'a> {
@@ -111,25 +95,17 @@ struct TicketResponse {
     ticket: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceListResponse {
-    devices: Vec<DeviceInfo>,
-}
-
 impl CloudConnectionManager {
     pub fn new(
         app: AppHandle,
         database: Database,
         http: HttpClient,
-        lan: LanManager,
         event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) -> Self {
         Self {
             app,
             database,
             http,
-            lan,
             event_tx,
             inner: Arc::new(Mutex::new(ManagerState {
                 generation: 0,
@@ -141,17 +117,13 @@ impl CloudConnectionManager {
     }
 
     pub fn snapshot(&self) -> CloudStatus {
-        self.inner
-            .lock()
-            .expect("cloud manager poisoned")
-            .status
-            .clone()
+        self.inner.lock_unpoisoned().status.clone()
     }
 
     pub fn start(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let generation = {
-            let mut inner = self.inner.lock().expect("cloud manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -176,7 +148,7 @@ impl CloudConnectionManager {
 
     pub fn stop(&self) {
         {
-            let mut inner = self.inner.lock().expect("cloud manager poisoned");
+            let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
@@ -186,9 +158,9 @@ impl CloudConnectionManager {
         }
 
         self.emit_status(CloudStatus::disconnected());
-        let _ = self
-            .event_tx
-            .send(RuntimeEvent::CloudDisconnected(Some("云端连接已停止".to_string())));
+        let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(
+            "云端连接已停止".to_string(),
+        )));
     }
 
     pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
@@ -211,7 +183,7 @@ impl CloudConnectionManager {
             }
 
             let context = match self.load_context().await {
-                ContextLoad::Ready(context) => context,
+                ContextLoad::Ready(context) => *context,
                 ContextLoad::NoSession => {
                     let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
                     self.clear_command_sender(generation);
@@ -277,7 +249,9 @@ impl CloudConnectionManager {
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
-                    let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(message)));
+                    let _ = self
+                        .event_tx
+                        .send(RuntimeEvent::CloudDisconnected(Some(message)));
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -299,9 +273,16 @@ impl CloudConnectionManager {
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
-        let session = match self.refresh_session_if_needed(&settings, session).await {
+        let session = match auth::refresh_session_if_needed(
+            &self.database,
+            &self.http,
+            &settings,
+            session,
+        )
+        .await
+        {
             Ok(session) => session,
-            Err(error) => return ContextLoad::Invalidated(error),
+            Err(error) => return ContextLoad::Invalidated(error.to_string()),
         };
 
         let device = match self.database.load_device_identity() {
@@ -314,44 +295,11 @@ impl CloudConnectionManager {
             return ContextLoad::Retryable("当前设备和账户状态不一致".to_string());
         }
 
-        ContextLoad::Ready(ConnectionContext {
+        ContextLoad::Ready(Box::new(ConnectionContext {
             settings,
             session,
             device,
-        })
-    }
-
-    async fn refresh_session_if_needed(
-        &self,
-        settings: &AppSettings,
-        session: SessionRecord,
-    ) -> Result<SessionRecord, String> {
-        if !session.is_expiring_soon() {
-            return Ok(session);
-        }
-
-        let request = RefreshRequest {
-            refresh_token: &session.refresh_token,
-        };
-
-        let response: RefreshResponse = self
-            .http
-            .post(&settings.server_url, AUTH_REFRESH_PATH, &request, None)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let refreshed = SessionRecord {
-            user_id: session.user_id,
-            access_token: response.token,
-            refresh_token: response.refresh_token,
-            access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
-        };
-
-        self.database
-            .save_session(&refreshed)
-            .map_err(|error| error.to_string())?;
-
-        Ok(refreshed)
+        }))
     }
 
     async fn connect_once(
@@ -498,7 +446,6 @@ impl CloudConnectionManager {
                     .payload
                     .and_then(|value| serde_json::from_value::<DeviceOnlinePayload>(value).ok());
                 if let Some(device_id) = message.from {
-                    self.update_device_presence(&device_id, true, payload.clone()).await;
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
                         online: true,
@@ -508,7 +455,6 @@ impl CloudConnectionManager {
             }
             "device.offline" => {
                 if let Some(device_id) = message.from {
-                    self.update_device_presence(&device_id, false, None).await;
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
                         online: false,
@@ -545,56 +491,16 @@ impl CloudConnectionManager {
             )
             .await?;
 
-        let devices = self.replace_cached_devices(response.devices)?;
-        self.emit_devices(devices);
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::DevicesSnapshot(response.devices));
         Ok(())
-    }
-
-    async fn update_device_presence(
-        &self,
-        device_id: &str,
-        online: bool,
-        payload: Option<DeviceOnlinePayload>,
-    ) {
-        let Ok(mut devices) = self.database.load_cached_devices() else {
-            return;
-        };
-        let previous = devices.clone();
-
-        let Some(device) = devices.iter_mut().find(|item| item.device_id == device_id) else {
-            return;
-        };
-
-        device.online = online;
-
-        if let Some(payload) = payload {
-            device.name = payload.name;
-            device.device_type = payload.device_type;
-            device.local_ip = payload.local_ip;
-            device.local_port = payload.local_port;
-        } else if !online {
-            device.local_ip = None;
-            device.local_port = None;
-        }
-
-        let reconciled = reconcile_devices(devices, &previous, &self.lan.peer_ids());
-        if self.database.save_cached_devices(&reconciled).is_ok() {
-            self.emit_devices(reconciled);
-        }
-    }
-
-    fn replace_cached_devices(&self, devices: Vec<DeviceInfo>) -> AppResult<Vec<DeviceInfo>> {
-        let previous = self.database.load_cached_devices()?;
-        let reconciled = reconcile_devices(devices, &previous, &self.lan.peer_ids());
-        self.database.save_cached_devices(&reconciled)?;
-        Ok(reconciled)
     }
 
     fn send_command(&self, command: CloudCommand) -> AppResult<()> {
         let sender = self
             .inner
-            .lock()
-            .expect("cloud manager poisoned")
+            .lock_unpoisoned()
             .command_tx
             .clone()
             .ok_or_else(|| AppError::message("云端连接尚未建立"))?;
@@ -604,36 +510,38 @@ impl CloudConnectionManager {
             .map_err(|_| AppError::message("云端连接不可用"))
     }
 
-    fn install_command_sender(
-        &self,
-        generation: u64,
-        sender: mpsc::UnboundedSender<CloudCommand>,
-    ) {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+    fn install_command_sender(&self, generation: u64, sender: mpsc::UnboundedSender<CloudCommand>) {
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = Some(sender);
         }
     }
 
     fn clear_command_sender(&self, generation: u64) {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = None;
         }
     }
 
     fn invalidate_auth(&self, message: String, generation: u64) {
-        let _ = self.database.clear_session();
-        let _ = self.database.clear_cached_devices();
+        if let Err(error) = self.database.clear_session() {
+            eprintln!("failed to clear session during auth invalidation: {error}");
+        }
+        if let Err(error) = self.database.clear_cached_devices() {
+            eprintln!("failed to clear device cache during auth invalidation: {error}");
+        }
         let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());
         self.emit_status(CloudStatus::disconnected());
-        let _ = self.event_tx.send(RuntimeEvent::AuthInvalidated(message.clone()));
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::AuthInvalidated(message.clone()));
         let _ = self.app.emit(AUTH_INVALIDATED_EVENT, message);
     }
 
     fn update_status_if_current(&self, generation: u64, status: CloudStatus) -> bool {
-        let mut inner = self.inner.lock().expect("cloud manager poisoned");
+        let mut inner = self.inner.lock_unpoisoned();
         if inner.generation != generation {
             return false;
         }

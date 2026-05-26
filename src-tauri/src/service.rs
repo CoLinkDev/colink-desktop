@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
+    api::{DeviceListResponse, ACCESS_TOKEN_TTL_SECONDS, DEVICES_PATH},
+    auth,
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     models::{
-        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity,
-        DeviceInfo, DeviceNameUpdatePayload, LoginPayload, RegisterPayload,
-        RotateDeviceKeyPayload, SessionRecord,
+        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity, DeviceInfo,
+        DeviceNameUpdatePayload, LoginPayload, RegisterPayload, RotateDeviceKeyPayload,
+        SessionRecord,
     },
     shell,
     state::AppState,
@@ -16,10 +18,7 @@ use crate::{
 
 const AUTH_LOGIN_PATH: &str = "/api/v1/auth/login";
 const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
-const AUTH_REFRESH_PATH: &str = "/api/v1/auth/refresh";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
-const DEVICES_PATH: &str = "/api/v1/devices";
-const ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,28 +30,9 @@ struct SessionExchangeResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RefreshResponse {
-    token: String,
-    refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DeviceRegisterResponse {
     device_id: String,
     device_secret: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceListResponse {
-    devices: Vec<DeviceInfo>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshRequest<'a> {
-    refresh_token: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,9 +60,10 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let mut device_summary = stored_device.as_ref().map(DeviceIdentity::summary);
 
     if let Some(session) = stored_session {
-        match refresh_session(state, &session).await {
+        match auth::refresh_session_if_needed(&state.database, &state.http, &settings, session)
+            .await
+        {
             Ok(refreshed_session) => {
-                state.database.save_session(&refreshed_session)?;
                 let identity = ensure_device_identity(state, &refreshed_session).await?;
                 let fetched_devices = fetch_devices(state, &refreshed_session)
                     .await
@@ -181,7 +162,12 @@ pub async fn update_device_name(
     let request = serde_json::json!({ "name": payload.name });
     state
         .http
-        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
         .await?;
 
     if let Some(mut identity) = state.database.load_device_identity()? {
@@ -234,7 +220,12 @@ pub async fn rotate_device_key(
     let request = serde_json::json!({ "publicKey": generated.public_key });
     state
         .http
-        .put_empty(&settings.server_url, &path, &request, Some(&session.access_token))
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
         .await?;
 
     if let Some(mut identity) = state.database.load_device_identity()? {
@@ -329,33 +320,9 @@ async fn current_session(state: &AppState) -> AppResult<SessionRecord> {
         .database
         .load_session()?
         .ok_or_else(|| AppError::message("尚未登录"))?;
-
-    if !session.is_expiring_soon() {
-        return Ok(session);
-    }
-
-    let refreshed = refresh_session(state, &session).await?;
-    state.database.save_session(&refreshed)?;
-    Ok(refreshed)
-}
-
-async fn refresh_session(state: &AppState, session: &SessionRecord) -> AppResult<SessionRecord> {
     let settings = load_settings(state)?;
-    let request = RefreshRequest {
-        refresh_token: &session.refresh_token,
-    };
 
-    let response: RefreshResponse = state
-        .http
-        .post(&settings.server_url, AUTH_REFRESH_PATH, &request, None)
-        .await?;
-
-    Ok(SessionRecord {
-        user_id: session.user_id.clone(),
-        access_token: response.token,
-        refresh_token: response.refresh_token,
-        access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
-    })
+    auth::refresh_session_if_needed(&state.database, &state.http, &settings, session).await
 }
 
 async fn ensure_device_identity(
