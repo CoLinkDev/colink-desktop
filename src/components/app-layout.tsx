@@ -3,7 +3,7 @@ import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation, useBlocker } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
@@ -27,6 +27,13 @@ export function AppLayout({ children }: PropsWithChildren) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
+
+  const blocker = useBlocker(
+    ({ nextLocation }) =>
+      settingsDirty &&
+      location.pathname === '/settings' &&
+      nextLocation.pathname !== '/settings'
+  )
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -291,6 +298,33 @@ export function AppLayout({ children }: PropsWithChildren) {
                 variant="danger"
               >
                 {loggingOut ? t('common.logout') : t('common.confirm')}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {blocker.state === 'blocked' && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('settings.unsavedChangesTitle')}</div>
+            <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+              {t('settings.unsavedChangesDesc')}
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                onClick={() => blocker.reset()}
+                variant="secondary"
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                onClick={() => blocker.proceed()}
+                variant="danger"
+              >
+                {t('settings.leave')}
               </Button>
             </div>
           </div>

@@ -100,13 +100,12 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   function handleLanguageChange(language: string) {
     const resolved = resolveLanguage(language)
     setForm((current) => ({ ...current, language: resolved }))
-    void i18n.changeLanguage(resolved)
   }
 
   return (
     <div className="max-w-2xl animate-fade-in space-y-6">
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
-        <Section title={t('settings.network')}>
+        <Section title={t('settings.general')}>
           <Field label="Server URL" tip={t('settings.serverTip')}>
             <Input onChange={(e) => setForm((c) => ({ ...c, serverUrl: e.target.value }))} value={form.serverUrl} />
           </Field>
@@ -119,16 +118,6 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
               >{t('settings.select')}</Button>
             </div>
           </Field>
-        </Section>
-
-        <Section title={t('settings.behavior')}>
-          <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
-          <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
-          <SwitchRow label={t('settings.lanDiscovery')} checked={form.lanDiscovery} onChange={(v) => setForm((c) => ({ ...c, lanDiscovery: v }))} />
-          <SwitchRow label={t('settings.notifications')} checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
-        </Section>
-
-        <Section title={t('settings.language') + '/Language'}>
           <Field label={t('settings.language')} tip={t('settings.languageTip')}>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 max-w-xl">
               {SUPPORTED_LANGUAGES.map((lang) => (
@@ -148,6 +137,13 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
               ))}
             </div>
           </Field>
+        </Section>
+
+        <Section title={t('settings.behavior')}>
+          <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
+          <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
+          <SwitchRow label={t('settings.lanDiscovery')} checked={form.lanDiscovery} onChange={(v) => setForm((c) => ({ ...c, lanDiscovery: v }))} />
+          <SwitchRow label={t('settings.notifications')} checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
         </Section>
       </form>
 
