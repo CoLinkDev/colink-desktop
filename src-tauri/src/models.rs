@@ -114,12 +114,16 @@ pub struct DeviceInfo {
     #[serde(rename = "type")]
     pub device_type: String,
     pub online: bool,
+    #[serde(default)]
+    pub cloud_available: bool,
     pub last_seen: Option<String>,
     pub public_key: String,
     #[serde(default)]
     pub lan_available: bool,
     #[serde(default)]
     pub active_route: Option<String>,
+    #[serde(default)]
+    pub device_sources: Vec<String>,
     #[serde(default = "default_security_state")]
     pub security_state: String,
 }

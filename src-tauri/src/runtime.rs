@@ -226,12 +226,17 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub fn replace_cached_devices(&self, devices: Vec<DeviceInfo>) -> AppResult<Vec<DeviceInfo>> {
+    pub fn replace_cached_devices(
+        &self,
+        devices: Vec<DeviceInfo>,
+        cloud_snapshot: bool,
+    ) -> AppResult<Vec<DeviceInfo>> {
         device_presence::replace_all(
             &self.inner.database,
             &self.inner.app,
             &self.inner.lan.peer_ids(),
             devices,
+            cloud_snapshot,
         )
     }
 
@@ -251,8 +256,7 @@ impl AppRuntime {
 
     pub fn forget_lan_trust(&self, device_id: &str) -> AppResult<Vec<DeviceInfo>> {
         self.inner.lan.forget_trust(device_id)?;
-        self.reconcile_device_routes()?;
-        self.inner.database.load_cached_devices()
+        self.reconcile_device_routes()
     }
 
     fn spawn_event_loop(&self, mut event_rx: mpsc::UnboundedReceiver<RuntimeEvent>) {
@@ -330,7 +334,7 @@ impl AppRuntime {
             }
             RuntimeEvent::DevicesSnapshot(devices) => {
                 debug!(count = devices.len(), "runtime received devices snapshot");
-                let _ = self.replace_cached_devices(devices);
+                let _ = self.replace_cached_devices(devices, true);
             }
             RuntimeEvent::ClipboardChanged(payload) => {
                 debug!(content_type = %payload.content_type, "runtime received clipboard change");
@@ -700,12 +704,12 @@ impl AppRuntime {
         Err(AppError::message("设备未连接"))
     }
 
-    fn reconcile_device_routes(&self) -> AppResult<()> {
-        device_presence::reconcile_routes(
+    pub fn reconcile_device_routes(&self) -> AppResult<Vec<DeviceInfo>> {
+        let devices = device_presence::reconcile_routes(
             &self.inner.database,
             &self.inner.app,
             &self.inner.lan.peer_ids(),
         )?;
-        Ok(())
+        Ok(devices)
     }
 }

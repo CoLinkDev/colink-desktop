@@ -1390,6 +1390,10 @@ impl LanManager {
     }
 
     fn update_pairing_candidate(&self, device_id: &str, state: MemberState) {
+        if state != MemberState::Alive {
+            self.remove_pairing_candidate(device_id);
+            return;
+        }
         if self.is_trusted(device_id) {
             self.remove_pairing_candidate(device_id);
             return;

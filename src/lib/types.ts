@@ -24,10 +24,12 @@ export interface DeviceInfo {
   name: string
   type: DevicePlatform
   online: boolean
+  cloudAvailable: boolean
   lastSeen: string | null
   publicKey: string
   lanAvailable: boolean
   activeRoute: string | null
+  deviceSources: string[]
   securityState: string
 }
 

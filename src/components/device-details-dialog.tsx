@@ -35,9 +35,10 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
   const rows: DetailRowData[] = [
     { label: t('devices.detailsFields.name'), value: device.name },
     { label: t('devices.deviceId'), value: device.deviceId, mono: true },
-    { label: t('devices.detailsFields.platform'), value: formatPlatformName(device.type) },
+    { label: t('devices.detailsFields.platform'), value: formatPlatformName(device.type, t) },
     { label: t('devices.detailsFields.fetchSource'), value: describeSources(device, isLocalDevice, t) },
-    { label: t('devices.detailsFields.online'), value: formatBoolean(device.online, t) },
+    { label: t('devices.detailsFields.localReachable'), value: formatBoolean(isLocalDevice, t) },
+    { label: t('devices.detailsFields.cloudAvailable'), value: formatBoolean(device.cloudAvailable, t) },
     { label: t('devices.detailsFields.lanAvailable'), value: formatBoolean(device.lanAvailable, t) },
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
     { label: t('devices.detailsFields.securityState'), value: formatSecurityState(device.securityState, t) },
@@ -123,17 +124,20 @@ function DetailRow({ row }: { row: DetailRowData }) {
 
 function describeSources(device: DeviceInfo, isLocalDevice: boolean, t: (key: string) => string) {
   const sources = new Set<string>()
+  const deviceSources = device.deviceSources ?? []
 
-  if (isLocalDevice) {
+  if (isLocalDevice || deviceSources.includes('local')) {
     sources.add(t('devices.detailsSources.localIdentity'))
   }
-  if (device.type === 'unknown') {
-    sources.add(t('devices.detailsSources.lanTrustStore'))
-  } else {
+  if (deviceSources.includes('cloud')) {
     sources.add(t('devices.detailsSources.serverDeviceList'))
   }
-  if (device.lanAvailable || device.activeRoute === 'lan') {
-    sources.add(t('devices.detailsSources.lanSwimWebSocket'))
+  if (deviceSources.includes('lan_trust')) {
+    sources.add(t('devices.detailsSources.lanTrustStore'))
+  }
+
+  if (sources.size === 0) {
+    sources.add(t('devices.detailsSources.serverDeviceList'))
   }
 
   return Array.from(sources).join(', ')

@@ -50,14 +50,18 @@ export function formatBytes(value: number) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-export function formatPlatformName(platform: string) {
+export function formatPlatformName(platform: string, t?: (key: string) => string) {
+  const normalized = platform.toLowerCase()
+  if (normalized === 'unknown') {
+    return t ? t('devices.platforms.unknown') : 'Unknown'
+  }
+
   const mapping: Record<string, string> = {
     windows: 'Windows',
     macos: 'macOS',
     linux: 'Linux',
     android: 'Android',
     ios: 'iOS',
-    unknown: 'LAN Device',
   }
-  return mapping[platform.toLowerCase()] ?? platform
+  return mapping[normalized] ?? platform
 }

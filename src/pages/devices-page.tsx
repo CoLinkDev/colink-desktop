@@ -22,6 +22,7 @@ export function DevicesPage() {
   const [actingId, setActingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rotateConfirmId, setRotateConfirmId] = useState<string | null>(null)
+  const [forgetConfirmId, setForgetConfirmId] = useState<string | null>(null)
   const [detailsDevice, setDetailsDevice] = useState<DeviceInfo | null>(null)
   const [candidates, setCandidates] = useState<LanPairingCandidate[]>([])
 
@@ -84,10 +85,18 @@ export function DevicesPage() {
   }
 
   async function handleForgetTrust(deviceId: string) {
-    setActingId(deviceId)
+    setForgetConfirmId(deviceId)
+    setError(null)
+  }
+
+  async function handleConfirmForgetTrust() {
+    if (!forgetConfirmId) return
+
+    setActingId(forgetConfirmId)
     try {
-      await forgetLanTrust(deviceId)
+      await forgetLanTrust(forgetConfirmId)
       await refreshDevices()
+      setForgetConfirmId(null)
     } catch (requestError) {
       toast.error(readErrorMessage(requestError))
     } finally {
@@ -96,6 +105,7 @@ export function DevicesPage() {
   }
 
   const rotatingDevice = devices.find((d) => d.deviceId === rotateConfirmId)
+  const forgetDevice = devices.find((d) => d.deviceId === forgetConfirmId)
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -198,6 +208,38 @@ export function DevicesPage() {
                 disabled={!!actingId}
               >
                 {actingId ? t('devices.rotating') : t('devices.rotateConfirmBtn')}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {forgetConfirmId && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.forgetConfirmTitle')}</div>
+            <p className="mt-2 text-[13px] text-[hsl(var(--text-secondary))] leading-relaxed">
+              {t('devices.forgetConfirmDesc', { name: forgetDevice?.name || t('messages.notSelected') })}
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setForgetConfirmId(null)
+                  setError(null)
+                }}
+                disabled={!!actingId}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleConfirmForgetTrust}
+                disabled={!!actingId}
+              >
+                {actingId ? t('common.loading') : t('devices.forgetConfirmBtn')}
               </Button>
             </div>
           </div>

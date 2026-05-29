@@ -3,8 +3,12 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    device_cache::reconcile_devices, error::AppResult, models::DeviceInfo,
-    network::cloud::DEVICES_UPDATED_EVENT, protocol::DeviceOnlinePayload, shell,
+    device_cache::{mark_cloud_sources, reconcile_devices},
+    error::AppResult,
+    models::DeviceInfo,
+    network::cloud::DEVICES_UPDATED_EVENT,
+    protocol::DeviceOnlinePayload,
+    shell,
     store::db::Database,
 };
 
@@ -13,8 +17,13 @@ pub fn replace_all(
     app: &AppHandle,
     lan_peers: &HashSet<String>,
     devices: Vec<DeviceInfo>,
+    cloud_snapshot: bool,
 ) -> AppResult<Vec<DeviceInfo>> {
     let previous = database.load_cached_devices()?;
+    let mut devices = devices;
+    if cloud_snapshot {
+        mark_cloud_sources(&mut devices);
+    }
     let local_device_id = database
         .load_device_identity()?
         .map(|identity| identity.device_id);
@@ -45,7 +54,7 @@ pub fn update_one(
         return Ok(None);
     };
 
-    device.online = online;
+    device.cloud_available = online;
     if let Some(payload) = payload {
         device.name = payload.name;
         device.device_type = payload.device_type;

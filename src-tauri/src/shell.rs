@@ -176,7 +176,7 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
         .load_cached_devices()
         .unwrap_or_default()
         .into_iter()
-        .filter(|item| item.online || item.lan_available)
+        .filter(|item| item.online)
         .collect::<Vec<_>>();
     let online_submenu = build_online_devices_submenu(app, &online_devices)?;
 
@@ -229,7 +229,11 @@ fn main_window(app: &AppHandle) -> AppResult<WebviewWindow<tauri::Wry>> {
 
 fn tray_tooltip(cloud: &CloudStatus, devices: &[DeviceInfo]) -> String {
     let online = devices.iter().filter(|item| item.online).count();
-    format!("CoLink Desktop\n云端: {}\n在线设备: {online}", cloud.state)
+    let lan = devices.iter().filter(|item| item.lan_available).count();
+    format!(
+        "CoLink Desktop\n云端: {}\n可达设备: {online}\n局域网: {lan}",
+        cloud.state
+    )
 }
 
 fn build_tray_icon(state: &str) -> Image<'static> {

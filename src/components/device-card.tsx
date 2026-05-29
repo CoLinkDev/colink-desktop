@@ -1,10 +1,10 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, Key, Trash2, Info } from 'lucide-react'
+import { Cloud, Computer, Laptop, Monitor, Network, Smartphone, Tablet, WifiOff, Key, Trash2, Info } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
-import { formatLastSeen, formatPlatformName } from '../lib/utils'
+import { cn, formatLastSeen, formatPlatformName } from '../lib/utils'
 
 const iconByType: Record<DevicePlatform, LucideIcon> = {
   windows: Monitor,
@@ -34,7 +34,7 @@ export function DeviceCard({
 }: DeviceCardProps) {
   const { t } = useTranslation()
   const Icon = iconByType[device.type]
-  const status = getDeviceStatus(device, isLocalDevice, t)
+  const statuses = getDeviceStatuses(device, isLocalDevice, t)
 
   return (
     <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--text)/0.2)]">
@@ -46,19 +46,23 @@ export function DeviceCard({
 
           <div>
             <div className="text-[14px] font-medium leading-tight">{device.name}</div>
-            <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">{formatPlatformName(device.type)}</div>
+            <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">{formatPlatformName(device.type, t)}</div>
           </div>
         </div>
 
-        <div
-          className={
-            status.online
-              ? 'flex items-center gap-1.5 text-[12px] text-[hsl(var(--success))]'
-              : 'flex items-center gap-1.5 text-[12px] text-[hsl(var(--muted))]'
-          }
-        >
-          <status.Icon className="h-3.5 w-3.5" />
-          {status.label}
+        <div className="flex max-w-[45%] flex-wrap justify-end gap-2">
+          {statuses.map((status) => (
+            <div
+              className={cn(
+                'flex items-center gap-1.5 text-[12px]',
+                status.active ? 'text-[hsl(var(--success))]' : 'text-[hsl(var(--muted))]',
+              )}
+              key={status.label}
+            >
+              <status.Icon className="h-3.5 w-3.5" />
+              {status.label}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -118,34 +122,22 @@ export function DeviceCard({
   )
 }
 
-function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean, t: TFunction) {
+function getDeviceStatuses(device: DeviceInfo, isLocalDevice: boolean, t: TFunction) {
+  const statuses = []
+
   if (isLocalDevice) {
-    return {
-      Icon: Computer,
-      label: t('devices.localDevice'),
-      online: true,
-    }
+    statuses.push({ Icon: Computer, label: t('devices.localDevice'), active: true })
   }
 
-  if (!device.online) {
-    return {
-      Icon: WifiOff,
-      label: t('devices.offline'),
-      online: false,
-    }
+  if (device.cloudAvailable) {
+    statuses.push({ Icon: Cloud, label: t('devices.cloud'), active: true })
   }
 
   if (device.lanAvailable) {
-    return {
-      Icon: Wifi,
-      label: t('devices.lan'),
-      online: true,
-    }
+    statuses.push({ Icon: Network, label: t('devices.lan'), active: true })
   }
 
-  return {
-    Icon: Wifi,
-    label: t('devices.online'),
-    online: true,
-  }
+  return statuses.length > 0
+    ? statuses
+    : [{ Icon: WifiOff, label: t('devices.offline'), active: false }]
 }

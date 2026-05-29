@@ -68,15 +68,13 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
             Ok(refreshed_session) => {
                 match ensure_cloud_device_identity(state, &refreshed_session).await {
                     Ok(identity) => {
-                        let fetched_devices = fetch_devices(state, &refreshed_session)
-                            .await
-                            .unwrap_or_else(|error| {
+                        let fetched_devices = match fetch_devices(state, &refreshed_session).await {
+                            Ok(devices) => state.runtime.replace_cached_devices(devices, true)?,
+                            Err(error) => {
                                 warn!(%error, "failed to fetch cloud devices during bootstrap");
-                                state.database.load_cached_devices().unwrap_or_default()
-                            });
-
-                        let fetched_devices =
-                            state.runtime.replace_cached_devices(fetched_devices)?;
+                                state.runtime.reconcile_device_routes()?
+                            }
+                        };
                         state.cloud.start();
                         let _ = shell::refresh_tray(&state.app);
 
@@ -163,13 +161,13 @@ pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let Some(session) = current_session_or_clear(state).await? else {
         return publish_offline_devices(state);
     };
-    let devices = fetch_devices(state, &session)
-        .await
-        .unwrap_or_else(|error| {
+    let devices = match fetch_devices(state, &session).await {
+        Ok(devices) => state.runtime.replace_cached_devices(devices, true)?,
+        Err(error) => {
             warn!(%error, "failed to fetch cloud devices");
-            state.database.load_cached_devices().unwrap_or_default()
-        });
-    let devices = state.runtime.replace_cached_devices(devices)?;
+            state.runtime.reconcile_device_routes()?
+        }
+    };
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -214,7 +212,7 @@ pub async fn update_device_name(
         .await?;
 
     let devices = fetch_devices(state, &session).await?;
-    let devices = state.runtime.replace_cached_devices(devices)?;
+    let devices = state.runtime.replace_cached_devices(devices, true)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -238,7 +236,7 @@ pub async fn delete_device(
         .await?;
 
     let devices = fetch_devices(state, &session).await?;
-    let devices = state.runtime.replace_cached_devices(devices)?;
+    let devices = state.runtime.replace_cached_devices(devices, true)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -281,7 +279,7 @@ pub async fn rotate_device_key(
         .await?;
 
     let devices = fetch_devices(state, &session).await?;
-    let devices = state.runtime.replace_cached_devices(devices)?;
+    let devices = state.runtime.replace_cached_devices(devices, true)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
 }
@@ -348,7 +346,7 @@ async fn save_session_and_bootstrap(
     let identity = ensure_cloud_device_identity(state, &session).await?;
     state.database.save_session(&session)?;
     let devices = fetch_devices(state, &session).await?;
-    let devices = state.runtime.replace_cached_devices(devices)?;
+    let devices = state.runtime.replace_cached_devices(devices, true)?;
     state.cloud.start();
     let _ = state.runtime.activate();
     let _ = shell::refresh_tray(&state.app);
@@ -509,7 +507,7 @@ fn publish_offline_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let identity = ensure_local_device_identity(state)?;
     state
         .runtime
-        .replace_cached_devices(vec![local_device_info(&identity)])
+        .replace_cached_devices(vec![local_device_info(&identity)], false)
 }
 
 fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
@@ -518,10 +516,12 @@ fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
         name: identity.name.clone(),
         device_type: identity.device_type.clone(),
         online: true,
+        cloud_available: false,
         last_seen: None,
         public_key: identity.public_key.clone(),
         lan_available: false,
         active_route: None,
+        device_sources: vec!["local".to_string()],
         security_state: "verified".to_string(),
     }
 }
