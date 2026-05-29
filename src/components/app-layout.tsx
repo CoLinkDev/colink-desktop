@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
+import { Computer, LogIn, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
+import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
@@ -120,25 +121,23 @@ export function AppLayout({ children }: PropsWithChildren) {
         {/* Bottom area */}
         <div className="mt-auto border-t p-3 space-y-2">
           {/* Connection Status Widget */}
-          <div className="rounded-lg bg-[hsl(var(--panel-2))] border p-2.5 select-none">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-semibold text-[hsl(var(--muted))] uppercase tracking-wider">
-                {t('cloud.status')}
+          <div
+            className="rounded-lg bg-[hsl(var(--panel-2))] border px-3 py-2 select-none"
+            title={getCloudLabel(cloud.state, cloud.attempt, t)}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12px] font-medium text-[hsl(var(--muted))] truncate max-w-[140px]">
+                {session ? session.userId : t('devices.lan')}
               </span>
-              <div className="flex items-center gap-1.5">
-                <span className="relative flex h-1.5 w-1.5">
-                  {cloud.connected && (
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--success))] opacity-75" />
-                  )}
-                  <span className={cn(
-                    "relative inline-flex h-1.5 w-1.5 rounded-full transition-colors duration-300",
-                    cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--muted))]"
-                  )} />
-                </span>
-                <span className="text-[11px] font-medium text-[hsl(var(--text))]">
-                  {getCloudLabel(cloud.state, cloud.attempt, t)}
-                </span>
-              </div>
+              <span className="relative flex h-2 w-2 shrink-0">
+                {cloud.connected && (
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--success))] opacity-75" />
+                )}
+                <span className={cn(
+                  "relative inline-flex h-2 w-2 rounded-full transition-colors duration-300",
+                  cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--muted))]"
+                )} />
+              </span>
             </div>
           </div>
 
@@ -150,9 +149,9 @@ export function AppLayout({ children }: PropsWithChildren) {
               type="button"
             >
               <div className="flex h-5 w-5 shrink-0 items-center justify-center">
-                {theme === 'dark' && <Moon className="h-4 w-4 text-[hsl(var(--accent))]" />}
-                {theme === 'light' && <Sun className="h-4 w-4 text-[hsl(var(--accent))]" />}
-                {theme === 'auto' && <Laptop className="h-4 w-4 text-[hsl(var(--accent))]" />}
+                {theme === 'dark' && <Moon className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--text))] transition-colors duration-200" />}
+                {theme === 'light' && <Sun className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--text))] transition-colors duration-200" />}
+                {theme === 'auto' && <Laptop className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--text))] transition-colors duration-200" />}
               </div>
               <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
                 {t('nav.theme')}
@@ -168,11 +167,18 @@ export function AppLayout({ children }: PropsWithChildren) {
                   setShowAuthDialog(true)
                 }
               }}
-              className="group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--danger))]"
+              className={cn(
+                "group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))]",
+                session ? "hover:text-[hsl(var(--danger))]" : "hover:text-[hsl(var(--text))]"
+              )}
               type="button"
             >
               <div className="flex h-5 w-5 shrink-0 items-center justify-center">
-                <LogOut className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--danger))]" />
+                {session ? (
+                  <LogOut className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--danger))]" />
+                ) : (
+                  <LogIn className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--text))]" />
+                )}
               </div>
               <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
                 {session ? t('nav.logout') : t('auth.login')}
@@ -369,7 +375,7 @@ function ThemeOption({
 }
 
 
-function getCloudLabel(state: string, attempt: number, t: any) {
+function getCloudLabel(state: string, attempt: number, t: TFunction) {
   if (state === 'connected') {
     return t('cloud.connected')
   }
