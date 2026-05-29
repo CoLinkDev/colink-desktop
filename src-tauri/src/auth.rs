@@ -26,6 +26,7 @@ pub async fn refresh_session_if_needed(
 
     let refreshed = SessionRecord {
         user_id: session.user_id,
+        username: session.username,
         access_token: response.token,
         refresh_token: response.refresh_token,
         access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,

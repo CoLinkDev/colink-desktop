@@ -14,6 +14,7 @@ export interface AppSettings {
 
 export interface SessionSummary {
   userId: string
+  username: string
 }
 
 export interface LocalDeviceSummary {

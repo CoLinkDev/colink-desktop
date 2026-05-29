@@ -127,7 +127,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[12px] font-medium text-[hsl(var(--muted))] truncate max-w-[140px]">
-                {session ? session.userId : t('devices.lan')}
+                {session ? session.username || session.userId : t('devices.lan')}
               </span>
               <span className="relative flex h-2 w-2 shrink-0">
                 {cloud.connected && (

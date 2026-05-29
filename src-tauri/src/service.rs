@@ -22,6 +22,7 @@ use crate::{
 const AUTH_LOGIN_PATH: &str = "/api/v1/auth/login";
 const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
+const ME_PATH: &str = "/api/v1/me";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +30,13 @@ struct SessionExchangeResponse {
     user_id: String,
     token: String,
     refresh_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeResponse {
+    user_id: String,
+    username: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,32 +77,56 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
             .await
         {
             Ok(refreshed_session) => {
-                match ensure_cloud_device_identity(state, &refreshed_session).await {
-                    Ok(identity) => {
-                        let fetched_devices = match fetch_devices(state, &refreshed_session).await {
-                            Ok(devices) => state.runtime.replace_cached_devices(devices, true)?,
-                            Err(error) => {
-                                warn!(%error, "failed to fetch cloud devices during bootstrap");
-                                state.runtime.reconcile_device_routes()?
-                            }
-                        };
-                        state.cloud.start();
-                        let _ = shell::refresh_tray(&state.app);
+                let refreshed_session =
+                    match session_with_profile(state, &settings, &refreshed_session).await {
+                        Ok(session) => {
+                            state.database.save_session(&session)?;
+                            Some(session)
+                        }
+                        Err(error) if is_auth_error(&error) => {
+                            warn!(%error, "current user profile is unavailable during bootstrap");
+                            clear_auth_state(state)?;
+                            devices = publish_offline_devices(state)?;
+                            device_summary = Some(ensure_local_device_identity(state)?.summary());
+                            None
+                        }
+                        Err(error) => {
+                            warn!(%error, "failed to fetch current user profile during bootstrap");
+                            Some(refreshed_session)
+                        }
+                    };
 
-                        session_summary = Some(refreshed_session.summary());
-                        device_summary = Some(identity.summary());
-                        devices = fetched_devices;
-                    }
-                    Err(error) if is_auth_error(&error) => {
-                        warn!(%error, "cloud device identity is unavailable during bootstrap");
-                        clear_auth_state(state)?;
-                        devices = publish_offline_devices(state)?;
-                        device_summary = Some(ensure_local_device_identity(state)?.summary());
-                    }
-                    Err(error) => {
-                        warn!(%error, "cloud device identity is temporarily unavailable during bootstrap");
-                        state.cloud.start();
-                        session_summary = Some(refreshed_session.summary());
+                if let Some(refreshed_session) = refreshed_session {
+                    match ensure_cloud_device_identity(state, &refreshed_session).await {
+                        Ok(identity) => {
+                            let fetched_devices =
+                                match fetch_devices(state, &refreshed_session).await {
+                                    Ok(devices) => {
+                                        state.runtime.replace_cached_devices(devices, true)?
+                                    }
+                                    Err(error) => {
+                                        warn!(%error, "failed to fetch cloud devices during bootstrap");
+                                        state.runtime.reconcile_device_routes()?
+                                    }
+                                };
+                            state.cloud.start();
+                            let _ = shell::refresh_tray(&state.app);
+
+                            session_summary = Some(refreshed_session.summary());
+                            device_summary = Some(identity.summary());
+                            devices = fetched_devices;
+                        }
+                        Err(error) if is_auth_error(&error) => {
+                            warn!(%error, "cloud device identity is unavailable during bootstrap");
+                            clear_auth_state(state)?;
+                            devices = publish_offline_devices(state)?;
+                            device_summary = Some(ensure_local_device_identity(state)?.summary());
+                        }
+                        Err(error) => {
+                            warn!(%error, "cloud device identity is temporarily unavailable during bootstrap");
+                            state.cloud.start();
+                            session_summary = Some(refreshed_session.summary());
+                        }
                     }
                 }
             }
@@ -360,10 +392,12 @@ async fn save_session_and_bootstrap(
 ) -> AppResult<BootstrapPayload> {
     let session = SessionRecord {
         user_id: response.user_id,
+        username: String::new(),
         access_token: response.token,
         refresh_token: response.refresh_token,
         access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
     };
+    let session = session_with_profile(state, &settings, &session).await?;
 
     let identity = ensure_cloud_device_identity(state, &session).await?;
     state.database.save_session(&session)?;
@@ -393,6 +427,22 @@ async fn current_session(state: &AppState) -> AppResult<SessionRecord> {
     let settings = load_settings(state)?;
 
     auth::refresh_session_if_needed(&state.database, &state.http, &settings, session).await
+}
+
+async fn session_with_profile(
+    state: &AppState,
+    settings: &AppSettings,
+    session: &SessionRecord,
+) -> AppResult<SessionRecord> {
+    let profile: MeResponse = state
+        .http
+        .get(&settings.server_url, ME_PATH, Some(&session.access_token))
+        .await?;
+
+    let mut next = session.clone();
+    next.user_id = profile.user_id;
+    next.username = profile.username.trim().to_string();
+    Ok(next)
 }
 
 async fn current_session_or_clear(state: &AppState) -> AppResult<Option<SessionRecord>> {

@@ -45,6 +45,8 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub user_id: String,
+    #[serde(default)]
+    pub username: String,
     pub access_token: String,
     pub refresh_token: String,
     pub access_token_expires_at: i64,
@@ -58,6 +60,7 @@ impl SessionRecord {
     pub fn summary(&self) -> SessionSummary {
         SessionSummary {
             user_id: self.user_id.clone(),
+            username: self.username.clone(),
         }
     }
 }
@@ -66,6 +69,7 @@ impl SessionRecord {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub user_id: String,
+    pub username: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
