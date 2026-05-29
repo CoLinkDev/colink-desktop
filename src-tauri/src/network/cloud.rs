@@ -4,6 +4,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::{
@@ -157,6 +158,7 @@ impl CloudConnectionManager {
 
         self.emit_status(CloudStatus::disconnected());
         info!("cloud connection stopped");
+        let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
         let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(
             "云端连接已停止".to_string(),
         )));
@@ -175,6 +177,7 @@ impl CloudConnectionManager {
 
         self.emit_status(CloudStatus::disconnected());
         info!("cloud connection stopped");
+        let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
     }
 
     pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
@@ -199,6 +202,7 @@ impl CloudConnectionManager {
                     debug!("cloud connection skipped because no session exists");
                     let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
                     self.clear_command_sender(generation);
+                    let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     return;
                 }
                 ContextLoad::Invalidated(message) => {
@@ -217,6 +221,7 @@ impl CloudConnectionManager {
                         source: "cloud".to_string(),
                         message,
                     });
+                    let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -257,6 +262,7 @@ impl CloudConnectionManager {
                     let _ = self.update_status_if_current(generation, status.clone());
                     self.emit_status(status);
                     let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(reason));
+                    let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -277,6 +283,7 @@ impl CloudConnectionManager {
                     let _ = self
                         .event_tx
                         .send(RuntimeEvent::CloudDisconnected(Some(message)));
+                    let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;
                     }
@@ -303,7 +310,10 @@ impl CloudConnectionManager {
                 .await
             {
                 Ok(session) => session,
-                Err(error) => return ContextLoad::Invalidated(error.to_string()),
+                Err(error) if is_auth_error(&error) => {
+                    return ContextLoad::Invalidated(error.to_string());
+                }
+                Err(error) => return ContextLoad::Retryable(error.to_string()),
             };
 
         let device = match self.database.load_device_identity() {
@@ -361,6 +371,7 @@ impl CloudConnectionManager {
         self.emit_status(connected);
         info!("cloud websocket connected");
 
+        let _ = self.sync_pending_device_key(&context).await;
         let _ = self.sync_devices_from_server(&context).await;
         let _ = self.event_tx.send(RuntimeEvent::CloudConnected);
 
@@ -535,6 +546,38 @@ impl CloudConnectionManager {
         Ok(())
     }
 
+    async fn sync_pending_device_key(&self, context: &ConnectionContext) -> AppResult<()> {
+        let Some(identity) = self.database.load_device_identity()? else {
+            return Ok(());
+        };
+        if !identity.cloud_key_sync_pending
+            || identity.user_id.as_deref() != Some(context.session.user_id.as_str())
+        {
+            return Ok(());
+        }
+
+        let path = format!("{DEVICES_PATH}/{}/key", identity.device_id);
+        let request = serde_json::json!({ "publicKey": identity.public_key });
+        self.http
+            .put_empty(
+                &context.settings.server_url,
+                &path,
+                &request,
+                Some(&context.session.access_token),
+            )
+            .await?;
+
+        if let Some(mut latest) = self.database.load_device_identity()? {
+            if latest.device_id == identity.device_id && latest.public_key == identity.public_key {
+                latest.cloud_key_sync_pending = false;
+                self.database.save_device_identity(&latest)?;
+            }
+        }
+
+        debug!("synced pending device key to cloud server");
+        Ok(())
+    }
+
     fn send_command(&self, command: CloudCommand) -> AppResult<()> {
         let sender = self
             .inner
@@ -610,6 +653,18 @@ fn classify_connect_error(message: String) -> ConnectionFailure {
         ConnectionFailure::Invalidated(message)
     } else {
         ConnectionFailure::Retryable(message)
+    }
+}
+
+fn is_auth_error(error: &AppError) -> bool {
+    match error {
+        AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::Message(message) => {
+            message.eq_ignore_ascii_case("unauthorized")
+                || message.eq_ignore_ascii_case("invalid refresh token")
+                || message.eq_ignore_ascii_case("token revoked")
+        }
+        _ => false,
     }
 }
 

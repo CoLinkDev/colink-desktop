@@ -292,6 +292,14 @@ impl AppRuntime {
                     reason.unwrap_or_else(|| "云端连接已断开".to_string()),
                 );
             }
+            RuntimeEvent::CloudUnavailable => {
+                debug!("runtime received cloud unavailable");
+                let _ = device_presence::mark_cloud_unavailable(
+                    &self.inner.database,
+                    &self.inner.app,
+                    &self.inner.lan.peer_ids(),
+                );
+            }
             RuntimeEvent::CloudRelay { from, message } => {
                 debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
                 self.handle_business_message(&from, "cloud", message).await;

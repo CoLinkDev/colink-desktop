@@ -1,4 +1,5 @@
 use hostname::get;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use url::Url;
@@ -62,6 +63,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let mut devices = publish_offline_devices(state)?;
 
     if let Some(session) = state.database.load_session()? {
+        let existing_session_summary = session.summary();
         match auth::refresh_session_if_needed(&state.database, &state.http, &settings, session)
             .await
         {
@@ -82,18 +84,28 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
                         device_summary = Some(identity.summary());
                         devices = fetched_devices;
                     }
-                    Err(error) => {
+                    Err(error) if is_auth_error(&error) => {
                         warn!(%error, "cloud device identity is unavailable during bootstrap");
                         clear_auth_state(state)?;
                         devices = publish_offline_devices(state)?;
                         device_summary = Some(ensure_local_device_identity(state)?.summary());
                     }
+                    Err(error) => {
+                        warn!(%error, "cloud device identity is temporarily unavailable during bootstrap");
+                        state.cloud.start();
+                        session_summary = Some(refreshed_session.summary());
+                    }
                 }
             }
-            Err(error) => {
+            Err(error) if is_auth_error(&error) => {
                 warn!(%error, "session refresh failed during bootstrap");
                 clear_auth_state(state)?;
                 devices = publish_offline_devices(state)?;
+            }
+            Err(error) => {
+                warn!(%error, "session refresh unavailable during bootstrap");
+                state.cloud.start();
+                session_summary = Some(existing_session_summary);
             }
         }
     } else {
@@ -159,7 +171,7 @@ pub async fn logout(state: &AppState) -> AppResult<()> {
 
 pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let Some(session) = current_session_or_clear(state).await? else {
-        return publish_offline_devices(state);
+        return reconcile_or_list_devices(state);
     };
     let devices = match fetch_devices(state, &session).await {
         Ok(devices) => state.runtime.replace_cached_devices(devices, true)?,
@@ -186,14 +198,14 @@ pub async fn update_device_name(
             identity.name = name;
             state.database.save_device_identity(&identity)?;
             state.runtime.activate()?;
-            if let Some(session) = current_session_or_clear(state).await? {
+            if let Some(session) = current_session_if_available(state).await? {
                 if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
                     if let Err(error) = sync_cloud_device_name(state, &session, &identity).await {
                         warn!(%error, "failed to sync local device name to cloud");
                     }
                 }
             }
-            return list_devices(state).await;
+            return reconcile_or_list_devices(state);
         }
     }
 
@@ -251,13 +263,11 @@ pub async fn rotate_device_key(
         if identity.device_id == payload.device_id {
             identity.public_key = generated.public_key.clone();
             identity.private_key = generated.private_key;
+            identity.cloud_key_sync_pending = true;
             state.database.save_device_identity(&identity)?;
-            state.runtime.activate()?;
-            if let Some(session) = current_session_or_clear(state).await? {
+            if let Some(session) = current_session_if_available(state).await? {
                 if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
-                    if let Err(error) = sync_cloud_device_key(state, &session, &identity).await {
-                        warn!(%error, "failed to sync local device key to cloud");
-                    }
+                    sync_cloud_device_key_if_pending(state, &session, &identity).await;
                 }
             }
             return list_devices(state).await;
@@ -380,9 +390,32 @@ async fn current_session_or_clear(state: &AppState) -> AppResult<Option<SessionR
 
     match current_session(state).await {
         Ok(session) => Ok(Some(session)),
-        Err(error) => {
+        Err(error) if is_auth_error(&error) => {
             warn!(%error, "clearing invalid cloud session");
             clear_auth_state(state)?;
+            Ok(None)
+        }
+        Err(error) => {
+            warn!(%error, "cloud session unavailable");
+            Ok(None)
+        }
+    }
+}
+
+async fn current_session_if_available(state: &AppState) -> AppResult<Option<SessionRecord>> {
+    if state.database.load_session()?.is_none() {
+        return Ok(None);
+    }
+
+    match current_session(state).await {
+        Ok(session) => Ok(Some(session)),
+        Err(error) if is_auth_error(&error) => {
+            warn!(%error, "clearing invalid cloud session");
+            clear_auth_state(state)?;
+            Ok(None)
+        }
+        Err(error) => {
+            warn!(%error, "cloud session unavailable");
             Ok(None)
         }
     }
@@ -403,6 +436,7 @@ fn ensure_local_device_identity(state: &AppState) -> AppResult<DeviceIdentity> {
         device_type: detect_device_type(),
         public_key: generated.public_key,
         private_key: generated.private_key,
+        cloud_key_sync_pending: false,
     };
     state.database.save_device_identity(&identity)?;
     Ok(identity)
@@ -460,9 +494,7 @@ async fn sync_cloud_device_identity(
     if let Err(error) = sync_cloud_device_name(state, session, identity).await {
         warn!(%error, "failed to sync local device name to cloud");
     }
-    if let Err(error) = sync_cloud_device_key(state, session, identity).await {
-        warn!(%error, "failed to sync local device key to cloud");
-    }
+    sync_cloud_device_key_if_pending(state, session, identity).await;
 }
 
 async fn sync_cloud_device_name(
@@ -503,6 +535,42 @@ async fn sync_cloud_device_key(
         .await
 }
 
+fn reconcile_or_list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
+    match state.database.load_session()? {
+        Some(_) => state.runtime.reconcile_device_routes(),
+        None => publish_offline_devices(state),
+    }
+}
+
+async fn sync_cloud_device_key_if_pending(
+    state: &AppState,
+    session: &SessionRecord,
+    identity: &DeviceIdentity,
+) {
+    if !identity.cloud_key_sync_pending {
+        return;
+    }
+
+    if let Err(error) = sync_cloud_device_key(state, session, identity).await {
+        warn!(%error, "failed to sync local device key to cloud");
+        return;
+    }
+
+    match state.database.load_device_identity() {
+        Ok(Some(mut latest))
+            if latest.device_id == identity.device_id
+                && latest.public_key == identity.public_key =>
+        {
+            latest.cloud_key_sync_pending = false;
+            if let Err(error) = state.database.save_device_identity(&latest) {
+                warn!(%error, "failed to clear pending device key sync");
+            }
+        }
+        Ok(_) => {}
+        Err(error) => warn!(%error, "failed to reload device identity after key sync"),
+    }
+}
+
 fn publish_offline_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     let identity = ensure_local_device_identity(state)?;
     state
@@ -538,6 +606,18 @@ async fn fetch_devices(state: &AppState, session: &SessionRecord) -> AppResult<V
         .await?;
 
     Ok(response.devices)
+}
+
+fn is_auth_error(error: &AppError) -> bool {
+    match error {
+        AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::Message(message) => {
+            message.eq_ignore_ascii_case("unauthorized")
+                || message.eq_ignore_ascii_case("invalid refresh token")
+                || message.eq_ignore_ascii_case("token revoked")
+        }
+        _ => false,
+    }
 }
 
 fn detect_device_name() -> String {

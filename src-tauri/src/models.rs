@@ -76,6 +76,8 @@ pub struct DeviceIdentity {
     pub device_type: String,
     pub public_key: String,
     pub private_key: String,
+    #[serde(default)]
+    pub cloud_key_sync_pending: bool,
 }
 
 impl DeviceIdentity {
@@ -365,6 +367,7 @@ mod tests {
 
         assert_eq!(identity.user_id.as_deref(), Some("user-1"));
         assert_eq!(identity.device_secret.as_deref(), Some("secret-1"));
+        assert!(!identity.cloud_key_sync_pending);
     }
 
     #[test]
@@ -383,5 +386,6 @@ mod tests {
 
         assert_eq!(identity.user_id, None);
         assert_eq!(identity.device_secret, None);
+        assert!(!identity.cloud_key_sync_pending);
     }
 }

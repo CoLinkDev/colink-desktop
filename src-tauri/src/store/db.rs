@@ -177,21 +177,29 @@ impl Database {
             if local_device_id == Some(device.device_id.as_str()) {
                 continue;
             }
-            if device.public_key.trim().is_empty()
-                || records
-                    .iter()
-                    .any(|record| record.device_id == device.device_id)
-            {
+            if device.public_key.trim().is_empty() {
                 continue;
             }
 
-            records.push(LanTrustRecord {
-                device_id: device.device_id.clone(),
-                name: device.name.clone(),
-                public_key: device.public_key.clone(),
-                trusted_at: now,
-            });
-            changed = true;
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.device_id == device.device_id)
+            {
+                if record.name != device.name || record.public_key != device.public_key {
+                    record.name = device.name.clone();
+                    record.public_key = device.public_key.clone();
+                    record.trusted_at = now;
+                    changed = true;
+                }
+            } else {
+                records.push(LanTrustRecord {
+                    device_id: device.device_id.clone(),
+                    name: device.name.clone(),
+                    public_key: device.public_key.clone(),
+                    trusted_at: now,
+                });
+                changed = true;
+            }
         }
 
         if changed {
@@ -641,6 +649,7 @@ mod tests {
                 device_type: "windows".to_string(),
                 public_key: "pk".to_string(),
                 private_key: "sk".to_string(),
+                cloud_key_sync_pending: false,
             })
             .expect("save identity");
 

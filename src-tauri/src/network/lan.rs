@@ -6,8 +6,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use if_addrs::get_if_addrs;
-use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -82,9 +81,10 @@ pub struct LanManager {
 
 struct LanState {
     generation: u64,
+    active_device: Option<DeviceIdentity>,
     cancel: Option<watch::Sender<bool>>,
     command_tx: Option<mpsc::UnboundedSender<LanCommand>>,
-    peers: HashMap<String, mpsc::UnboundedSender<BusinessEnvelope>>,
+    peers: HashMap<String, PeerConnection>,
     peer_endpoints: HashMap<String, (String, u16)>,
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
@@ -102,6 +102,11 @@ struct MemberRecord {
     state: MemberState,
     incarnation: i64,
     updated_at: i64,
+}
+
+struct PeerConnection {
+    connection_id: Uuid,
+    sender: mpsc::UnboundedSender<BusinessEnvelope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +184,7 @@ impl LanManager {
             event_tx,
             inner: Arc::new(Mutex::new(LanState {
                 generation: 0,
+                active_device: None,
                 cancel: None,
                 command_tx: None,
                 peers: HashMap::new(),
@@ -222,10 +228,20 @@ impl LanManager {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let generation = {
             let mut inner = self.inner.lock_unpoisoned();
+            if inner.cancel.is_some()
+                && inner
+                    .active_device
+                    .as_ref()
+                    .is_some_and(|active| same_lan_identity(active, &context.device))
+            {
+                debug!(device_id = %context.device.device_id, "lan manager already running");
+                return Ok(());
+            }
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
             }
             inner.generation += 1;
+            inner.active_device = Some(context.device.clone());
             inner.cancel = Some(cancel_tx);
             inner.command_tx = Some(command_tx);
             inner.peers.clear();
@@ -266,6 +282,7 @@ impl LanManager {
                 let _ = cancel.send(true);
             }
             inner.generation += 1;
+            inner.active_device = None;
             inner.command_tx = None;
             inner.peer_endpoints.clear();
             inner.members.clear();
@@ -298,7 +315,7 @@ impl LanManager {
             .lock_unpoisoned()
             .peers
             .get(device_id)
-            .cloned()
+            .map(|peer| peer.sender.clone())
             .ok_or_else(|| AppError::message("LAN 对端未连接"))?;
         sender
             .send(message)
@@ -422,6 +439,7 @@ impl LanManager {
                 source: "lan".to_string(),
                 message: "本地 LAN 监听端口绑定失败".to_string(),
             });
+            self.finalize_generation(generation);
             return;
         };
 
@@ -432,6 +450,7 @@ impl LanManager {
                 source: "lan".to_string(),
                 message: "mDNS 服务初始化失败".to_string(),
             });
+            self.finalize_generation(generation);
             return;
         };
 
@@ -445,6 +464,7 @@ impl LanManager {
                     source: "lan".to_string(),
                     message: format!("mDNS 浏览启动失败: {error}"),
                 });
+                self.finalize_generation(generation);
                 return;
             }
         };
@@ -454,9 +474,7 @@ impl LanManager {
         let mut suspect_interval = interval(Duration::from_millis(500));
         suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        if let Some(ip) = pick_primary_ipv4() {
-            let _ = self.register_service(&mdns, &context, ip);
-        }
+        let _ = self.register_service(&mdns, &context);
         info!(generation = generation, "lan discovery loop started");
 
         loop {
@@ -509,13 +527,11 @@ impl LanManager {
                         match event {
                             DaemonEvent::IpAdd(ip) if ip.is_ipv4() => {
                                 debug!(%ip, "mdns address added");
-                                let _ = self.register_service(&mdns, &context, ip);
+                                let _ = self.register_service(&mdns, &context);
                             }
                             DaemonEvent::IpDel(_) => {
                                 debug!("mdns address removed");
-                                if let Some(ip) = pick_primary_ipv4() {
-                                    let _ = self.register_service(&mdns, &context, ip);
-                                }
+                                let _ = self.register_service(&mdns, &context);
                             }
                             _ => {}
                         }
@@ -530,12 +546,7 @@ impl LanManager {
         info!(generation = generation, "lan discovery loop stopped");
     }
 
-    fn register_service(
-        &self,
-        mdns: &ServiceDaemon,
-        context: &LanContext,
-        ip: IpAddr,
-    ) -> AppResult<()> {
+    fn register_service(&self, mdns: &ServiceDaemon, context: &LanContext) -> AppResult<()> {
         let hostname = hostname::get()
             .ok()
             .and_then(|value| value.into_string().ok())
@@ -550,13 +561,17 @@ impl LanManager {
             SERVICE_TYPE,
             &instance_name,
             &format!("{hostname}.local."),
-            ip.to_string(),
+            "",
             LAN_PORT,
             &properties[..],
         )
-        .map_err(|error| AppError::message(error.to_string()))?
-        .enable_addr_auto();
-        info!(%ip, port = LAN_PORT, "registering mdns service");
+        .map_err(|error| AppError::message(error.to_string()))?;
+        let mut info = info.enable_addr_auto();
+        info.set_interfaces(vec![IfKind::IPv4]);
+        info!(
+            port = LAN_PORT,
+            "registering mdns service on ipv4 interfaces"
+        );
         mdns.register(info)
             .map_err(|error| AppError::message(error.to_string()))
     }
@@ -583,8 +598,12 @@ impl LanManager {
         let Some(ip) = service
             .get_addresses()
             .iter()
-            .map(|item| item.to_ip_addr())
-            .find(|addr| matches!(addr, IpAddr::V4(ipv4) if !ipv4.is_loopback()))
+            .filter_map(|item| match item.to_ip_addr() {
+                IpAddr::V4(ipv4) if is_usable_lan_ipv4(ipv4) => Some(ipv4),
+                _ => None,
+            })
+            .max_by_key(|ip| lan_ipv4_score(*ip))
+            .map(IpAddr::V4)
         else {
             return;
         };
@@ -684,6 +703,7 @@ impl LanManager {
         match route {
             InboundRoute::Peer => {
                 debug!("handling inbound lan peer websocket");
+                let context = self.load_context().unwrap_or(context);
                 let session =
                     perform_inbound_handshake(self, stream, &context, &self.database).await?;
                 self.attach_peer_stream(generation, session).await
@@ -704,6 +724,7 @@ impl LanManager {
         port: u16,
         allow_pairing: bool,
     ) -> AppResult<()> {
+        let context = self.load_context().unwrap_or(context);
         let url = Url::parse(&format!("ws://{ip}:{port}/peer"))?;
         debug!(expected_device_id = %expected_device_id, %ip, port = port, "connecting outbound lan peer");
         let (stream, _) = connect_async(url.as_str())
@@ -741,17 +762,32 @@ impl LanManager {
         }
 
         let peer_device_id = session.peer_device_id;
+        let connection_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::unbounded_channel::<BusinessEnvelope>();
+        let was_connected = {
+            let mut inner = self.inner.lock_unpoisoned();
+            inner
+                .peers
+                .insert(
+                    peer_device_id.clone(),
+                    PeerConnection {
+                        connection_id,
+                        sender: tx,
+                    },
+                )
+                .is_some()
+        };
         {
             let mut inner = self.inner.lock_unpoisoned();
-            inner.peers.insert(peer_device_id.clone(), tx);
             inner.pairing_candidates.remove(&peer_device_id);
         }
         self.emit_pairing_candidates();
-        info!(device_id = %peer_device_id, "lan peer connected");
-        let _ = self.event_tx.send(RuntimeEvent::LanConnected {
-            device_id: peer_device_id.clone(),
-        });
+        if !was_connected {
+            info!(device_id = %peer_device_id, "lan peer connected");
+            let _ = self.event_tx.send(RuntimeEvent::LanConnected {
+                device_id: peer_device_id.clone(),
+            });
+        }
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -832,7 +868,7 @@ impl LanManager {
                     }
                 }
             }
-            manager.detach_peer(generation, &peer_device_id);
+            manager.detach_peer_connection(generation, &peer_device_id, connection_id);
             debug!(device_id = %peer_device_id, "lan peer stream ended");
             manager.schedule_reconnect(generation, peer_device_id);
         });
@@ -1289,6 +1325,7 @@ impl LanManager {
         if !should_initiate(&context.device.device_id, &device_id)
             || self.has_peer(&device_id)
             || !self.is_trusted(&device_id)
+            || !self.is_member_connectable(&device_id)
         {
             return;
         }
@@ -1302,7 +1339,7 @@ impl LanManager {
 
         debug!(%device_id, %ip, port = port, "trying trusted lan peer connection");
         let result = self
-            .connect_outbound(generation, context, device_id.clone(), ip, port, false)
+            .connect_outbound(generation, context, device_id.clone(), ip, port, true)
             .await;
         if let Err(error) = result {
             warn!(%device_id, %error, "trusted lan peer connection failed");
@@ -1311,7 +1348,10 @@ impl LanManager {
     }
 
     fn schedule_reconnect(&self, generation: u64, device_id: String) {
-        if !self.is_trusted(&device_id) || !self.begin_reconnect(generation, &device_id) {
+        if !self.is_trusted(&device_id)
+            || !self.is_member_connectable(&device_id)
+            || !self.begin_reconnect(generation, &device_id)
+        {
             return;
         }
         debug!(%device_id, "scheduling lan reconnect");
@@ -1321,6 +1361,7 @@ impl LanManager {
                 if !manager.is_generation_current(generation)
                     || manager.has_peer(&device_id)
                     || !manager.is_trusted(&device_id)
+                    || !manager.is_member_connectable(&device_id)
                 {
                     break;
                 }
@@ -1343,6 +1384,14 @@ impl LanManager {
             .load_lan_trusts()
             .map(|records| records.iter().any(|record| record.device_id == device_id))
             .unwrap_or(false)
+    }
+
+    fn is_member_connectable(&self, device_id: &str) -> bool {
+        self.inner
+            .lock_unpoisoned()
+            .members
+            .get(device_id)
+            .is_none_or(|member| matches!(member.state, MemberState::Alive | MemberState::Suspect))
     }
 
     async fn request_pairing(
@@ -1448,6 +1497,31 @@ impl LanManager {
                 return;
             }
             inner.peers.remove(device_id).is_some()
+        };
+        if should_emit {
+            warn!(%device_id, "lan peer disconnected");
+            let _ = self.event_tx.send(RuntimeEvent::LanDisconnected {
+                device_id: device_id.to_string(),
+            });
+        }
+    }
+
+    fn detach_peer_connection(&self, generation: u64, device_id: &str, connection_id: Uuid) {
+        let should_emit = {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return;
+            }
+            let should_remove = inner
+                .peers
+                .get(device_id)
+                .is_some_and(|peer| peer.connection_id == connection_id);
+            if should_remove {
+                inner.peers.remove(device_id);
+                true
+            } else {
+                false
+            }
         };
         if should_emit {
             warn!(%device_id, "lan peer disconnected");
@@ -1581,6 +1655,8 @@ impl LanManager {
         if inner.generation != generation {
             return;
         }
+        inner.active_device = None;
+        inner.cancel = None;
         inner.command_tx = None;
         inner.reconnecting.clear();
     }
@@ -1968,17 +2044,25 @@ async fn recv_monitor_event(
     receiver.recv_async().await.ok()
 }
 
-fn pick_primary_ipv4() -> Option<IpAddr> {
-    get_if_addrs().ok().and_then(|interfaces| {
-        interfaces
-            .into_iter()
-            .find_map(|interface| match interface.ip() {
-                IpAddr::V4(ipv4) if !ipv4.is_loopback() && ipv4 != Ipv4Addr::UNSPECIFIED => {
-                    Some(IpAddr::V4(ipv4))
-                }
-                _ => None,
-            })
-    })
+fn lan_ipv4_score(ip: Ipv4Addr) -> u8 {
+    match ip.octets() {
+        [192, 168, _, _] => 4,
+        [10, _, _, _] => 3,
+        [172, second, _, _] if (16..=31).contains(&second) => 2,
+        _ => 1,
+    }
+}
+
+fn is_usable_lan_ipv4(ip: Ipv4Addr) -> bool {
+    !ip.is_loopback()
+        && !ip.is_link_local()
+        && !ip.is_multicast()
+        && !ip.is_broadcast()
+        && ip != Ipv4Addr::UNSPECIFIED
+}
+
+fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
+    left.device_id == right.device_id
 }
 
 fn should_initiate(local_device_id: &str, peer_device_id: &str) -> bool {

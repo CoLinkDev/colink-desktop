@@ -8,6 +8,7 @@ pub enum RuntimeEvent {
     AuthInvalidated(String),
     CloudConnected,
     CloudDisconnected(Option<String>),
+    CloudUnavailable,
     CloudRelay {
         from: String,
         message: BusinessEnvelope,
