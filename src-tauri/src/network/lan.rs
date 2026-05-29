@@ -1165,6 +1165,7 @@ impl LanManager {
         }
         let now = unix_now_millis();
         let mut changed = false;
+        let explicit_incarnation = incarnation.is_some();
         let next_incarnation = incarnation.unwrap_or_else(|| {
             self.inner
                 .lock_unpoisoned()
@@ -1179,19 +1180,12 @@ impl LanManager {
             if inner.generation != generation {
                 return;
             }
-            let accept = match inner.members.get(device_id) {
-                Some(existing) if next_incarnation < existing.incarnation => false,
-                Some(existing) if next_incarnation == existing.incarnation => {
-                    if existing.state == MemberState::Left
-                        && matches!(state, MemberState::Suspect | MemberState::Dead)
-                    {
-                        false
-                    } else {
-                        state.priority() > existing.state.priority() || state != existing.state
-                    }
-                }
-                _ => true,
-            };
+            let accept = Self::should_accept_member_update(
+                inner.members.get(device_id),
+                state,
+                next_incarnation,
+                explicit_incarnation,
+            );
             if accept {
                 inner.members.insert(
                     device_id.to_string(),
@@ -1231,6 +1225,33 @@ impl LanManager {
                 self.update_pairing_candidate(device_id, state);
             }
         }
+    }
+
+    fn should_accept_member_update(
+        existing: Option<&MemberRecord>,
+        state: MemberState,
+        incarnation: i64,
+        explicit_incarnation: bool,
+    ) -> bool {
+        match existing {
+            Some(existing) if incarnation < existing.incarnation => false,
+            Some(existing) if incarnation == existing.incarnation => {
+                if explicit_incarnation {
+                    Self::should_accept_same_incarnation_gossip(existing.state, state)
+                } else {
+                    state != existing.state
+                }
+            }
+            _ => true,
+        }
+    }
+
+    fn should_accept_same_incarnation_gossip(existing: MemberState, incoming: MemberState) -> bool {
+        if matches!(existing, MemberState::Dead | MemberState::Left) {
+            return false;
+        }
+
+        incoming.priority() > existing.priority()
     }
 
     fn promote_expired_suspects(&self, generation: u64) {
@@ -2081,4 +2102,100 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 fn should_initiate(local_device_id: &str, peer_device_id: &str) -> bool {
     local_device_id < peer_device_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LanManager, MemberRecord, MemberState};
+
+    fn member(state: MemberState, incarnation: i64) -> MemberRecord {
+        MemberRecord {
+            state,
+            incarnation,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn swim_gossip_same_incarnation_only_accepts_higher_priority_state() {
+        let existing = member(MemberState::Alive, 100);
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Suspect,
+            100,
+            true,
+        ));
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Dead,
+            100,
+            true,
+        ));
+
+        let existing = member(MemberState::Suspect, 100);
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Dead,
+            100,
+            true,
+        ));
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            100,
+            true,
+        ));
+
+        let existing = member(MemberState::Dead, 100);
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            100,
+            true,
+        ));
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Suspect,
+            100,
+            true,
+        ));
+
+        let existing = member(MemberState::Left, 100);
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            100,
+            true,
+        ));
+    }
+
+    #[test]
+    fn swim_gossip_higher_incarnation_overrides_any_state() {
+        let existing = member(MemberState::Dead, 100);
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            101,
+            true,
+        ));
+
+        let existing = member(MemberState::Alive, 100);
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Dead,
+            99,
+            true,
+        ));
+    }
+
+    #[test]
+    fn local_observation_can_change_state_without_new_incarnation() {
+        let existing = member(MemberState::Suspect, 100);
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            100,
+            false,
+        ));
+    }
 }
