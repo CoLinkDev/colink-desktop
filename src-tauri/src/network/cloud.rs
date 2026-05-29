@@ -162,6 +162,21 @@ impl CloudConnectionManager {
         )));
     }
 
+    pub fn stop_quiet(&self) {
+        {
+            let mut inner = self.inner.lock_unpoisoned();
+            if let Some(cancel) = inner.cancel.take() {
+                let _ = cancel.send(true);
+            }
+            inner.generation += 1;
+            inner.command_tx = None;
+            inner.status = CloudStatus::disconnected();
+        }
+
+        self.emit_status(CloudStatus::disconnected());
+        info!("cloud connection stopped");
+    }
+
     pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
         debug!(to, message_type = %message.message_type, "queueing cloud relay");
         self.send_command(CloudCommand::Relay {
@@ -297,7 +312,7 @@ impl CloudConnectionManager {
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
-        if device.user_id != session.user_id {
+        if device.user_id.as_deref() != Some(session.user_id.as_str()) {
             return ContextLoad::Retryable("当前设备和账户状态不一致".to_string());
         }
 

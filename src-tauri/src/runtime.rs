@@ -172,17 +172,16 @@ impl AppRuntime {
         if text.chars().count() > MAX_TEXT_LENGTH {
             return Err(AppError::message("消息长度不能超过 10000"));
         }
+        let route = self.resolve_route(&payload.device_id)?;
 
         let record = TextMessageRecord {
             message_id: Uuid::new_v4().to_string(),
             device_id: payload.device_id.clone(),
             direction: "outbound".to_string(),
             text: text.clone(),
-            route: self.preferred_route(&payload.device_id),
+            route: route.as_str().to_string(),
             created_at: unix_now_millis(),
         };
-        self.inner.database.save_message(&record)?;
-        self.emit_messages()?;
 
         let envelope = BusinessEnvelope::from_payload(
             TEXT_MESSAGE_TYPE,
@@ -191,7 +190,9 @@ impl AppRuntime {
                 text,
             },
         )?;
-        let _ = self.send_business_message(&payload.device_id, envelope)?;
+        self.send_business_message_via(&payload.device_id, envelope, route)?;
+        self.inner.database.save_message(&record)?;
+        self.emit_messages()?;
         self.append_log(
             "info",
             "message",
@@ -269,7 +270,6 @@ impl AppRuntime {
         match event {
             RuntimeEvent::AuthInvalidated(message) => {
                 warn!(%message, "runtime received auth invalidation");
-                let _ = self.deactivate();
                 let _ = self.append_log("warn", "auth", message);
             }
             RuntimeEvent::CloudConnected => {
@@ -673,21 +673,31 @@ impl AppRuntime {
         device_id: &str,
         message: BusinessEnvelope,
     ) -> AppResult<String> {
-        if self.inner.lan.has_peer(device_id) {
-            self.inner.lan.send(device_id, message)?;
-            Ok("lan".to_string())
-        } else {
-            self.inner.cloud.send_relay(device_id, message)?;
-            Ok("cloud".to_string())
+        let route = self.resolve_route(device_id)?;
+        self.send_business_message_via(device_id, message, route)?;
+        Ok(route.as_str().to_string())
+    }
+
+    fn send_business_message_via(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        route: TransferRoute,
+    ) -> AppResult<()> {
+        match route {
+            TransferRoute::Lan => self.inner.lan.send(device_id, message),
+            TransferRoute::Cloud => self.inner.cloud.send_relay(device_id, message),
         }
     }
 
-    fn preferred_route(&self, device_id: &str) -> String {
+    fn resolve_route(&self, device_id: &str) -> AppResult<TransferRoute> {
         if self.inner.lan.has_peer(device_id) {
-            "lan".to_string()
-        } else {
-            "cloud".to_string()
+            return Ok(TransferRoute::Lan);
         }
+        if self.inner.cloud.snapshot().connected {
+            return Ok(TransferRoute::Cloud);
+        }
+        Err(AppError::message("设备未连接"))
     }
 
     fn reconcile_device_routes(&self) -> AppResult<()> {

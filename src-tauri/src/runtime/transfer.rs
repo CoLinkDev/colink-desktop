@@ -47,6 +47,7 @@ impl AppRuntime {
         if payload.paths.is_empty() {
             return Err(AppError::message("请选择文件"));
         }
+        let route = self.resolve_route(&payload.device_id)?;
 
         let mut records = Vec::new();
         let total = payload.paths.len();
@@ -73,7 +74,6 @@ impl AppRuntime {
                 .to_string();
             let file_id = Uuid::new_v4().to_string();
             let created_at = unix_now_millis();
-            let route = self.preferred_route(&payload.device_id);
             debug!(
                 device_id = %payload.device_id,
                 path = %source_path.display(),
@@ -92,16 +92,28 @@ impl AppRuntime {
                 total_chunks,
                 status: "offered".to_string(),
                 checksum: checksum.clone(),
-                route: route.clone(),
+                route: route.as_str().to_string(),
                 temp_path: None,
                 final_path: Some(source_path.to_string_lossy().to_string()),
                 error: None,
                 created_at,
                 updated_at: created_at,
             };
+            let envelope = BusinessEnvelope::from_payload(
+                FILE_OFFER_TYPE,
+                FileOfferPayload {
+                    session_id: file_id.clone(),
+                    file_name,
+                    file_size,
+                    total_chunks,
+                    chunk_size,
+                    checksum,
+                },
+            )?;
+            self.send_business_message_via(&payload.device_id, envelope, route)?;
             self.inner.database.save_transfer(&record)?;
             self.inner.state.lock_unpoisoned().outgoing_files.insert(
-                file_id.clone(),
+                file_id,
                 OutgoingFileState {
                     source_path: source_path.clone(),
                     record: record.clone(),
@@ -111,19 +123,6 @@ impl AppRuntime {
                     last_progress_at: created_at,
                 },
             );
-
-            let envelope = BusinessEnvelope::from_payload(
-                FILE_OFFER_TYPE,
-                FileOfferPayload {
-                    session_id: file_id,
-                    file_name,
-                    file_size,
-                    total_chunks,
-                    chunk_size,
-                    checksum,
-                },
-            )?;
-            let _ = self.send_business_message(&payload.device_id, envelope)?;
             records.push(record);
         }
 

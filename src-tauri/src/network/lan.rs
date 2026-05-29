@@ -207,18 +207,12 @@ impl LanManager {
             return Ok(());
         }
 
-        let session = self.database.load_session()?;
         let device = self.database.load_device_identity()?;
-        let (Some(session), Some(device)) = (session, device) else {
-            debug!("lan manager skipped because session or device identity is missing");
+        let Some(device) = device else {
+            debug!("lan manager skipped because device identity is missing");
             self.stop();
             return Ok(());
         };
-        if session.user_id != device.user_id {
-            warn!("lan manager skipped because session and device identity user mismatch");
-            self.stop();
-            return Ok(());
-        }
 
         let context = LanContext {
             device,

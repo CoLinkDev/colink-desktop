@@ -113,15 +113,13 @@ impl Database {
     }
 
     pub fn load_device_identity(&self) -> AppResult<Option<DeviceIdentity>> {
-        self.load_record(DEVICE_IDENTITY_KEY)
+        Ok(self
+            .load_record::<DeviceIdentity>(DEVICE_IDENTITY_KEY)?
+            .map(DeviceIdentity::normalize))
     }
 
     pub fn save_device_identity(&self, identity: &DeviceIdentity) -> AppResult<()> {
-        self.save_record(DEVICE_IDENTITY_KEY, identity)
-    }
-
-    pub fn clear_device_identity(&self) -> AppResult<()> {
-        self.delete_record(DEVICE_IDENTITY_KEY)
+        self.save_record(DEVICE_IDENTITY_KEY, &identity.clone().normalize())
     }
 
     pub fn load_cached_devices(&self) -> AppResult<Vec<DeviceInfo>> {
@@ -560,7 +558,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::Database;
-    use crate::models::{AppLogEntry, AppSettings, FileTransferRecord, TextMessageRecord};
+    use crate::models::{
+        AppLogEntry, AppSettings, DeviceIdentity, FileTransferRecord, TextMessageRecord,
+    };
 
     #[test]
     fn persists_structured_records() {
@@ -622,6 +622,36 @@ mod tests {
             })
             .expect("save log");
         assert_eq!(database.load_logs(10).expect("logs").len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persists_local_only_device_identity() {
+        let path = std::env::temp_dir().join(format!("colink-db-{}.sqlite", Uuid::new_v4()));
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_device_identity(&DeviceIdentity {
+                user_id: None,
+                device_id: "device-1".to_string(),
+                device_secret: None,
+                name: "Desktop".to_string(),
+                device_type: "windows".to_string(),
+                public_key: "pk".to_string(),
+                private_key: "sk".to_string(),
+            })
+            .expect("save identity");
+
+        let identity = database
+            .load_device_identity()
+            .expect("load identity")
+            .expect("identity");
+
+        assert_eq!(identity.user_id, None);
+        assert_eq!(identity.device_secret, None);
+        assert_eq!(identity.device_id, "device-1");
 
         let _ = fs::remove_file(path);
     }

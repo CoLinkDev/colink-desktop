@@ -1,5 +1,6 @@
 use hostname::get;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use url::Url;
 
 use crate::{
@@ -53,39 +54,52 @@ struct DeviceRegisterRequest<'a> {
 
 pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let settings = load_settings(state)?;
-    let stored_device = state.database.load_device_identity()?;
-    let stored_session = state.database.load_session()?;
+    let identity = ensure_local_device_identity(state)?;
+    state.runtime.activate()?;
 
     let mut session_summary = None;
-    let mut devices = Vec::new();
-    let mut device_summary = stored_device.as_ref().map(DeviceIdentity::summary);
+    let mut device_summary = Some(identity.summary());
+    let mut devices = publish_offline_devices(state)?;
 
-    if let Some(session) = stored_session {
+    if let Some(session) = state.database.load_session()? {
         match auth::refresh_session_if_needed(&state.database, &state.http, &settings, session)
             .await
         {
             Ok(refreshed_session) => {
-                let identity = ensure_device_identity(state, &refreshed_session).await?;
-                let fetched_devices = fetch_devices(state, &refreshed_session)
-                    .await
-                    .unwrap_or_else(|_| state.database.load_cached_devices().unwrap_or_default());
+                match ensure_cloud_device_identity(state, &refreshed_session).await {
+                    Ok(identity) => {
+                        let fetched_devices = fetch_devices(state, &refreshed_session)
+                            .await
+                            .unwrap_or_else(|error| {
+                                warn!(%error, "failed to fetch cloud devices during bootstrap");
+                                state.database.load_cached_devices().unwrap_or_default()
+                            });
 
-                let fetched_devices = state.runtime.replace_cached_devices(fetched_devices)?;
-                state.cloud.start();
-                let _ = state.runtime.activate();
-                let _ = shell::refresh_tray(&state.app);
+                        let fetched_devices =
+                            state.runtime.replace_cached_devices(fetched_devices)?;
+                        state.cloud.start();
+                        let _ = shell::refresh_tray(&state.app);
 
-                session_summary = Some(refreshed_session.summary());
-                device_summary = Some(identity.summary());
-                devices = fetched_devices;
+                        session_summary = Some(refreshed_session.summary());
+                        device_summary = Some(identity.summary());
+                        devices = fetched_devices;
+                    }
+                    Err(error) => {
+                        warn!(%error, "cloud device identity is unavailable during bootstrap");
+                        clear_auth_state(state)?;
+                        devices = publish_offline_devices(state)?;
+                        device_summary = Some(ensure_local_device_identity(state)?.summary());
+                    }
+                }
             }
-            Err(_) => {
+            Err(error) => {
+                warn!(%error, "session refresh failed during bootstrap");
                 clear_auth_state(state)?;
+                devices = publish_offline_devices(state)?;
             }
         }
     } else {
-        state.cloud.stop();
-        let _ = state.runtime.deactivate();
+        state.cloud.stop_quiet();
     }
 
     Ok(BootstrapPayload {
@@ -146,8 +160,15 @@ pub async fn logout(state: &AppState) -> AppResult<()> {
 }
 
 pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
-    let session = current_session(state).await?;
-    let devices = fetch_devices(state, &session).await?;
+    let Some(session) = current_session_or_clear(state).await? else {
+        return publish_offline_devices(state);
+    };
+    let devices = fetch_devices(state, &session)
+        .await
+        .unwrap_or_else(|error| {
+            warn!(%error, "failed to fetch cloud devices");
+            state.database.load_cached_devices().unwrap_or_default()
+        });
     let devices = state.runtime.replace_cached_devices(devices)?;
     shell::refresh_tray(&state.app)?;
     Ok(devices)
@@ -157,10 +178,31 @@ pub async fn update_device_name(
     state: &AppState,
     payload: DeviceNameUpdatePayload,
 ) -> AppResult<Vec<DeviceInfo>> {
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::message("设备名称不能为空"));
+    }
+
+    if let Some(mut identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            identity.name = name;
+            state.database.save_device_identity(&identity)?;
+            state.runtime.activate()?;
+            if let Some(session) = current_session_or_clear(state).await? {
+                if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
+                    if let Err(error) = sync_cloud_device_name(state, &session, &identity).await {
+                        warn!(%error, "failed to sync local device name to cloud");
+                    }
+                }
+            }
+            return list_devices(state).await;
+        }
+    }
+
     let session = current_session(state).await?;
     let settings = load_settings(state)?;
     let path = format!("{DEVICES_PATH}/{}", payload.device_id);
-    let request = serde_json::json!({ "name": payload.name });
+    let request = serde_json::json!({ "name": name });
     state
         .http
         .put_empty(
@@ -170,13 +212,6 @@ pub async fn update_device_name(
             Some(&session.access_token),
         )
         .await?;
-
-    if let Some(mut identity) = state.database.load_device_identity()? {
-        if identity.device_id == payload.device_id {
-            identity.name = payload.name;
-            state.database.save_device_identity(&identity)?;
-        }
-    }
 
     let devices = fetch_devices(state, &session).await?;
     let devices = state.runtime.replace_cached_devices(devices)?;
@@ -188,6 +223,12 @@ pub async fn delete_device(
     state: &AppState,
     payload: DeviceDeletePayload,
 ) -> AppResult<Vec<DeviceInfo>> {
+    if let Some(identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            return Err(AppError::message("本机设备不能在这里删除"));
+        }
+    }
+
     let session = current_session(state).await?;
     let settings = load_settings(state)?;
     let path = format!("{DEVICES_PATH}/{}", payload.device_id);
@@ -195,14 +236,6 @@ pub async fn delete_device(
         .http
         .delete_empty(&settings.server_url, &path, Some(&session.access_token))
         .await?;
-
-    if let Some(identity) = state.database.load_device_identity()? {
-        if identity.device_id == payload.device_id {
-            state.database.clear_device_identity()?;
-            clear_auth_state(state)?;
-            return Ok(Vec::new());
-        }
-    }
 
     let devices = fetch_devices(state, &session).await?;
     let devices = state.runtime.replace_cached_devices(devices)?;
@@ -214,9 +247,27 @@ pub async fn rotate_device_key(
     state: &AppState,
     payload: RotateDeviceKeyPayload,
 ) -> AppResult<Vec<DeviceInfo>> {
+    let generated = generate_key_pair()?;
+
+    if let Some(mut identity) = state.database.load_device_identity()? {
+        if identity.device_id == payload.device_id {
+            identity.public_key = generated.public_key.clone();
+            identity.private_key = generated.private_key;
+            state.database.save_device_identity(&identity)?;
+            state.runtime.activate()?;
+            if let Some(session) = current_session_or_clear(state).await? {
+                if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
+                    if let Err(error) = sync_cloud_device_key(state, &session, &identity).await {
+                        warn!(%error, "failed to sync local device key to cloud");
+                    }
+                }
+            }
+            return list_devices(state).await;
+        }
+    }
+
     let session = current_session(state).await?;
     let settings = load_settings(state)?;
-    let generated = generate_key_pair()?;
     let path = format!("{DEVICES_PATH}/{}/key", payload.device_id);
     let request = serde_json::json!({ "publicKey": generated.public_key });
     state
@@ -228,14 +279,6 @@ pub async fn rotate_device_key(
             Some(&session.access_token),
         )
         .await?;
-
-    if let Some(mut identity) = state.database.load_device_identity()? {
-        if identity.device_id == payload.device_id {
-            identity.public_key = generated.public_key.clone();
-            identity.private_key = generated.private_key;
-            state.database.save_device_identity(&identity)?;
-        }
-    }
 
     let devices = fetch_devices(state, &session).await?;
     let devices = state.runtime.replace_cached_devices(devices)?;
@@ -261,7 +304,13 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
 
     if state.database.load_session()?.is_some() {
         state.cloud.restart();
-        let _ = state.runtime.activate();
+    } else {
+        state.cloud.stop_quiet();
+    }
+    if normalized.lan_discovery {
+        state.runtime.activate()?;
+    } else {
+        state.runtime.deactivate()?;
     }
     shell::refresh_tray(&state.app)?;
 
@@ -276,10 +325,10 @@ fn load_settings(state: &AppState) -> AppResult<AppSettings> {
 }
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {
-    state.cloud.stop();
-    state.runtime.deactivate()?;
+    state.cloud.stop_quiet();
     state.database.clear_session()?;
     state.database.clear_cached_devices()?;
+    let _ = publish_offline_devices(state);
     shell::refresh_tray(&state.app)?;
     Ok(())
 }
@@ -296,8 +345,8 @@ async fn save_session_and_bootstrap(
         access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
     };
 
+    let identity = ensure_cloud_device_identity(state, &session).await?;
     state.database.save_session(&session)?;
-    let identity = ensure_device_identity(state, &session).await?;
     let devices = fetch_devices(state, &session).await?;
     let devices = state.runtime.replace_cached_devices(devices)?;
     state.cloud.start();
@@ -326,26 +375,65 @@ async fn current_session(state: &AppState) -> AppResult<SessionRecord> {
     auth::refresh_session_if_needed(&state.database, &state.http, &settings, session).await
 }
 
-async fn ensure_device_identity(
-    state: &AppState,
-    session: &SessionRecord,
-) -> AppResult<DeviceIdentity> {
-    if let Some(identity) = state.database.load_device_identity()? {
-        if identity.user_id == session.user_id {
-            return Ok(identity);
+async fn current_session_or_clear(state: &AppState) -> AppResult<Option<SessionRecord>> {
+    if state.database.load_session()?.is_none() {
+        return Ok(None);
+    }
+
+    match current_session(state).await {
+        Ok(session) => Ok(Some(session)),
+        Err(error) => {
+            warn!(%error, "clearing invalid cloud session");
+            clear_auth_state(state)?;
+            Ok(None)
         }
+    }
+}
+
+fn ensure_local_device_identity(state: &AppState) -> AppResult<DeviceIdentity> {
+    if let Some(identity) = state.database.load_device_identity()? {
+        state.database.save_device_identity(&identity)?;
+        return Ok(identity);
     }
 
     let generated = generate_key_pair()?;
-    let device_id = uuid::Uuid::new_v4().to_string();
-    let name = detect_device_name();
-    let device_type = detect_device_type();
+    let identity = DeviceIdentity {
+        user_id: None,
+        device_id: uuid::Uuid::new_v4().to_string(),
+        device_secret: None,
+        name: detect_device_name(),
+        device_type: detect_device_type(),
+        public_key: generated.public_key,
+        private_key: generated.private_key,
+    };
+    state.database.save_device_identity(&identity)?;
+    Ok(identity)
+}
+
+async fn ensure_cloud_device_identity(
+    state: &AppState,
+    session: &SessionRecord,
+) -> AppResult<DeviceIdentity> {
+    let mut identity = ensure_local_device_identity(state)?;
+    match identity.user_id.as_deref() {
+        Some(user_id) if user_id == session.user_id && identity.device_secret.is_some() => {
+            sync_cloud_device_identity(state, session, &identity).await;
+            return Ok(identity);
+        }
+        Some(user_id) if user_id != session.user_id => {
+            return Err(AppError::message(format!(
+                "本机身份已绑定其他账号 ({user_id})"
+            )));
+        }
+        _ => {}
+    }
+
     let settings = load_settings(state)?;
     let request = DeviceRegisterRequest {
-        device_id: &device_id,
-        name: &name,
-        device_type: &device_type,
-        public_key: &generated.public_key,
+        device_id: &identity.device_id,
+        name: &identity.name,
+        device_type: &identity.device_type,
+        public_key: &identity.public_key,
     };
 
     let response: DeviceRegisterResponse = state
@@ -358,18 +446,84 @@ async fn ensure_device_identity(
         )
         .await?;
 
-    let identity = DeviceIdentity {
-        user_id: session.user_id.clone(),
-        device_id: response.device_id,
-        device_secret: response.device_secret,
-        name,
-        device_type,
-        public_key: generated.public_key,
-        private_key: generated.private_key,
-    };
-
+    identity.user_id = Some(session.user_id.clone());
+    identity.device_id = response.device_id;
+    identity.device_secret = Some(response.device_secret);
     state.database.save_device_identity(&identity)?;
+    sync_cloud_device_identity(state, session, &identity).await;
     Ok(identity)
+}
+
+async fn sync_cloud_device_identity(
+    state: &AppState,
+    session: &SessionRecord,
+    identity: &DeviceIdentity,
+) {
+    if let Err(error) = sync_cloud_device_name(state, session, identity).await {
+        warn!(%error, "failed to sync local device name to cloud");
+    }
+    if let Err(error) = sync_cloud_device_key(state, session, identity).await {
+        warn!(%error, "failed to sync local device key to cloud");
+    }
+}
+
+async fn sync_cloud_device_name(
+    state: &AppState,
+    session: &SessionRecord,
+    identity: &DeviceIdentity,
+) -> AppResult<()> {
+    let settings = load_settings(state)?;
+    let path = format!("{DEVICES_PATH}/{}", identity.device_id);
+    let request = serde_json::json!({ "name": identity.name });
+    state
+        .http
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
+        .await
+}
+
+async fn sync_cloud_device_key(
+    state: &AppState,
+    session: &SessionRecord,
+    identity: &DeviceIdentity,
+) -> AppResult<()> {
+    let settings = load_settings(state)?;
+    let path = format!("{DEVICES_PATH}/{}/key", identity.device_id);
+    let request = serde_json::json!({ "publicKey": identity.public_key });
+    state
+        .http
+        .put_empty(
+            &settings.server_url,
+            &path,
+            &request,
+            Some(&session.access_token),
+        )
+        .await
+}
+
+fn publish_offline_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
+    let identity = ensure_local_device_identity(state)?;
+    state
+        .runtime
+        .replace_cached_devices(vec![local_device_info(&identity)])
+}
+
+fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
+    DeviceInfo {
+        device_id: identity.device_id.clone(),
+        name: identity.name.clone(),
+        device_type: identity.device_type.clone(),
+        online: true,
+        last_seen: None,
+        public_key: identity.public_key.clone(),
+        lan_available: false,
+        active_route: None,
+        security_state: "verified".to_string(),
+    }
 }
 
 async fn fetch_devices(state: &AppState, session: &SessionRecord) -> AppResult<Vec<DeviceInfo>> {

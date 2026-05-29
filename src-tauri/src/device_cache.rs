@@ -3,12 +3,26 @@ use std::collections::{HashMap, HashSet};
 use crate::models::{DeviceInfo, LanTrustRecord};
 
 pub fn reconcile_devices(
-    incoming: Vec<DeviceInfo>,
+    mut incoming: Vec<DeviceInfo>,
     previous: &[DeviceInfo],
     lan_peers: &HashSet<String>,
     trusted_devices: &[LanTrustRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
+    if let Some(local_device_id) = local_device_id {
+        if !incoming
+            .iter()
+            .any(|device| device.device_id == local_device_id)
+        {
+            if let Some(local_device) = previous
+                .iter()
+                .find(|device| device.device_id == local_device_id)
+            {
+                incoming.push(local_device.clone());
+            }
+        }
+    }
+
     let previous_by_id = previous
         .iter()
         .map(|device| (device.device_id.as_str(), device))
@@ -17,6 +31,14 @@ pub fn reconcile_devices(
     let mut devices = incoming
         .into_iter()
         .map(|mut device| {
+            if local_device_id == Some(device.device_id.as_str()) {
+                device.online = true;
+                device.lan_available = false;
+                device.active_route = None;
+                device.security_state = "verified".to_string();
+                return device;
+            }
+
             if let Some(existing) = previous_by_id.get(device.device_id.as_str()) {
                 if device.security_state == "unverified" {
                     device.security_state = existing.security_state.clone();

@@ -8,6 +8,7 @@ import {
   type PropsWithChildren,
 } from 'react'
 import { listen } from '@tauri-apps/api/event'
+import { toast } from 'sonner'
 
 import {
   bootstrapApp,
@@ -229,10 +230,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       setDevice(null)
       setDevices([])
       setCloud(defaultCloudStatus)
-      setMessages([])
-      setTransfers([])
       setTransferSpeeds({})
-      setLogs([])
     } finally {
       setStatus('ready')
     }
@@ -270,12 +268,12 @@ export function AppStateProvider({ children }: PropsWithChildren) {
           }
         })
 
-        unlistenAuth = await listen('auth-invalidated', () => {
+        unlistenAuth = await listen<string>('auth-invalidated', (event) => {
           if (disposed) {
             return
           }
 
-          setBootstrapError('登录状态失效，请重新登录')
+          toast.info(event.payload || '登录状态失效，已切换到局域网模式')
           void refreshBootstrap()
         })
 
@@ -344,15 +342,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
 
   const logout = useCallback(async () => {
     await logoutRequest()
-    setSession(null)
-    setDevices([])
-    setCloud(defaultCloudStatus)
-    setMessages([])
-    setTransfers([])
-    setTransferSpeeds({})
-    setLogs([])
     setBootstrapError(null)
-  }, [])
+    await refreshBootstrap()
+  }, [refreshBootstrap])
 
   const refreshDevices = useCallback(async () => {
     const nextDevices = await listDevices()

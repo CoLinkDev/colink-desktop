@@ -67,9 +67,11 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceIdentity {
-    pub user_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub device_id: String,
-    pub device_secret: String,
+    #[serde(default)]
+    pub device_secret: Option<String>,
     pub name: String,
     pub device_type: String,
     pub public_key: String,
@@ -77,6 +79,16 @@ pub struct DeviceIdentity {
 }
 
 impl DeviceIdentity {
+    pub fn normalize(mut self) -> Self {
+        self.user_id = normalize_optional_string(self.user_id);
+        self.device_secret = normalize_optional_string(self.device_secret);
+        self.name = self.name.trim().to_string();
+        self.device_type = self.device_type.trim().to_string();
+        self.public_key = self.public_key.trim().to_string();
+        self.private_key = self.private_key.trim().to_string();
+        self
+    }
+
     pub fn summary(&self) -> LocalDeviceSummary {
         LocalDeviceSummary {
             device_id: self.device_id.clone(),
@@ -319,4 +331,53 @@ pub fn unix_now_millis() -> i64 {
 
 fn default_security_state() -> String {
     "unverified".to_string()
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceIdentity;
+
+    #[test]
+    fn device_identity_reads_legacy_cloud_binding() {
+        let raw = r#"{
+            "userId": "user-1",
+            "deviceId": "device-1",
+            "deviceSecret": "secret-1",
+            "name": "Desktop",
+            "deviceType": "windows",
+            "publicKey": "pk",
+            "privateKey": "sk"
+        }"#;
+
+        let identity = serde_json::from_str::<DeviceIdentity>(raw)
+            .expect("legacy identity")
+            .normalize();
+
+        assert_eq!(identity.user_id.as_deref(), Some("user-1"));
+        assert_eq!(identity.device_secret.as_deref(), Some("secret-1"));
+    }
+
+    #[test]
+    fn device_identity_allows_local_only_identity() {
+        let raw = r#"{
+            "deviceId": "device-1",
+            "name": "Desktop",
+            "deviceType": "windows",
+            "publicKey": "pk",
+            "privateKey": "sk"
+        }"#;
+
+        let identity = serde_json::from_str::<DeviceIdentity>(raw)
+            .expect("local identity")
+            .normalize();
+
+        assert_eq!(identity.user_id, None);
+        assert_eq!(identity.device_secret, None);
+    }
 }

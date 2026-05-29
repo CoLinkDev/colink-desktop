@@ -15,7 +15,7 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, refreshDevices, theme, setTheme, settingsDirty } = useAppState()
+  const { cloud, logout, refreshDevices, session, theme, setTheme, settingsDirty } = useAppState()
   const { t } = useTranslation()
 
   const [refreshing, setRefreshing] = useState(false)
@@ -134,8 +134,12 @@ export function AppLayout({ children }: PropsWithChildren) {
 
             <button
               onClick={async () => {
-                await logout()
-                navigate('/login')
+                if (session) {
+                  await logout()
+                  navigate('/devices')
+                } else {
+                  navigate('/login')
+                }
               }}
               className="group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--danger))]"
               type="button"
@@ -144,7 +148,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 <LogOut className="h-4 w-4 text-[hsl(var(--muted))] group-hover:text-[hsl(var(--danger))]" />
               </div>
               <span className="flex h-5 items-center translate-x-0 transition-transform duration-200 group-hover:translate-x-[2px] leading-none">
-                {t('nav.logout')}
+                {session ? t('nav.logout') : t('auth.login')}
               </span>
             </button>
           </div>

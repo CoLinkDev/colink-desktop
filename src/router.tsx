@@ -12,26 +12,22 @@ import { SettingsPage } from './pages/settings-page'
 import { LogsPage } from './pages/logs-page'
 
 function RootRedirect() {
-  const { session, status } = useAppState()
+  const { status } = useAppState()
   const { t } = useTranslation()
 
   if (status === 'booting') {
     return <LoadingScreen label={t('logs.loadingState')} />
   }
 
-  return <Navigate replace to={session ? '/devices' : '/login'} />
+  return <Navigate replace to="/devices" />
 }
 
 function ProtectedShell() {
-  const { session, status } = useAppState()
+  const { status } = useAppState()
   const { t } = useTranslation()
 
   if (status === 'booting') {
     return <LoadingScreen label={t('logs.preparingState')} />
-  }
-
-  if (!session) {
-    return <Navigate replace to="/login" />
   }
 
   return (
