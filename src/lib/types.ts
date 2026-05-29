@@ -1,3 +1,5 @@
+import { resolveLanguage } from '../i18n'
+
 export type DevicePlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'unknown'
 
 export interface AppSettings {
@@ -7,6 +9,7 @@ export interface AppSettings {
   lanDiscovery: boolean
   downloadPath: string
   notifications: boolean
+  language: string
 }
 
 export interface SessionSummary {
@@ -140,6 +143,7 @@ export const defaultSettings: AppSettings = {
   lanDiscovery: true,
   downloadPath: '',
   notifications: true,
+  language: resolveLanguage(),
 }
 
 export const defaultCloudStatus: CloudStatus = {

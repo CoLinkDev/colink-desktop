@@ -42,7 +42,7 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.lanAvailable'), value: formatBoolean(device.lanAvailable, t) },
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
     { label: t('devices.detailsFields.securityState'), value: formatSecurityState(device.securityState, t) },
-    { label: t('devices.lastSeen'), value: formatLastSeen(device.lastSeen) },
+    { label: t('devices.lastSeen'), value: formatLastSeen(device.lastSeen, t('devices.neverConnected')) },
     {
       label: t('devices.detailsFields.publicKeyFingerprint'),
       value: device.publicKey ? fingerprint || t('common.calculating') : t('common.none'),

@@ -10,6 +10,7 @@ use tauri::{
 
 use crate::{
     error::AppResult,
+    i18n::{self, TextKey},
     models::{AppSettings, CloudStatus, DeviceInfo},
     state::AppState,
 };
@@ -96,7 +97,7 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
     let menu = build_tray_menu(app)?;
     let _ = tray.set_menu(Some(menu));
     let _ = tray.set_icon(Some(build_tray_icon(icon_state)));
-    let _ = tray.set_tooltip(Some(tray_tooltip(&cloud, &devices)));
+    let _ = tray.set_tooltip(Some(tray_tooltip(app, &cloud, &devices)));
     Ok(())
 }
 
@@ -161,9 +162,32 @@ pub fn quit_app(app: &AppHandle) -> AppResult<()> {
 }
 
 fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
-    let open = MenuItem::with_id(app, MENU_OPEN, "打开", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, MENU_SETTINGS, "设置", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
+    let language = app
+        .try_state::<AppState>()
+        .and_then(|state| state.database.load_settings().ok().flatten())
+        .map(|settings| settings.language)
+        .unwrap_or_else(i18n::default_language_code);
+    let open = MenuItem::with_id(
+        app,
+        MENU_OPEN,
+        i18n::text(&language, TextKey::TrayOpen),
+        true,
+        None::<&str>,
+    )?;
+    let settings = MenuItem::with_id(
+        app,
+        MENU_SETTINGS,
+        i18n::text(&language, TextKey::TraySettings),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        MENU_QUIT,
+        i18n::text(&language, TextKey::TrayQuit),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
 
     Menu::with_items(app, &[&open, &settings, &separator, &quit]).map_err(Into::into)
@@ -171,15 +195,23 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
 
 fn main_window(app: &AppHandle) -> AppResult<WebviewWindow<tauri::Wry>> {
     app.get_webview_window("main")
-        .ok_or_else(|| crate::error::AppError::message("主窗口不存在"))
+        .ok_or_else(|| crate::error::AppError::message("main window does not exist"))
 }
 
-fn tray_tooltip(cloud: &CloudStatus, devices: &[DeviceInfo]) -> String {
+fn tray_tooltip(app: &AppHandle, cloud: &CloudStatus, devices: &[DeviceInfo]) -> String {
+    let language = app
+        .try_state::<AppState>()
+        .and_then(|state| state.database.load_settings().ok().flatten())
+        .map(|settings| settings.language)
+        .unwrap_or_else(i18n::default_language_code);
     let online = devices.iter().filter(|item| item.online).count();
     let lan = devices.iter().filter(|item| item.lan_available).count();
     format!(
-        "CoLink Desktop\n云端: {}\n可达设备: {online}\n局域网: {lan}",
-        cloud.state
+        "CoLink Desktop\n{}: {}\n{}: {online}\n{}: {lan}",
+        i18n::text(&language, TextKey::TrayCloud),
+        i18n::cloud_state(&language, &cloud.state),
+        i18n::text(&language, TextKey::TrayReachableDevices),
+        i18n::text(&language, TextKey::TrayLan),
     )
 }
 

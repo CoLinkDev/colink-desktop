@@ -5,9 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatLastSeen(value: string | null) {
+import { resolveLanguage } from '../i18n'
+
+export function formatLastSeen(value: string | null, fallback = 'Never connected', language?: string) {
   if (!value) {
-    return '从未连接'
+    return fallback
   }
 
   const timestamp = Date.parse(value)
@@ -16,7 +18,7 @@ export function formatLastSeen(value: string | null) {
     return value
   }
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(resolveLanguage(language), {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -24,8 +26,8 @@ export function formatLastSeen(value: string | null) {
   }).format(timestamp)
 }
 
-export function formatTimestamp(value: number) {
-  return new Intl.DateTimeFormat('zh-CN', {
+export function formatTimestamp(value: number, language?: string) {
+  return new Intl.DateTimeFormat(resolveLanguage(language), {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',

@@ -1,22 +1,39 @@
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
-// Read language from localStorage or default to system language
-const getInitialLanguage = () => {
-  const saved = localStorage.getItem('colink-lang')
-  if (saved && ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'de', 'ru'].includes(saved)) {
-    return saved
+export const supportedLanguages = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'de', 'ru'] as const
+
+export function resolveLanguage(selected?: string | null) {
+  const normalized = normalizeLanguage(selected)
+  if (normalized) {
+    return normalized
   }
-  // Detect system language matching colink-frontend logic
-  const sysLang = navigator.language
-  if (sysLang.startsWith('zh-CN') || sysLang === 'zh') return 'zh-CN'
-  if (sysLang.startsWith('zh')) return 'zh-TW'
-  if (sysLang.startsWith('ja')) return 'ja'
-  if (sysLang.startsWith('ko')) return 'ko'
-  if (sysLang.startsWith('es')) return 'es'
-  if (sysLang.startsWith('de')) return 'de'
-  if (sysLang.startsWith('ru')) return 'ru'
+
+  for (const language of navigator.languages ?? [navigator.language]) {
+    const systemLanguage = normalizeLanguage(language)
+    if (systemLanguage) {
+      return systemLanguage
+    }
+  }
+
   return 'en'
+}
+
+function normalizeLanguage(value?: string | null) {
+  const language = value?.trim().replace('_', '-').toLowerCase()
+  if (!language) {
+    return null
+  }
+
+  if (language === 'zh' || language.startsWith('zh-cn') || language.startsWith('zh-hans')) return 'zh-CN'
+  if (language.startsWith('zh-tw') || language.startsWith('zh-hk') || language.startsWith('zh-mo') || language.startsWith('zh-hant')) return 'zh-TW'
+  if (language.startsWith('en')) return 'en'
+  if (language.startsWith('ja')) return 'ja'
+  if (language.startsWith('ko')) return 'ko'
+  if (language.startsWith('es')) return 'es'
+  if (language.startsWith('de')) return 'de'
+  if (language.startsWith('ru')) return 'ru'
+  return null
 }
 
 const resources = {
@@ -36,6 +53,7 @@ const resources = {
         no: '否',
         none: '无',
         calculating: '计算中...',
+        requestFailed: '请求失败',
       },
       nav: {
         devices: '设备',
@@ -70,6 +88,7 @@ const resources = {
         lan: '局域网',
         cloud: '云端',
         lastSeen: '上次在线',
+        neverConnected: '从未连接',
         deviceId: '设备 ID',
         rotateKey: '轮换密钥',
         rotating: '轮换中...',
@@ -191,6 +210,7 @@ const resources = {
         confirmPassword: '确认密码',
         confirmPasswordPlaceholder: '再次输入密码',
         logoutConfirmDesc: '退出当前账户？',
+        sessionInvalidated: '登录状态失效，已切换到局域网模式',
         serverRequired: '请输入服务器地址',
         formIncomplete: '请输入完整信息',
         validation: {
@@ -229,8 +249,16 @@ const resources = {
         },
         language: '语言',
         languageTip: '选择界面显示语言',
-        zh: '简体中文',
-        en: 'English',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -250,6 +278,7 @@ const resources = {
         no: 'No',
         none: 'None',
         calculating: 'Calculating...',
+        requestFailed: 'Request failed',
       },
       nav: {
         devices: 'Devices',
@@ -284,6 +313,7 @@ const resources = {
         lan: 'LAN',
         cloud: 'Cloud',
         lastSeen: 'Last active',
+        neverConnected: 'Never connected',
         deviceId: 'Device ID',
         rotateKey: 'Rotate Key',
         rotating: 'Rotating...',
@@ -405,6 +435,7 @@ const resources = {
         confirmPassword: 'Confirm Password',
         confirmPasswordPlaceholder: 'Confirm your password',
         logoutConfirmDesc: 'Log out of the current account?',
+        sessionInvalidated: 'Login expired. Switched to LAN mode.',
         serverRequired: 'Please enter server address',
         formIncomplete: 'Please fill in all fields',
         validation: {
@@ -443,8 +474,16 @@ const resources = {
         },
         language: 'Language',
         languageTip: 'Select UI display language',
-        zh: '简体中文',
-        en: 'English',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -464,6 +503,7 @@ const resources = {
         no: '否',
         none: '無',
         calculating: '計算中...',
+        requestFailed: '請求失敗',
       },
       nav: {
         devices: '設備',
@@ -498,6 +538,7 @@ const resources = {
         lan: '區域網路',
         cloud: '雲端',
         lastSeen: '上次在線',
+        neverConnected: '從未連線',
         deviceId: '設備 ID',
         rotateKey: '輪換金鑰',
         rotating: '輪換中...',
@@ -619,6 +660,7 @@ const resources = {
         confirmPassword: '確認密碼',
         confirmPasswordPlaceholder: '再次輸入密碼',
         logoutConfirmDesc: '要登出目前帳戶嗎？',
+        sessionInvalidated: '登入狀態已失效，已切換到區域網路模式',
         serverRequired: '請輸入伺服器地址',
         formIncomplete: '請輸入完整資訊',
         validation: {
@@ -657,8 +699,16 @@ const resources = {
         },
         language: '語言',
         languageTip: '選擇介面顯示語言',
-        zh: '简体中文',
-        en: 'English',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -678,6 +728,7 @@ const resources = {
         no: 'いいえ',
         none: 'なし',
         calculating: '計算中...',
+        requestFailed: 'リクエストに失敗しました',
       },
       nav: {
         devices: 'デバイス',
@@ -712,6 +763,7 @@ const resources = {
         lan: 'ローカルネットワーク',
         cloud: 'クラウド',
         lastSeen: '最終オンライン',
+        neverConnected: '未接続',
         deviceId: 'デバイス ID',
         rotateKey: 'キーのローテーション',
         rotating: 'ローテーション中...',
@@ -833,6 +885,7 @@ const resources = {
         confirmPassword: 'パスワードの確認',
         confirmPasswordPlaceholder: 'パスワードを再入力',
         logoutConfirmDesc: '現在のアカウントからログアウトしますか？',
+        sessionInvalidated: 'ログインの有効期限が切れたため、LAN モードに切り替えました',
         serverRequired: 'サーバーアドレスを入力してください',
         formIncomplete: 'すべての項目を入力してください',
         validation: {
@@ -871,6 +924,16 @@ const resources = {
         },
         language: '言語',
         languageTip: '表示言語を選択してください',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -890,6 +953,7 @@ const resources = {
         no: '아니요',
         none: '없음',
         calculating: '계산 중...',
+        requestFailed: '요청 실패',
       },
       nav: {
         devices: '디바이스',
@@ -924,6 +988,7 @@ const resources = {
         lan: '로컬 네트워크',
         cloud: '클라우드',
         lastSeen: '최근 활동 시간',
+        neverConnected: '연결된 적 없음',
         deviceId: '디바이스 ID',
         rotateKey: '키 회전',
         rotating: '회전 중...',
@@ -1045,6 +1110,7 @@ const resources = {
         confirmPassword: '비밀번호 확인',
         confirmPasswordPlaceholder: '비밀번호를 재입력하세요',
         logoutConfirmDesc: '현재 계정에서 로그아웃할까요?',
+        sessionInvalidated: '로그인 상태가 만료되어 LAN 모드로 전환했습니다',
         serverRequired: '서버 주소를 입력하세요',
         formIncomplete: '모든 필드를 채워주세요',
         validation: {
@@ -1083,6 +1149,16 @@ const resources = {
         },
         language: '언어',
         languageTip: '표시 언어 선택',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -1102,6 +1178,7 @@ const resources = {
         no: 'No',
         none: 'Ninguno',
         calculating: 'Calculando...',
+        requestFailed: 'Error en la solicitud',
       },
       nav: {
         devices: 'Dispositivos',
@@ -1136,6 +1213,7 @@ const resources = {
         lan: 'Red local',
         cloud: 'Nube',
         lastSeen: 'Última vez visto',
+        neverConnected: 'Nunca conectado',
         deviceId: 'ID de dispositivo',
         rotateKey: 'Rotar clave',
         rotating: 'Rotando...',
@@ -1257,6 +1335,7 @@ const resources = {
         confirmPassword: 'Confirmar contraseña',
         confirmPasswordPlaceholder: 'Confirme su contraseña',
         logoutConfirmDesc: '¿Cerrar sesión en la cuenta actual?',
+        sessionInvalidated: 'La sesión expiró. Se cambió al modo LAN.',
         serverRequired: 'Por favor, introduzca la dirección del servidor',
         formIncomplete: 'Por favor, rellene todos los campos',
         validation: {
@@ -1295,6 +1374,16 @@ const resources = {
         },
         language: 'Idioma',
         languageTip: 'Seleccione el idioma de visualización',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -1314,6 +1403,7 @@ const resources = {
         no: 'Nein',
         none: 'Keine',
         calculating: 'Wird berechnet...',
+        requestFailed: 'Anfrage fehlgeschlagen',
       },
       nav: {
         devices: 'Geräte',
@@ -1348,6 +1438,7 @@ const resources = {
         lan: 'Lokales Netzwerk',
         cloud: 'Cloud',
         lastSeen: 'Zuletzt gesehen',
+        neverConnected: 'Nie verbunden',
         deviceId: 'Geräte-ID',
         rotateKey: 'Schlüssel rotieren',
         rotating: 'Rotiert...',
@@ -1469,6 +1560,7 @@ const resources = {
         confirmPassword: 'Passwort bestätigen',
         confirmPasswordPlaceholder: 'Passwort bestätigen',
         logoutConfirmDesc: 'Vom aktuellen Konto abmelden?',
+        sessionInvalidated: 'Sitzung abgelaufen. LAN-Modus wurde aktiviert.',
         serverRequired: 'Bitte Serveradresse eingeben',
         formIncomplete: 'Bitte alle Felder ausfüllen',
         validation: {
@@ -1507,6 +1599,16 @@ const resources = {
         },
         language: 'Sprache',
         languageTip: 'Anzeigesprache auswählen',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -1526,6 +1628,7 @@ const resources = {
         no: 'Нет',
         none: 'Нет',
         calculating: 'Вычисление...',
+        requestFailed: 'Не удалось выполнить запрос',
       },
       nav: {
         devices: 'Устройства',
@@ -1560,6 +1663,7 @@ const resources = {
         lan: 'Локальная сеть',
         cloud: 'Облако',
         lastSeen: 'Последняя активность',
+        neverConnected: 'Никогда не подключалось',
         deviceId: 'ID устройства',
         rotateKey: 'Смена ключа',
         rotating: 'Смена ключа...',
@@ -1681,6 +1785,7 @@ const resources = {
         confirmPassword: 'Подтверждение пароля',
         confirmPasswordPlaceholder: 'Повторите пароль',
         logoutConfirmDesc: 'Выйти из текущего аккаунта?',
+        sessionInvalidated: 'Сессия истекла. Включен режим LAN.',
         serverRequired: 'Введите адрес сервера',
         formIncomplete: 'Пожалуйста, заполните все поля',
         validation: {
@@ -1719,6 +1824,16 @@ const resources = {
         },
         language: 'Язык',
         languageTip: 'Выберите язык интерфейса',
+        languages: {
+          en: 'English',
+          zhCN: '简体中文',
+          zhTW: '繁體中文',
+          ja: '日本語',
+          ko: '한국어',
+          es: 'Español',
+          de: 'Deutsch',
+          ru: 'Русский',
+        },
       },
     },
   },
@@ -1728,7 +1843,7 @@ void i18n
   .use(initReactI18next)
   .init({
     resources,
-    lng: getInitialLanguage(),
+    lng: resolveLanguage(),
     fallbackLng: 'en',
     interpolation: {
       escapeValue: false, // React already escapes values

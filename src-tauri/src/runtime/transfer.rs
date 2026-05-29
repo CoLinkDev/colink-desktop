@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::{unix_now_millis, FileTransferRecord, SendFilePayload, FILE_CHUNK_SIZE},
     protocol::{
         BusinessEnvelope, FileAcceptPayload, FileAckPayload, FileCancelPayload, FileChunkPayload,
@@ -45,7 +46,7 @@ enum ChunkTransport {
 impl AppRuntime {
     pub fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
         if payload.paths.is_empty() {
-            return Err(AppError::message("请选择文件"));
+            return Err(AppError::message(self.user_text(TextKey::SelectFiles)));
         }
         let route = self.resolve_route(&payload.device_id)?;
 
@@ -54,7 +55,9 @@ impl AppRuntime {
         for (index, raw_path) in payload.paths.into_iter().enumerate() {
             let source_path = PathBuf::from(&raw_path);
             if !source_path.is_file() {
-                return Err(AppError::message(format!("文件不存在: {raw_path}")));
+                return Err(AppError::message(
+                    self.user_message(TextKey::FileNotFound, &[("path", raw_path)]),
+                ));
             }
             self.emit_transfer_preparing(index + 1, total);
 
@@ -70,7 +73,7 @@ impl AppRuntime {
             let file_name = source_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .ok_or_else(|| AppError::message("文件名不合法"))?
+                .ok_or_else(|| AppError::message(self.user_text(TextKey::InvalidFileName)))?
                 .to_string();
             let file_id = Uuid::new_v4().to_string();
             let created_at = unix_now_millis();
@@ -130,7 +133,7 @@ impl AppRuntime {
         self.append_log(
             "info",
             "file",
-            format!("已发送 {} 个文件邀请", records.len()),
+            format!("sent {} file offer(s)", records.len()),
         )?;
         Ok(records)
     }
@@ -195,7 +198,7 @@ impl AppRuntime {
             self.emit_transfers()?;
         }
 
-        self.append_log("info", "file", format!("已取消传输 {file_id}"))?;
+        self.append_log("info", "file", format!("cancelled transfer {file_id}"))?;
         Ok(())
     }
 
@@ -205,11 +208,10 @@ impl AppRuntime {
         route: &str,
         payload: FileOfferPayload,
     ) -> AppResult<()> {
-        let settings = self
-            .inner
-            .database
-            .load_settings()?
-            .ok_or_else(|| AppError::message("本地设置未初始化"))?;
+        let settings =
+            self.inner.database.load_settings()?.ok_or_else(|| {
+                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
+            })?;
         info!(
             from = %from,
             session_id = %payload.session_id,
@@ -224,14 +226,20 @@ impl AppRuntime {
         let temp_path = download_path.join(temp_name);
 
         let sender_name = self.lookup_device_name(from);
-        let prompt = format!(
-            "{} 想发送文件 {}\n大小: {} 字节",
-            sender_name, payload.file_name, payload.file_size
+        let prompt = i18n::message(
+            &settings.language,
+            TextKey::ReceiveFilePrompt,
+            &[
+                ("sender", sender_name),
+                ("file", payload.file_name.clone()),
+                ("size", payload.file_size.to_string()),
+            ],
         );
+        let title = i18n::text(&settings.language, TextKey::ReceiveFileTitle).to_string();
         let accepted = tauri::async_runtime::spawn_blocking(move || {
             MessageDialog::new()
                 .set_level(MessageLevel::Info)
-                .set_title("接收文件")
+                .set_title(&title)
                 .set_description(&prompt)
                 .set_buttons(MessageButtons::YesNo)
                 .show()
@@ -302,7 +310,14 @@ impl AppRuntime {
             "file offer accepted"
         );
         self.emit_transfers()?;
-        self.notify("文件接收", &format!("开始接收 {}", payload.file_name))?;
+        self.notify(
+            TextKey::FileReceiveTitle,
+            &[],
+            &self.user_message(
+                TextKey::FileReceiveStarted,
+                &[("file", payload.file_name.clone())],
+            ),
+        )?;
         if record.total_chunks == 0
             && TransferRoute::from_str(&record.route) != Some(TransferRoute::Lan)
         {
@@ -318,7 +333,7 @@ impl AppRuntime {
             let outgoing = state
                 .outgoing_files
                 .get_mut(&file_id)
-                .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+                .ok_or_else(|| AppError::message("file send state does not exist"))?;
             let now = unix_now_millis();
             outgoing.record.status = "sending".to_string();
             outgoing.record.updated_at = now;
@@ -446,7 +461,10 @@ impl AppRuntime {
         self.append_log(
             "info",
             "file",
-            format!("文件 {} 已发送完成，等待确认", record.file_name),
+            format!(
+                "file {} was sent; waiting for confirmation",
+                record.file_name
+            ),
         )?;
         Ok(())
     }
@@ -472,8 +490,8 @@ impl AppRuntime {
                 let _ = self.send_business_message(&record.device_id, chunk)?;
             }
             ChunkTransport::Lan => {
-                let index =
-                    u32::try_from(index).map_err(|_| AppError::message("文件分块索引过大"))?;
+                let index = u32::try_from(index)
+                    .map_err(|_| AppError::message("file chunk index is too large"))?;
                 self.inner
                     .lan
                     .send_transfer_frame(file_id, FileDataFrame::chunk(index, bytes.to_vec()))?;
@@ -492,8 +510,9 @@ impl AppRuntime {
             self.inner.lan.send_transfer_frame(
                 file_id,
                 FileDataFrame::finish(
-                    u32::try_from(record.total_chunks)
-                        .map_err(|_| AppError::message("文件分块数量超过协议限制"))?,
+                    u32::try_from(record.total_chunks).map_err(|_| {
+                        AppError::message("file chunk count exceeds protocol limit")
+                    })?,
                 ),
             )?;
         }
@@ -592,7 +611,7 @@ impl AppRuntime {
                 )
             })
         }
-        .ok_or_else(|| AppError::message("接收中的文件不存在"))?;
+        .ok_or_else(|| AppError::message("incoming file does not exist"))?;
 
         if chunk_index < received_chunks {
             debug!(
@@ -647,7 +666,7 @@ impl AppRuntime {
                 )
             })
         }
-        .ok_or_else(|| AppError::message("接收状态不存在"))?;
+        .ok_or_else(|| AppError::message("receive state does not exist"))?;
 
         if received_chunks < total_chunks {
             self.send_file_retransmit(&device_id, session_id, received_chunks)?;
@@ -696,11 +715,12 @@ impl AppRuntime {
                 .get(session_id)
                 .map(|item| (item.source_path.clone(), item.record.clone()))
         }
-        .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+        .ok_or_else(|| AppError::message("file send state does not exist"))?;
 
         let offset = chunk_index
             .checked_mul(FILE_CHUNK_SIZE as i64)
-            .ok_or_else(|| AppError::message("文件分块偏移溢出"))? as u64;
+            .ok_or_else(|| AppError::message("file chunk offset overflow"))?
+            as u64;
         let mut file = tokio::fs::File::open(&source_path).await?;
         file.seek(SeekFrom::Start(offset)).await?;
         let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
@@ -710,8 +730,8 @@ impl AppRuntime {
         }
 
         if lan {
-            let chunk_index =
-                u32::try_from(chunk_index).map_err(|_| AppError::message("文件分块索引过大"))?;
+            let chunk_index = u32::try_from(chunk_index)
+                .map_err(|_| AppError::message("file chunk index is too large"))?;
             self.inner.lan.send_transfer_frame(
                 session_id,
                 FileDataFrame::chunk(chunk_index, buffer[..read].to_vec()),
@@ -738,17 +758,16 @@ impl AppRuntime {
             .lock_unpoisoned()
             .incoming_files
             .remove(file_id)
-            .ok_or_else(|| AppError::message("接收状态不存在"))?;
+            .ok_or_else(|| AppError::message("receive state does not exist"))?;
         {
             let mut writer = incoming.writer.lock().await;
             writer.flush().await?;
         }
 
-        let settings = self
-            .inner
-            .database
-            .load_settings()?
-            .ok_or_else(|| AppError::message("本地设置未初始化"))?;
+        let settings =
+            self.inner.database.load_settings()?.ok_or_else(|| {
+                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
+            })?;
         let download_dir = PathBuf::from(settings.download_path);
         fs::create_dir_all(&download_dir)?;
 
@@ -757,7 +776,7 @@ impl AppRuntime {
             .temp_path
             .as_deref()
             .map(PathBuf::from)
-            .ok_or_else(|| AppError::message("临时文件路径不存在"))?;
+            .ok_or_else(|| AppError::message("temporary file path does not exist"))?;
         let success = verify_file_checksum(&temp_path, &incoming.record.checksum)?;
 
         let final_path = if success {
@@ -802,9 +821,20 @@ impl AppRuntime {
         self.inner.lan.unregister_transfer(file_id);
 
         if success {
-            self.notify("文件接收完成", &format!("已保存 {}", record.file_name))?;
+            self.notify(
+                TextKey::FileReceiveCompleteTitle,
+                &[],
+                &self.user_message(TextKey::FileSaved, &[("file", record.file_name.clone())]),
+            )?;
         } else {
-            self.notify("文件接收失败", &format!("{} 校验失败", record.file_name))?;
+            self.notify(
+                TextKey::FileReceiveFailedTitle,
+                &[],
+                &self.user_message(
+                    TextKey::FileChecksumFailed,
+                    &[("file", record.file_name.clone())],
+                ),
+            )?;
         }
         self.inner
             .state
@@ -834,7 +864,7 @@ impl AppRuntime {
         let record = removed.map(|item| item.record);
         let mut record = record
             .or(self.inner.database.load_transfer(file_id)?)
-            .ok_or_else(|| AppError::message("传输记录不存在"))?;
+            .ok_or_else(|| AppError::message("transfer record does not exist"))?;
         record.status = status.to_string();
         if status == "completed" {
             record.transferred_bytes = record.file_size;
@@ -934,7 +964,7 @@ impl AppRuntime {
             let outgoing = state
                 .outgoing_files
                 .get_mut(file_id)
-                .ok_or_else(|| AppError::message("文件发送状态不存在"))?;
+                .ok_or_else(|| AppError::message("file send state does not exist"))?;
             outgoing.record.route = route.as_str().to_string();
             outgoing.record.updated_at = unix_now_millis();
             outgoing.record.clone()
@@ -980,7 +1010,7 @@ impl AppRuntime {
     ) -> AppResult<()> {
         if self.transfer_route(file_id) == Some(TransferRoute::Lan) {
             let next_expected_index = u32::try_from(next_expected_index)
-                .map_err(|_| AppError::message("文件分块索引过大"))?;
+                .map_err(|_| AppError::message("file chunk index is too large"))?;
             self.inner
                 .lan
                 .send_transfer_frame(file_id, FileDataFrame::ack(next_expected_index))?;
@@ -1005,8 +1035,8 @@ impl AppRuntime {
         chunk_index: i64,
     ) -> AppResult<()> {
         if self.transfer_route(file_id) == Some(TransferRoute::Lan) {
-            let chunk_index =
-                u32::try_from(chunk_index).map_err(|_| AppError::message("文件分块索引过大"))?;
+            let chunk_index = u32::try_from(chunk_index)
+                .map_err(|_| AppError::message("file chunk index is too large"))?;
             self.inner
                 .lan
                 .send_transfer_frame(file_id, FileDataFrame::retransmit(chunk_index))?;
@@ -1104,7 +1134,7 @@ impl AppRuntime {
         let incoming = state
             .incoming_files
             .get_mut(file_id)
-            .ok_or_else(|| AppError::message("接收状态不存在"))?;
+            .ok_or_else(|| AppError::message("receive state does not exist"))?;
         incoming.record.transferred_bytes += delta_bytes;
         incoming.record.updated_at = updated_at;
         incoming.received_chunks += 1;

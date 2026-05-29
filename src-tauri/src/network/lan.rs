@@ -32,6 +32,7 @@ use crate::{
         lan::{choose_suite, pairing_code, supported_suites, LanSessionCrypto, AES_256_GCM_SUITE},
     },
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::{
         unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingRequest, LanTrustRecord,
         LAN_PORT,
@@ -206,7 +207,7 @@ impl LanManager {
         let settings = self
             .database
             .load_settings()?
-            .ok_or_else(|| AppError::message("本地设置未初始化"))?;
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::SettingsNotInitialized)))?;
         if !settings.lan_discovery {
             info!("lan discovery disabled");
             self.stop();
@@ -316,10 +317,10 @@ impl LanManager {
             .peers
             .get(device_id)
             .map(|peer| peer.sender.clone())
-            .ok_or_else(|| AppError::message("LAN 对端未连接"))?;
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::LanPeerNotConnected)))?;
         sender
             .send(message)
-            .map_err(|_| AppError::message("LAN 对端不可用"))
+            .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)))
     }
 
     pub fn peer_endpoint(&self, device_id: &str) -> Option<(String, u16)> {
@@ -348,10 +349,10 @@ impl LanManager {
             .lock_unpoisoned()
             .pending_pairings
             .remove(request_id)
-            .ok_or_else(|| AppError::message("配对请求不存在或已过期"))?;
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::PairingRequestMissing)))?;
         sender
             .send(accepted)
-            .map_err(|_| AppError::message("配对请求已结束"))
+            .map_err(|_| AppError::message(self.user_text(TextKey::PairingRequestEnded)))
     }
 
     pub fn forget_trust(&self, device_id: &str) -> AppResult<()> {
@@ -365,10 +366,10 @@ impl LanManager {
         let context = self.load_context()?;
         let (ip, port) = self
             .peer_endpoint(device_id)
-            .ok_or_else(|| AppError::message("未发现该 LAN 设备"))?;
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::LanDeviceNotFound)))?;
         let ip = ip
             .parse::<IpAddr>()
-            .map_err(|_| AppError::message("LAN 设备地址无效"))?;
+            .map_err(|_| AppError::message(self.user_text(TextKey::LanDeviceAddressInvalid)))?;
         let manager = self.clone();
         let device_id = device_id.to_string();
         tauri::async_runtime::spawn(async move {
@@ -402,10 +403,10 @@ impl LanManager {
             .transfer_senders
             .get(session_id)
             .cloned()
-            .ok_or_else(|| AppError::message("LAN 数据连接不存在"))?;
+            .ok_or_else(|| AppError::message("LAN data connection does not exist"))?;
         sender
             .send(frame)
-            .map_err(|_| AppError::message("LAN 数据连接不可用"))
+            .map_err(|_| AppError::message("LAN data connection is unavailable"))
     }
 
     pub async fn connect_transfer(
@@ -437,7 +438,7 @@ impl LanManager {
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
                 source: "lan".to_string(),
-                message: "本地 LAN 监听端口绑定失败".to_string(),
+                message: "local LAN listener port bind failed".to_string(),
             });
             self.finalize_generation(generation);
             return;
@@ -448,7 +449,7 @@ impl LanManager {
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
                 source: "lan".to_string(),
-                message: "mDNS 服务初始化失败".to_string(),
+                message: "mDNS service initialization failed".to_string(),
             });
             self.finalize_generation(generation);
             return;
@@ -462,7 +463,7 @@ impl LanManager {
                 let _ = self.event_tx.send(RuntimeEvent::Log {
                     level: "warn".to_string(),
                     source: "lan".to_string(),
-                    message: format!("mDNS 浏览启动失败: {error}"),
+                    message: format!("mDNS browse failed to start: {error}"),
                 });
                 self.finalize_generation(generation);
                 return;
@@ -1425,8 +1426,8 @@ impl LanManager {
             .pending_pairings
             .remove(&request_id);
         result
-            .map_err(|_| AppError::message("LAN 配对超时"))?
-            .map_err(|_| AppError::message("LAN 配对已取消"))
+            .map_err(|_| AppError::message("LAN pairing timed out"))?
+            .map_err(|_| AppError::message("LAN pairing was cancelled"))
     }
 
     fn trust_peer(&self, proof: &PeerProof) -> AppResult<()> {
@@ -1612,7 +1613,7 @@ impl LanManager {
         let device = self
             .database
             .load_device_identity()?
-            .ok_or_else(|| AppError::message("当前设备尚未注册"))?;
+            .ok_or_else(|| AppError::message("current device is not registered"))?;
         Ok(LanContext {
             device,
             incarnation: unix_now_millis(),
@@ -1660,6 +1661,17 @@ impl LanManager {
         inner.command_tx = None;
         inner.reconnecting.clear();
     }
+
+    fn user_text(&self, key: TextKey) -> String {
+        let language = self
+            .database
+            .load_settings()
+            .ok()
+            .flatten()
+            .map(|settings| settings.language)
+            .unwrap_or_else(i18n::default_language_code);
+        i18n::text(&language, key).to_string()
+    }
 }
 
 fn reject_ws(status: StatusCode, body: &str) -> ErrorResponse {
@@ -1683,17 +1695,17 @@ async fn perform_outbound_handshake(
 
     let exchange = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
         .await
-        .map_err(|_| AppError::message("LAN 握手超时"))??;
+        .map_err(|_| AppError::message("LAN handshake timed out"))??;
     if exchange.message_type == "handshake.v1.reject" {
         let payload: HandshakeRejectPayload = serde_json::from_value(exchange.payload)?;
         return Err(AppError::message(payload.reason));
     }
     if exchange.message_type != "handshake.v1.exchange" {
-        return Err(AppError::message("LAN 握手响应类型错误"));
+        return Err(AppError::message("invalid LAN handshake response type"));
     }
     let peer_payload: HandshakeProofPayload = serde_json::from_value(exchange.payload)?;
     if peer_payload.device_id != expected_device_id {
-        return Err(AppError::message("LAN 握手设备不匹配"));
+        return Err(AppError::message("LAN handshake device mismatch"));
     }
     verify_handshake_proof(&peer_payload)?;
     let proof = PeerProof {
@@ -1705,7 +1717,7 @@ async fn perform_outbound_handshake(
     let trust = trust_state(database, &proof)?;
     if !matches!(trust, TrustState::Trusted) {
         if !allow_pairing {
-            return Err(AppError::message("LAN 设备密钥未信任"));
+            return Err(AppError::message("LAN device key is not trusted"));
         }
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
@@ -1728,23 +1740,25 @@ async fn perform_outbound_handshake(
             )
             .await?
         {
-            return Err(AppError::message("用户取消 LAN 配对"));
+            return Err(AppError::message("user cancelled LAN pairing"));
         }
     }
 
     let final_message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
         .await
-        .map_err(|_| AppError::message("LAN 握手超时"))??;
+        .map_err(|_| AppError::message("LAN handshake timed out"))??;
     if final_message.message_type == "handshake.v1.reject" {
         let payload: HandshakeRejectPayload = serde_json::from_value(final_message.payload)?;
         return Err(AppError::message(payload.reason));
     }
     if final_message.message_type != "handshake.v1.accept" {
-        return Err(AppError::message("LAN 握手确认类型错误"));
+        return Err(AppError::message("invalid LAN handshake confirmation type"));
     }
     let accept: HandshakeAcceptPayload = serde_json::from_value(final_message.payload)?;
     if accept.device_id != proof.device_id {
-        return Err(AppError::message("LAN 握手确认设备不匹配"));
+        return Err(AppError::message(
+            "LAN handshake confirmation device mismatch",
+        ));
     }
     if !matches!(trust, TrustState::Trusted) {
         manager.trust_peer(&proof)?;
@@ -1766,7 +1780,7 @@ async fn perform_inbound_handshake(
 ) -> AppResult<HandshakeResult<TcpStream>> {
     let request = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
         .await
-        .map_err(|_| AppError::message("LAN 握手超时"))??;
+        .map_err(|_| AppError::message("LAN handshake timed out"))??;
     if request.message_type != "handshake.v1.request" {
         let _ = write_peer_message(
             &mut stream,
@@ -1776,7 +1790,7 @@ async fn perform_inbound_handshake(
             },
         )
         .await;
-        return Err(AppError::message("LAN 握手请求类型错误"));
+        return Err(AppError::message("invalid LAN handshake request type"));
     }
     let peer_payload: HandshakeProofPayload = serde_json::from_value(request.payload)?;
     verify_handshake_proof(&peer_payload)?;
@@ -1822,7 +1836,7 @@ async fn perform_inbound_handshake(
                 },
             )
             .await?;
-            return Err(AppError::message("用户拒绝 LAN 配对"));
+            return Err(AppError::message("user rejected LAN pairing"));
         }
         manager.trust_peer(&proof)?;
     }
@@ -1867,13 +1881,13 @@ where
     .await?;
     let message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(stream))
         .await
-        .map_err(|_| AppError::message("LAN 加密协商超时"))??;
+        .map_err(|_| AppError::message("LAN encryption negotiation timed out"))??;
     if message.message_type != "business.v1.negotiate" {
-        return Err(AppError::message("LAN 加密协商类型错误"));
+        return Err(AppError::message("invalid LAN encryption negotiation type"));
     }
     let peer: BusinessNegotiatePayload = serde_json::from_value(message.payload)?;
     let suite = choose_suite(&local_supported, &peer.supported, local_is_initiator)
-        .ok_or_else(|| AppError::message("LAN 加密协商无可用套件"))?;
+        .ok_or_else(|| AppError::message("no compatible LAN encryption suite is available"))?;
     LanSessionCrypto::new(
         suite,
         &context.device.private_key,
@@ -1952,11 +1966,11 @@ where
     while let Some(message) = stream.next().await {
         match message.map_err(|error| AppError::message(error.to_string()))? {
             Message::Text(text) => return Ok(serde_json::from_str(&text)?),
-            Message::Close(_) => return Err(AppError::message("LAN 连接已关闭")),
+            Message::Close(_) => return Err(AppError::message("LAN connection was closed")),
             Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
     }
-    Err(AppError::message("LAN 连接已结束"))
+    Err(AppError::message("LAN connection ended"))
 }
 
 fn ensure_timestamp(timestamp: i64) -> AppResult<()> {

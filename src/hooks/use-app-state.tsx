@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
+import i18n, { resolveLanguage } from '../i18n'
 
 import {
   bootstrapApp,
@@ -117,7 +118,7 @@ function pruneTransferSpeeds(current: Record<string, number>, transfers: FileTra
   return next
 }
 
-export function readErrorMessage(error: unknown) {
+export function readErrorMessage(error: unknown, fallback = i18n.t('common.requestFailed')) {
   if (typeof error === 'string') {
     return error
   }
@@ -126,7 +127,7 @@ export function readErrorMessage(error: unknown) {
     return error.message
   }
 
-  return '请求失败'
+  return fallback
 }
 
 export function AppStateProvider({ children }: PropsWithChildren) {
@@ -198,8 +199,12 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   }, [])
 
   const applyBootstrap = useCallback((payload: BootstrapPayload) => {
+    const language = resolveLanguage(payload.settings.language)
+    if (i18n.language !== language) {
+      void i18n.changeLanguage(language)
+    }
     setSession(payload.session)
-    setSettings(payload.settings)
+    setSettings({ ...payload.settings, language })
     setDevice(payload.device)
     setDevices(payload.devices)
     setCloud(payload.cloud)
@@ -270,10 +275,10 @@ export function AppStateProvider({ children }: PropsWithChildren) {
 
         unlistenAuth = await listen<string>('auth-invalidated', (event) => {
           if (disposed) {
-            return
-          }
+          return
+        }
 
-          toast.info(event.payload || '登录状态失效，已切换到局域网模式')
+          toast.info(event.payload || i18n.t('auth.sessionInvalidated'))
           void refreshBootstrap()
         })
 
@@ -368,7 +373,11 @@ export function AppStateProvider({ children }: PropsWithChildren) {
 
   const saveSettings = useCallback(async (nextSettings: AppSettings) => {
     const saved = await updateSettingsRequest(nextSettings)
-    setSettings(saved)
+    const language = resolveLanguage(saved.language)
+    if (i18n.language !== language) {
+      await i18n.changeLanguage(language)
+    }
+    setSettings({ ...saved, language })
     setBootstrapError(null)
   }, [])
 

@@ -5,7 +5,7 @@ import { formatTimestamp } from '../lib/utils'
 
 export function LogsPage() {
   const { logs } = useAppState()
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
 
   return (
     <div className="animate-fade-in">
@@ -35,7 +35,7 @@ export function LogsPage() {
 
                   {/* Timestamp at the far right */}
                   <span className="shrink-0 font-medium select-none">
-                    {formatTimestamp(item.createdAt)}
+                    {formatTimestamp(item.createdAt, i18n.language)}
                   </span>
                 </div>
 

@@ -11,6 +11,7 @@ import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { buildTime, fallbackVersion, formatBuildTime, projectUrl, readAppVersion } from '../lib/app-meta'
 import type { AppSettings } from '../lib/types'
 import { cn } from '../lib/utils'
+import { resolveLanguage } from '../i18n'
 
 export function SettingsPage() {
   const { settings, saveSettings, pickDownloadDirectory } = useAppState()
@@ -26,14 +27,14 @@ export function SettingsPage() {
 }
 
 const SUPPORTED_LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'zh-CN', label: '简体中文' },
-  { code: 'zh-TW', label: '繁體中文' },
-  { code: 'ja', label: '日本語' },
-  { code: 'ko', label: '한국어' },
-  { code: 'es', label: 'Español' },
-  { code: 'de', label: 'Deutsch' },
-  { code: 'ru', label: 'Русский' },
+  { code: 'en', labelKey: 'settings.languages.en' },
+  { code: 'zh-CN', labelKey: 'settings.languages.zhCN' },
+  { code: 'zh-TW', labelKey: 'settings.languages.zhTW' },
+  { code: 'ja', labelKey: 'settings.languages.ja' },
+  { code: 'ko', labelKey: 'settings.languages.ko' },
+  { code: 'es', labelKey: 'settings.languages.es' },
+  { code: 'de', labelKey: 'settings.languages.de' },
+  { code: 'ru', labelKey: 'settings.languages.ru' },
 ] as const
 
 interface SettingsFormProps {
@@ -55,6 +56,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     lanDiscovery: z.boolean(),
     downloadPath: z.string().min(1, t('settings.validation.downloadPath')),
     notifications: z.boolean(),
+    language: z.string().min(1),
   }), [t])
 
   useEffect(() => {
@@ -95,10 +97,10 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     }
   }
 
-  function handleLanguageChange(lang: string) {
-    void i18n.changeLanguage(lang)
-    localStorage.setItem('colink-lang', lang)
-    toast.success(t('settings.saveSuccess'))
+  function handleLanguageChange(language: string) {
+    const resolved = resolveLanguage(language)
+    setForm((current) => ({ ...current, language: resolved }))
+    void i18n.changeLanguage(resolved)
   }
 
   return (
@@ -136,12 +138,12 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
                   onClick={() => handleLanguageChange(lang.code)}
                   className={cn(
                     "flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all w-full",
-                    i18n.language === lang.code
+                    resolveLanguage(form.language || i18n.language) === lang.code
                       ? "border-[hsl(var(--text))] bg-[hsl(var(--text)/0.06)] text-[hsl(var(--text))]"
                       : "border-[hsl(var(--border))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
                   )}
                 >
-                  {lang.label}
+                  {t(lang.labelKey)}
                 </button>
               ))}
             </div>

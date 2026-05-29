@@ -69,7 +69,7 @@ export function DeviceCard({
       <div className="mt-4 flex-1 space-y-3.5 text-[12px]">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">{t('devices.lastSeen')}</div>
-          <div className="mt-1 text-[13px] font-medium text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen)}</div>
+          <div className="mt-1 text-[13px] font-medium text-[hsl(var(--text-secondary))]">{formatLastSeen(device.lastSeen, t('devices.neverConnected'))}</div>
         </div>
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">{t('devices.deviceId')}</div>

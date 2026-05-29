@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::CLIPBOARD_MAX_BYTES,
     protocol::ClipboardSyncPayload,
     runtime_events::RuntimeEvent,
@@ -77,5 +78,8 @@ fn read_clipboard_payload(ctx: &ClipboardContext) -> AppResult<ClipboardSyncPayl
         }
     }
 
-    Err(AppError::message("剪贴板内容不支持或超过 1MB"))
+    Err(AppError::message(i18n::text(
+        &i18n::default_language_code(),
+        TextKey::ClipboardUnsupported,
+    )))
 }

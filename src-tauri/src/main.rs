@@ -8,6 +8,7 @@ mod dev_log;
 mod device_cache;
 mod device_presence;
 mod error;
+mod i18n;
 mod models;
 mod network;
 mod protocol;

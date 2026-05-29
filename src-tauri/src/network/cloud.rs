@@ -20,6 +20,7 @@ use crate::{
     api::{DeviceListResponse, DEVICES_PATH},
     auth,
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::{AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
     protocol::{BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope, DeviceOnlinePayload},
@@ -160,7 +161,7 @@ impl CloudConnectionManager {
         info!("cloud connection stopped");
         let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
         let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(
-            "云端连接已停止".to_string(),
+            "cloud connection stopped".to_string(),
         )));
     }
 
@@ -295,7 +296,9 @@ impl CloudConnectionManager {
     async fn load_context(&self) -> ContextLoad {
         let settings = match self.database.load_settings() {
             Ok(Some(settings)) => settings,
-            Ok(None) => return ContextLoad::Retryable("本地设置未初始化".to_string()),
+            Ok(None) => {
+                return ContextLoad::Retryable("local settings are not initialized".to_string())
+            }
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
@@ -318,12 +321,16 @@ impl CloudConnectionManager {
 
         let device = match self.database.load_device_identity() {
             Ok(Some(device)) => device,
-            Ok(None) => return ContextLoad::Retryable("当前设备尚未注册".to_string()),
+            Ok(None) => {
+                return ContextLoad::Retryable("current device is not registered".to_string())
+            }
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
         if device.user_id.as_deref() != Some(session.user_id.as_str()) {
-            return ContextLoad::Retryable("当前设备和账户状态不一致".to_string());
+            return ContextLoad::Retryable(
+                "current device and account state are inconsistent".to_string(),
+            );
         }
 
         ContextLoad::Ready(Box::new(ConnectionContext {
@@ -398,7 +405,7 @@ impl CloudConnectionManager {
                         warn!("cloud ping failed");
                         return Ok(ConnectionExit::Disconnected {
                             connected_for: connected_at.elapsed(),
-                            reason: Some("云端连接已断开".to_string()),
+                            reason: Some("cloud connection disconnected".to_string()),
                         });
                     }
                 }
@@ -423,7 +430,7 @@ impl CloudConnectionManager {
                         warn!("cloud message send failed");
                         return Ok(ConnectionExit::Disconnected {
                             connected_for: connected_at.elapsed(),
-                            reason: Some("云端发送失败".to_string()),
+                            reason: Some("cloud send failed".to_string()),
                         });
                     }
                 }
@@ -437,14 +444,14 @@ impl CloudConnectionManager {
                             info!("cloud websocket closed by server");
                             return Ok(ConnectionExit::Disconnected {
                                 connected_for: connected_at.elapsed(),
-                                reason: Some("服务端关闭了连接".to_string()),
+                                reason: Some("server closed the connection".to_string()),
                             });
                         }
                         Some(Ok(Message::Ping(payload))) => {
                             if writer.send(Message::Pong(payload)).await.is_err() {
                                 return Ok(ConnectionExit::Disconnected {
                                     connected_for: connected_at.elapsed(),
-                                    reason: Some("云端连接已断开".to_string()),
+                                    reason: Some("cloud connection disconnected".to_string()),
                                 });
                             }
                         }
@@ -459,7 +466,7 @@ impl CloudConnectionManager {
                         None => {
                             return Ok(ConnectionExit::Disconnected {
                                 connected_for: connected_at.elapsed(),
-                                reason: Some("云端连接已结束".to_string()),
+                                reason: Some("cloud connection ended".to_string()),
                             });
                         }
                     }
@@ -584,11 +591,11 @@ impl CloudConnectionManager {
             .lock_unpoisoned()
             .command_tx
             .clone()
-            .ok_or_else(|| AppError::message("云端连接尚未建立"))?;
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::CloudNotConnected)))?;
 
         sender
             .send(command)
-            .map_err(|_| AppError::message("云端连接不可用"))
+            .map_err(|_| AppError::message(self.user_text(TextKey::CloudUnavailable)))
     }
 
     fn install_command_sender(&self, generation: u64, sender: mpsc::UnboundedSender<CloudCommand>) {
@@ -640,6 +647,19 @@ impl CloudConnectionManager {
     fn emit_devices(&self, devices: Vec<DeviceInfo>) {
         let _ = self.app.emit(DEVICES_UPDATED_EVENT, devices);
         let _ = shell::refresh_tray(&self.app);
+    }
+}
+
+impl CloudConnectionManager {
+    fn user_text(&self, key: TextKey) -> String {
+        let language = self
+            .database
+            .load_settings()
+            .ok()
+            .flatten()
+            .map(|settings| settings.language)
+            .unwrap_or_else(i18n::default_language_code);
+        i18n::text(&language, key).to_string()
     }
 }
 

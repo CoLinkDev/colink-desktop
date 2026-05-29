@@ -93,7 +93,9 @@ impl Database {
     }
 
     pub fn load_settings(&self) -> AppResult<Option<AppSettings>> {
-        self.load_record(SETTINGS_KEY)
+        Ok(self
+            .load_record::<AppSettings>(SETTINGS_KEY)?
+            .map(AppSettings::normalize))
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {

@@ -30,6 +30,7 @@ use self::route::TransferRoute;
 use crate::{
     device_presence,
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::{
         unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, LanPairingCandidate,
         LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
@@ -167,10 +168,10 @@ impl AppRuntime {
     pub fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {
         let text = payload.text.trim().to_string();
         if text.is_empty() {
-            return Err(AppError::message("消息不能为空"));
+            return Err(AppError::message(self.user_text(TextKey::MessageEmpty)));
         }
         if text.chars().count() > MAX_TEXT_LENGTH {
-            return Err(AppError::message("消息长度不能超过 10000"));
+            return Err(AppError::message(self.user_text(TextKey::MessageTooLong)));
         }
         let route = self.resolve_route(&payload.device_id)?;
 
@@ -196,7 +197,7 @@ impl AppRuntime {
         self.append_log(
             "info",
             "message",
-            format!("已发送文本消息到 {}", payload.device_id),
+            format!("sent text message to {}", payload.device_id),
         )?;
         Ok(record)
     }
@@ -279,7 +280,8 @@ impl AppRuntime {
             RuntimeEvent::CloudConnected => {
                 info!("runtime received cloud connected");
                 let _ = self.activate();
-                let _ = self.append_log("info", "cloud", "云端连接已建立".to_string());
+                let _ =
+                    self.append_log("info", "cloud", "cloud connection established".to_string());
             }
             RuntimeEvent::CloudDisconnected(reason) => {
                 warn!(
@@ -289,7 +291,7 @@ impl AppRuntime {
                 let _ = self.append_log(
                     "warn",
                     "cloud",
-                    reason.unwrap_or_else(|| "云端连接已断开".to_string()),
+                    reason.unwrap_or_else(|| "cloud connection disconnected".to_string()),
                 );
             }
             RuntimeEvent::CloudUnavailable => {
@@ -333,9 +335,9 @@ impl AppRuntime {
                     .unwrap_or(device_id);
 
                 let body = if online {
-                    format!("{device_name} 已上线")
+                    format!("{device_name} is online")
                 } else {
-                    format!("{device_name} 已离线")
+                    format!("{device_name} is offline")
                 };
                 let _ = self.append_log("info", "device", body);
             }
@@ -357,7 +359,7 @@ impl AppRuntime {
                 let _ = self.append_log(
                     "info",
                     "lan",
-                    format!("发现局域网设备 {device_id} @ {ip}:{port} ({source})"),
+                    format!("discovered LAN device {device_id} @ {ip}:{port} ({source})"),
                 );
             }
             RuntimeEvent::LanConnected { device_id } => {
@@ -366,7 +368,10 @@ impl AppRuntime {
                 let _ = self.append_log(
                     "info",
                     "lan",
-                    format!("已建立 LAN 直连: {}", self.lookup_device_name(&device_id)),
+                    format!(
+                        "LAN direct connection established: {}",
+                        self.lookup_device_name(&device_id)
+                    ),
                 );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
@@ -375,7 +380,10 @@ impl AppRuntime {
                 let _ = self.append_log(
                     "warn",
                     "lan",
-                    format!("LAN 连接已断开: {}", self.lookup_device_name(&device_id)),
+                    format!(
+                        "LAN connection disconnected: {}",
+                        self.lookup_device_name(&device_id)
+                    ),
                 );
             }
             RuntimeEvent::LanMessage { from, message } => {
@@ -430,11 +438,15 @@ impl AppRuntime {
                     let _ = self.inner.database.save_message(&record);
                     let _ = self.emit_messages();
                     let sender_name = self.lookup_device_name(from);
-                    let _ = self.notify(&format!("来自 {sender_name} 的消息"), &payload.text);
+                    let _ = self.notify(
+                        TextKey::MessageFromTitle,
+                        &[("name", sender_name.clone())],
+                        &payload.text,
+                    );
                     let _ = self.append_log(
                         "info",
                         "message",
-                        format!("收到来自 {sender_name} 的文本消息"),
+                        format!("received text message from {sender_name}"),
                     );
                 }
             }
@@ -546,7 +558,7 @@ impl AppRuntime {
         {
             let _ = self.send_business_message(&device.device_id, envelope.clone());
         }
-        self.append_log("info", "clipboard", "已同步本地剪贴板".to_string())?;
+        self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())
     }
 
@@ -563,7 +575,7 @@ impl AppRuntime {
             "image/png" | "image/jpeg" => {
                 let data = payload
                     .data
-                    .ok_or_else(|| AppError::message("剪贴板图片数据缺失"))?;
+                    .ok_or_else(|| AppError::message("clipboard image data is missing"))?;
                 let bytes = STANDARD.decode(data)?;
                 let image = clipboard_image_from_bytes(&bytes)?;
                 ctx.set_image(image)
@@ -581,7 +593,7 @@ impl AppRuntime {
         self.append_log(
             "info",
             "clipboard",
-            format!("已应用来自 {} 的剪贴板", self.lookup_device_name(from)),
+            format!("applied clipboard from {}", self.lookup_device_name(from)),
         )?;
         Ok(())
     }
@@ -629,21 +641,26 @@ impl AppRuntime {
             .unwrap_or_else(|| device_id.to_string())
     }
 
-    fn notify(&self, title: &str, body: &str) -> AppResult<()> {
-        let settings = self
-            .inner
-            .database
-            .load_settings()?
-            .ok_or_else(|| AppError::message("本地设置未初始化"))?;
+    fn notify(
+        &self,
+        title_key: TextKey,
+        title_args: &[(&str, String)],
+        body: &str,
+    ) -> AppResult<()> {
+        let settings =
+            self.inner.database.load_settings()?.ok_or_else(|| {
+                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
+            })?;
         if !settings.notifications {
             return Ok(());
         }
 
+        let title = i18n::message(&settings.language, title_key, title_args);
         self.inner
             .app
             .notification()
             .builder()
-            .title(title)
+            .title(&title)
             .body(body)
             .show()
             .map_err(|error| AppError::message(error.to_string()))
@@ -708,7 +725,9 @@ impl AppRuntime {
         if self.inner.cloud.snapshot().connected {
             return Ok(TransferRoute::Cloud);
         }
-        Err(AppError::message("设备未连接"))
+        Err(AppError::message(
+            self.user_text(TextKey::DeviceNotConnected),
+        ))
     }
 
     pub fn reconcile_device_routes(&self) -> AppResult<Vec<DeviceInfo>> {
@@ -718,5 +737,25 @@ impl AppRuntime {
             &self.inner.lan.peer_ids(),
         )?;
         Ok(devices)
+    }
+
+    pub(super) fn current_language(&self) -> String {
+        self.inner
+            .database
+            .load_settings()
+            .ok()
+            .flatten()
+            .map(|settings| settings.language)
+            .unwrap_or_else(i18n::default_language_code)
+    }
+
+    pub(super) fn user_text(&self, key: TextKey) -> String {
+        let language = self.current_language();
+        i18n::text(&language, key).to_string()
+    }
+
+    pub(super) fn user_message(&self, key: TextKey, args: &[(&str, String)]) -> String {
+        let language = self.current_language();
+        i18n::message(&language, key, args)
     }
 }

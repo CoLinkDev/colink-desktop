@@ -9,6 +9,7 @@ use crate::{
     auth,
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
+    i18n::{self, TextKey},
     models::{
         unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity, DeviceInfo,
         DeviceNameUpdatePayload, LoginPayload, RegisterPayload, RotateDeviceKeyPayload,
@@ -190,7 +191,10 @@ pub async fn update_device_name(
 ) -> AppResult<Vec<DeviceInfo>> {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Err(AppError::message("设备名称不能为空"));
+        return Err(AppError::message(user_text(
+            state,
+            TextKey::DeviceNameEmpty,
+        )));
     }
 
     if let Some(mut identity) = state.database.load_device_identity()? {
@@ -235,7 +239,10 @@ pub async fn delete_device(
 ) -> AppResult<Vec<DeviceInfo>> {
     if let Some(identity) = state.database.load_device_identity()? {
         if identity.device_id == payload.device_id {
-            return Err(AppError::message("本机设备不能在这里删除"));
+            return Err(AppError::message(user_text(
+                state,
+                TextKey::CannotDeleteLocalDevice,
+            )));
         }
     }
 
@@ -302,7 +309,10 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     let normalized = settings.normalize();
 
     if normalized.download_path.is_empty() {
-        return Err(AppError::message("下载路径不能为空"));
+        return Err(AppError::message(user_text(
+            state,
+            TextKey::DownloadPathEmpty,
+        )));
     }
 
     Url::parse(&normalized.server_url)?;
@@ -326,10 +336,12 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
 }
 
 fn load_settings(state: &AppState) -> AppResult<AppSettings> {
-    state
-        .database
-        .load_settings()?
-        .ok_or_else(|| AppError::message("本地设置未初始化"))
+    state.database.load_settings()?.ok_or_else(|| {
+        AppError::message(i18n::text(
+            &i18n::default_language_code(),
+            TextKey::SettingsNotInitialized,
+        ))
+    })
 }
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {
@@ -377,7 +389,7 @@ async fn current_session(state: &AppState) -> AppResult<SessionRecord> {
     let session = state
         .database
         .load_session()?
-        .ok_or_else(|| AppError::message("尚未登录"))?;
+        .ok_or_else(|| AppError::message(user_text(state, TextKey::NotLoggedIn)))?;
     let settings = load_settings(state)?;
 
     auth::refresh_session_if_needed(&state.database, &state.http, &settings, session).await
@@ -453,8 +465,10 @@ async fn ensure_cloud_device_identity(
             return Ok(identity);
         }
         Some(user_id) if user_id != session.user_id => {
-            return Err(AppError::message(format!(
-                "本机身份已绑定其他账号 ({user_id})"
+            return Err(AppError::message(user_message(
+                state,
+                TextKey::LocalIdentityBoundOtherAccount,
+                &[("user_id", user_id.to_string())],
             )));
         }
         _ => {}
@@ -638,4 +652,24 @@ fn detect_device_type() -> String {
         _ => "windows",
     }
     .to_string()
+}
+
+fn settings_language(state: &AppState) -> String {
+    state
+        .database
+        .load_settings()
+        .ok()
+        .flatten()
+        .map(|settings| settings.language)
+        .unwrap_or_else(i18n::default_language_code)
+}
+
+fn user_text(state: &AppState, key: TextKey) -> String {
+    let language = settings_language(state);
+    i18n::text(&language, key).to_string()
+}
+
+fn user_message(state: &AppState, key: TextKey, args: &[(&str, String)]) -> String {
+    let language = settings_language(state);
+    i18n::message(&language, key, args)
 }

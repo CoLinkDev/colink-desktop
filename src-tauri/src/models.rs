@@ -16,6 +16,8 @@ pub struct AppSettings {
     pub lan_discovery: bool,
     pub download_path: String,
     pub notifications: bool,
+    #[serde(default = "crate::i18n::default_language_code")]
+    pub language: String,
 }
 
 impl AppSettings {
@@ -27,12 +29,14 @@ impl AppSettings {
             lan_discovery: true,
             download_path,
             notifications: true,
+            language: crate::i18n::default_language_code(),
         }
     }
 
     pub fn normalize(mut self) -> Self {
         self.server_url = self.server_url.trim().trim_end_matches('/').to_string();
         self.download_path = self.download_path.trim().to_string();
+        self.language = crate::i18n::resolve_language(Some(&self.language)).to_string();
         self
     }
 }

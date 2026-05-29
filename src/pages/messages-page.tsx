@@ -9,7 +9,7 @@ import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { cn, formatTimestamp, formatPlatformName } from '../lib/utils'
 
 export function MessagesPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
   const { device, devices, messages, sendText } = useAppState()
   const [selectedDeviceId, setSelectedDeviceId] = useState(searchParams.get('deviceId') ?? '')
@@ -92,7 +92,7 @@ export function MessagesPage() {
             ) : conversation.map((item) => (
               <div className={cn("max-w-[80%] rounded-2xl px-3.5 py-2.5 border transition-all", item.direction === 'outbound' ? "ml-auto rounded-br-md border-[hsl(var(--text)/0.04)] bg-[hsl(var(--text)/0.07)] text-[hsl(var(--text))]" : "rounded-bl-md border-[hsl(var(--border))] bg-[hsl(var(--panel-2)/0.3)] text-[hsl(var(--text))]")} key={item.messageId}>
                 <div className="whitespace-pre-wrap text-[13px]">{item.text}</div>
-                <div className={cn("mt-1.5 text-[10px]", item.direction === 'outbound' ? "opacity-50" : "text-[hsl(var(--muted))]")}>{formatTimestamp(item.createdAt)}</div>
+                <div className={cn("mt-1.5 text-[10px]", item.direction === 'outbound' ? "opacity-50" : "text-[hsl(var(--muted))]")}>{formatTimestamp(item.createdAt, i18n.language)}</div>
               </div>
             ))}
           </div>

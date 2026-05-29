@@ -87,6 +87,8 @@ fn hash_file_by_algorithm(path: &Path, algorithm: &str) -> AppResult<String> {
             }
             Ok(hasher.finalize().to_hex().to_string())
         }
-        _ => Err(AppError::message(format!("不支持的校验算法: {algorithm}"))),
+        _ => Err(AppError::message(format!(
+            "unsupported checksum algorithm: {algorithm}"
+        ))),
     }
 }
