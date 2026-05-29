@@ -99,16 +99,17 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
                 if let Some(refreshed_session) = refreshed_session {
                     match ensure_cloud_device_identity(state, &refreshed_session).await {
                         Ok(identity) => {
-                            let fetched_devices =
-                                match fetch_devices(state, &refreshed_session).await {
-                                    Ok(devices) => {
-                                        state.runtime.replace_cached_devices(devices, true)?
-                                    }
-                                    Err(error) => {
-                                        warn!(%error, "failed to fetch cloud devices during bootstrap");
-                                        state.runtime.reconcile_device_routes()?
-                                    }
-                                };
+                            let fetched_devices = match fetch_devices(state, &refreshed_session)
+                                .await
+                            {
+                                Ok(devices) => {
+                                    state.runtime.replace_cached_devices(devices, true)?
+                                }
+                                Err(error) => {
+                                    warn!(%error, "failed to fetch cloud devices during bootstrap");
+                                    state.runtime.reconcile_device_routes()?
+                                }
+                            };
                             state.cloud.start();
                             let _ = shell::refresh_tray(&state.app);
 
@@ -485,7 +486,6 @@ async fn current_session_if_available(state: &AppState) -> AppResult<Option<Sess
 
 fn ensure_local_device_identity(state: &AppState) -> AppResult<DeviceIdentity> {
     if let Some(identity) = state.database.load_device_identity()? {
-        state.database.save_device_identity(&identity)?;
         return Ok(identity);
     }
 
@@ -669,7 +669,7 @@ async fn fetch_devices(state: &AppState, session: &SessionRecord) -> AppResult<V
         )
         .await?;
 
-    Ok(response.devices)
+    Ok(response.into_devices())
 }
 
 fn is_auth_error(error: &AppError) -> bool {

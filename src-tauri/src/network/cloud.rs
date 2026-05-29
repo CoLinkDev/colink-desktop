@@ -548,7 +548,7 @@ impl CloudConnectionManager {
 
         let _ = self
             .event_tx
-            .send(RuntimeEvent::DevicesSnapshot(response.devices));
+            .send(RuntimeEvent::DevicesSnapshot(response.into_devices()));
         debug!("synced devices from cloud server");
         Ok(())
     }

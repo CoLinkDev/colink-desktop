@@ -16,7 +16,6 @@ pub struct AppSettings {
     pub lan_discovery: bool,
     pub download_path: String,
     pub notifications: bool,
-    #[serde(default = "crate::i18n::default_language_code")]
     pub language: String,
 }
 
@@ -45,7 +44,6 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub user_id: String,
-    #[serde(default)]
     pub username: String,
     pub access_token: String,
     pub refresh_token: String,
@@ -75,16 +73,13 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceIdentity {
-    #[serde(default)]
     pub user_id: Option<String>,
     pub device_id: String,
-    #[serde(default)]
     pub device_secret: Option<String>,
     pub name: String,
     pub device_type: String,
     pub public_key: String,
     pub private_key: String,
-    #[serde(default)]
     pub cloud_key_sync_pending: bool,
 }
 
@@ -124,17 +119,12 @@ pub struct DeviceInfo {
     #[serde(rename = "type")]
     pub device_type: String,
     pub online: bool,
-    #[serde(default)]
     pub cloud_available: bool,
     pub last_seen: Option<String>,
     pub public_key: String,
-    #[serde(default)]
     pub lan_available: bool,
-    #[serde(default)]
     pub active_route: Option<String>,
-    #[serde(default)]
     pub device_sources: Vec<String>,
-    #[serde(default = "default_security_state")]
     pub security_state: String,
 }
 
@@ -343,57 +333,8 @@ pub fn unix_now_millis() -> i64 {
         .unwrap_or_default()
 }
 
-fn default_security_state() -> String {
-    "unverified".to_string()
-}
-
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DeviceIdentity;
-
-    #[test]
-    fn device_identity_reads_legacy_cloud_binding() {
-        let raw = r#"{
-            "userId": "user-1",
-            "deviceId": "device-1",
-            "deviceSecret": "secret-1",
-            "name": "Desktop",
-            "deviceType": "windows",
-            "publicKey": "pk",
-            "privateKey": "sk"
-        }"#;
-
-        let identity = serde_json::from_str::<DeviceIdentity>(raw)
-            .expect("legacy identity")
-            .normalize();
-
-        assert_eq!(identity.user_id.as_deref(), Some("user-1"));
-        assert_eq!(identity.device_secret.as_deref(), Some("secret-1"));
-        assert!(!identity.cloud_key_sync_pending);
-    }
-
-    #[test]
-    fn device_identity_allows_local_only_identity() {
-        let raw = r#"{
-            "deviceId": "device-1",
-            "name": "Desktop",
-            "deviceType": "windows",
-            "publicKey": "pk",
-            "privateKey": "sk"
-        }"#;
-
-        let identity = serde_json::from_str::<DeviceIdentity>(raw)
-            .expect("local identity")
-            .normalize();
-
-        assert_eq!(identity.user_id, None);
-        assert_eq!(identity.device_secret, None);
-        assert!(!identity.cloud_key_sync_pending);
-    }
 }

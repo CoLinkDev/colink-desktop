@@ -22,5 +22,41 @@ pub(crate) struct RefreshRequest<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeviceListResponse {
-    pub(crate) devices: Vec<DeviceInfo>,
+    pub(crate) devices: Vec<CloudDeviceRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloudDeviceRecord {
+    pub(crate) device_id: String,
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) device_type: String,
+    pub(crate) online: bool,
+    pub(crate) last_seen: Option<String>,
+    pub(crate) public_key: String,
+}
+
+impl From<CloudDeviceRecord> for DeviceInfo {
+    fn from(record: CloudDeviceRecord) -> Self {
+        Self {
+            device_id: record.device_id,
+            name: record.name,
+            device_type: record.device_type,
+            online: record.online,
+            cloud_available: false,
+            last_seen: record.last_seen,
+            public_key: record.public_key,
+            lan_available: false,
+            active_route: None,
+            device_sources: Vec::new(),
+            security_state: "unverified".to_string(),
+        }
+    }
+}
+
+impl DeviceListResponse {
+    pub(crate) fn into_devices(self) -> Vec<DeviceInfo> {
+        self.devices.into_iter().map(Into::into).collect()
+    }
 }
