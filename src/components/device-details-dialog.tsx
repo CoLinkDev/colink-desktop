@@ -43,11 +43,6 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.securityState'), value: formatSecurityState(device.securityState, t) },
     { label: t('devices.lastSeen'), value: formatLastSeen(device.lastSeen) },
     {
-      label: t('devices.detailsFields.localEndpoint'),
-      value: device.localIp && device.localPort ? `${device.localIp}:${device.localPort}` : t('common.none'),
-      mono: !!(device.localIp && device.localPort),
-    },
-    {
       label: t('devices.detailsFields.publicKeyFingerprint'),
       value: device.publicKey ? fingerprint || t('common.calculating') : t('common.none'),
       mono: true,
@@ -136,9 +131,6 @@ function describeSources(device: DeviceInfo, isLocalDevice: boolean, t: (key: st
     sources.add(t('devices.detailsSources.lanTrustStore'))
   } else {
     sources.add(t('devices.detailsSources.serverDeviceList'))
-  }
-  if (device.localIp || device.localPort) {
-    sources.add(t('devices.detailsSources.cloudAnnounce'))
   }
   if (device.lanAvailable || device.activeRoute === 'lan') {
     sources.add(t('devices.detailsSources.lanSwimWebSocket'))

@@ -47,13 +47,8 @@ pub fn update_one(
 
     device.online = online;
     if let Some(payload) = payload {
-        device.local_ip = payload.local_ip;
-        device.local_port = payload.local_port;
         device.name = payload.name;
         device.device_type = payload.device_type;
-    } else if !online {
-        device.local_ip = None;
-        device.local_port = None;
     }
 
     let local_device_id = database

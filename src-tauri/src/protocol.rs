@@ -249,19 +249,10 @@ pub struct CloudServerEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AnnouncePayload {
-    pub local_ip: String,
-    pub local_port: u16,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DeviceOnlinePayload {
     pub name: String,
     #[serde(rename = "type")]
     pub device_type: String,
-    pub local_ip: Option<String>,
-    pub local_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

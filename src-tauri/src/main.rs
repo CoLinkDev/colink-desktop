@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod commands;
 mod crypto;
+mod dev_log;
 mod device_cache;
 mod device_presence;
 mod error;
@@ -29,6 +30,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            let tracing_guard = dev_log::initialize(app.handle())?;
+            app.manage(tracing_guard);
             let state = AppState::initialize(app.handle())?;
             let settings = state.database.load_settings()?.unwrap_or_else(|| {
                 panic!("application settings should exist after initialization")

@@ -26,8 +26,6 @@ export interface DeviceInfo {
   online: boolean
   lastSeen: string | null
   publicKey: string
-  localIp: string | null
-  localPort: number | null
   lanAvailable: boolean
   activeRoute: string | null
   securityState: string

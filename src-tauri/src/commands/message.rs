@@ -17,10 +17,7 @@ pub fn send_text(
 }
 
 #[tauri::command]
-pub fn pick_files(
-    state: State<'_, AppState>,
-    multiple: bool,
-) -> Result<Vec<String>, String> {
+pub fn pick_files(state: State<'_, AppState>, multiple: bool) -> Result<Vec<String>, String> {
     state
         .runtime
         .pick_file_paths(multiple)
@@ -40,10 +37,7 @@ pub async fn send_files(
 }
 
 #[tauri::command]
-pub fn cancel_transfer(
-    state: State<'_, AppState>,
-    file_id: String,
-) -> Result<(), String> {
+pub fn cancel_transfer(state: State<'_, AppState>, file_id: String) -> Result<(), String> {
     state
         .runtime
         .cancel_transfer(&file_id)

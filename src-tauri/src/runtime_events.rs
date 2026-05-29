@@ -43,10 +43,6 @@ pub enum RuntimeEvent {
     },
     LanPairingRequested(LanPairingRequest),
     LanPairingCandidatesUpdated(Vec<LanPairingCandidate>),
-    LocalEndpoint {
-        ip: String,
-        port: u16,
-    },
     ClipboardChanged(ClipboardSyncPayload),
     Log {
         level: String,

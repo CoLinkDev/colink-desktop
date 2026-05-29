@@ -13,6 +13,7 @@ use rfd::FileDialog;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 mod clipboard;
@@ -36,7 +37,7 @@ use crate::{
     },
     network::{cloud::CloudConnectionManager, http::HttpClient, lan::LanManager},
     protocol::{
-        AnnouncePayload, BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
+        BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
         FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
         FileRejectPayload, FileRetransmitPayload, TextMessagePayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
@@ -256,23 +257,31 @@ impl AppRuntime {
     fn spawn_event_loop(&self, mut event_rx: mpsc::UnboundedReceiver<RuntimeEvent>) {
         let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
+            info!("runtime event loop started");
             while let Some(event) = event_rx.recv().await {
                 runtime.handle_event(event).await;
             }
+            info!("runtime event loop stopped");
         });
     }
 
     async fn handle_event(&self, event: RuntimeEvent) {
         match event {
             RuntimeEvent::AuthInvalidated(message) => {
+                warn!(%message, "runtime received auth invalidation");
                 let _ = self.deactivate();
                 let _ = self.append_log("warn", "auth", message);
             }
             RuntimeEvent::CloudConnected => {
+                info!("runtime received cloud connected");
                 let _ = self.activate();
                 let _ = self.append_log("info", "cloud", "云端连接已建立".to_string());
             }
             RuntimeEvent::CloudDisconnected(reason) => {
+                warn!(
+                    reason = reason.as_deref().unwrap_or("unknown"),
+                    "runtime received cloud disconnected"
+                );
                 let _ = self.append_log(
                     "warn",
                     "cloud",
@@ -280,6 +289,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::CloudRelay { from, message } => {
+                debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
                 self.handle_business_message(&from, "cloud", message).await;
             }
             RuntimeEvent::DevicePresence {
@@ -287,6 +297,7 @@ impl AppRuntime {
                 online,
                 payload,
             } => {
+                debug!(%device_id, online = online, "runtime received device presence");
                 let _ = device_presence::update_one(
                     &self.inner.database,
                     &self.inner.app,
@@ -318,9 +329,11 @@ impl AppRuntime {
                 let _ = self.notify("设备状态变化", &body);
             }
             RuntimeEvent::DevicesSnapshot(devices) => {
+                debug!(count = devices.len(), "runtime received devices snapshot");
                 let _ = self.replace_cached_devices(devices);
             }
             RuntimeEvent::ClipboardChanged(payload) => {
+                debug!(content_type = %payload.content_type, "runtime received clipboard change");
                 let _ = self.broadcast_clipboard(payload);
             }
             RuntimeEvent::LanDiscovered {
@@ -329,6 +342,7 @@ impl AppRuntime {
                 port,
                 source,
             } => {
+                debug!(%device_id, %ip, port = port, %source, "runtime received lan discovery");
                 let _ = self.append_log(
                     "info",
                     "lan",
@@ -336,6 +350,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanConnected { device_id } => {
+                info!(%device_id, "runtime received lan connected");
                 let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
                     "info",
@@ -344,6 +359,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
+                warn!(%device_id, "runtime received lan disconnected");
                 let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
                     "warn",
@@ -352,34 +368,37 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanMessage { from, message } => {
+                debug!(%from, message_type = %message.message_type, "runtime received lan message");
                 self.handle_business_message(&from, "lan", message).await;
             }
             RuntimeEvent::LanTransferFrame { session_id, frame } => {
+                debug!(%session_id, "runtime received lan transfer frame");
                 let _ = self.handle_lan_transfer_frame(&session_id, frame).await;
             }
             RuntimeEvent::LanTransferClosed { session_id } => {
+                debug!(%session_id, "runtime received lan transfer closed");
                 let _ = self.handle_lan_transfer_closed(&session_id);
             }
             RuntimeEvent::LanPairingRequested(request) => {
+                debug!(device_id = %request.device_id, reason = %request.reason, "runtime received lan pairing request");
                 let _ = self.inner.app.emit(LAN_PAIRING_REQUESTED_EVENT, request);
             }
             RuntimeEvent::LanPairingCandidatesUpdated(candidates) => {
+                debug!(
+                    count = candidates.len(),
+                    "runtime received lan pairing candidates"
+                );
                 let _ = self
                     .inner
                     .app
                     .emit(LAN_PAIRING_CANDIDATES_UPDATED_EVENT, candidates);
-            }
-            RuntimeEvent::LocalEndpoint { ip, port } => {
-                let _ = self.inner.cloud.announce(AnnouncePayload {
-                    local_ip: ip,
-                    local_port: port,
-                });
             }
             RuntimeEvent::Log {
                 level,
                 source,
                 message,
             } => {
+                debug!(%level, %source, "runtime received app log event");
                 let _ = self.append_log(&level, &source, message);
             }
         }

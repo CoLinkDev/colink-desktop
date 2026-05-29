@@ -23,6 +23,7 @@ use tokio_tungstenite::{
     },
     WebSocketStream,
 };
+use tracing::{debug, info, warn};
 use url::{form_urlencoded, Url};
 use uuid::Uuid;
 
@@ -201,6 +202,7 @@ impl LanManager {
             .load_settings()?
             .ok_or_else(|| AppError::message("本地设置未初始化"))?;
         if !settings.lan_discovery {
+            info!("lan discovery disabled");
             self.stop();
             return Ok(());
         }
@@ -208,10 +210,12 @@ impl LanManager {
         let session = self.database.load_session()?;
         let device = self.database.load_device_identity()?;
         let (Some(session), Some(device)) = (session, device) else {
+            debug!("lan manager skipped because session or device identity is missing");
             self.stop();
             return Ok(());
         };
         if session.user_id != device.user_id {
+            warn!("lan manager skipped because session and device identity user mismatch");
             self.stop();
             return Ok(());
         }
@@ -250,6 +254,7 @@ impl LanManager {
             incarnation: context.incarnation,
         });
         self.emit_pairing_candidates();
+        info!(generation = generation, device_id = %context.device.device_id, "lan manager starting");
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -282,6 +287,7 @@ impl LanManager {
         };
         drop((peers, transfer_senders, pending));
         self.emit_pairing_candidates();
+        info!("lan manager stopped");
     }
 
     pub fn has_peer(&self, device_id: &str) -> bool {
@@ -416,6 +422,7 @@ impl LanManager {
         mut command_rx: mpsc::UnboundedReceiver<LanCommand>,
     ) {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", LAN_PORT)).await else {
+            warn!(port = LAN_PORT, "lan listener bind failed");
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
                 source: "lan".to_string(),
@@ -425,6 +432,7 @@ impl LanManager {
         };
 
         let Ok(mdns) = ServiceDaemon::new() else {
+            warn!("mdns daemon initialization failed");
             let _ = self.event_tx.send(RuntimeEvent::Log {
                 level: "warn".to_string(),
                 source: "lan".to_string(),
@@ -437,6 +445,7 @@ impl LanManager {
         let browse_rx = match mdns.browse(SERVICE_TYPE) {
             Ok(receiver) => receiver,
             Err(error) => {
+                warn!(%error, "mdns browse failed");
                 let _ = self.event_tx.send(RuntimeEvent::Log {
                     level: "warn".to_string(),
                     source: "lan".to_string(),
@@ -451,13 +460,10 @@ impl LanManager {
         let mut suspect_interval = interval(Duration::from_millis(500));
         suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        if let Some(ip) = pick_local_ipv4() {
+        if let Some(ip) = pick_primary_ipv4() {
             let _ = self.register_service(&mdns, &context, ip);
-            let _ = self.event_tx.send(RuntimeEvent::LocalEndpoint {
-                ip: ip.to_string(),
-                port: LAN_PORT,
-            });
         }
+        info!(generation = generation, "lan discovery loop started");
 
         loop {
             tokio::select! {
@@ -508,19 +514,13 @@ impl LanManager {
                     if let Some(event) = event {
                         match event {
                             DaemonEvent::IpAdd(ip) if ip.is_ipv4() => {
+                                debug!(%ip, "mdns address added");
                                 let _ = self.register_service(&mdns, &context, ip);
-                                let _ = self.event_tx.send(RuntimeEvent::LocalEndpoint {
-                                    ip: ip.to_string(),
-                                    port: LAN_PORT,
-                                });
                             }
                             DaemonEvent::IpDel(_) => {
-                                if let Some(ip) = pick_local_ipv4() {
+                                debug!("mdns address removed");
+                                if let Some(ip) = pick_primary_ipv4() {
                                     let _ = self.register_service(&mdns, &context, ip);
-                                    let _ = self.event_tx.send(RuntimeEvent::LocalEndpoint {
-                                        ip: ip.to_string(),
-                                        port: LAN_PORT,
-                                    });
                                 }
                             }
                             _ => {}
@@ -533,6 +533,7 @@ impl LanManager {
         let _ = mdns.shutdown();
         self.finalize_generation(generation);
         self.clear_peers_for_generation(generation);
+        info!(generation = generation, "lan discovery loop stopped");
     }
 
     fn register_service(
@@ -561,6 +562,7 @@ impl LanManager {
         )
         .map_err(|error| AppError::message(error.to_string()))?
         .enable_addr_auto();
+        info!(%ip, port = LAN_PORT, "registering mdns service");
         mdns.register(info)
             .map_err(|error| AppError::message(error.to_string()))
     }
@@ -594,6 +596,7 @@ impl LanManager {
         };
 
         let port = service.get_port();
+        debug!(device_id = %device_id, %ip, port = port, "resolved mdns peer");
         self.remember_peer_endpoint(&device_id, ip, port);
         let _ = self.event_tx.send(RuntimeEvent::LanDiscovered {
             device_id: device_id.clone(),
@@ -617,6 +620,7 @@ impl LanManager {
         stream: TcpStream,
         remote_addr: SocketAddr,
     ) -> AppResult<()> {
+        debug!(%remote_addr, "accepted lan tcp connection");
         let mut peek = [0_u8; 32];
         let read = stream.peek(&mut peek).await?;
         if read > 0 && peek[..read].starts_with(b"POST /peer/swim/v1") {
@@ -685,11 +689,13 @@ impl LanManager {
         let route = route.lock_unpoisoned().take().unwrap_or(InboundRoute::Peer);
         match route {
             InboundRoute::Peer => {
+                debug!("handling inbound lan peer websocket");
                 let session =
                     perform_inbound_handshake(self, stream, &context, &self.database).await?;
                 self.attach_peer_stream(generation, session).await
             }
             InboundRoute::Transfer { session_id } => {
+                debug!(%session_id, "handling inbound lan transfer websocket");
                 self.attach_transfer_stream(session_id, stream).await
             }
         }
@@ -705,6 +711,7 @@ impl LanManager {
         allow_pairing: bool,
     ) -> AppResult<()> {
         let url = Url::parse(&format!("ws://{ip}:{port}/peer"))?;
+        debug!(expected_device_id = %expected_device_id, %ip, port = port, "connecting outbound lan peer");
         let (stream, _) = connect_async(url.as_str())
             .await
             .map_err(|error| AppError::message(error.to_string()))?;
@@ -747,6 +754,7 @@ impl LanManager {
             inner.pairing_candidates.remove(&peer_device_id);
         }
         self.emit_pairing_candidates();
+        info!(device_id = %peer_device_id, "lan peer connected");
         let _ = self.event_tx.send(RuntimeEvent::LanConnected {
             device_id: peer_device_id.clone(),
         });
@@ -831,6 +839,7 @@ impl LanManager {
                 }
             }
             manager.detach_peer(generation, &peer_device_id);
+            debug!(device_id = %peer_device_id, "lan peer stream ended");
             manager.schedule_reconnect(generation, peer_device_id);
         });
         Ok(())
@@ -853,6 +862,7 @@ impl LanManager {
             let mut inner = self.inner.lock_unpoisoned();
             inner.transfer_senders.insert(session_id.clone(), tx);
         }
+        debug!(%session_id, "lan transfer stream attached");
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -1026,13 +1036,16 @@ impl LanManager {
         let Some(target) = self.next_probe_target(&context.device.device_id) else {
             return;
         };
+        debug!(%target, "probing swim member");
         match self.send_swim_ping(&context, &target).await {
             Ok(ack) => {
                 self.process_swim_message(generation, &context, ack, None);
                 self.mark_member(generation, &context, &target, MemberState::Alive, None);
                 return;
             }
-            Err(_) => {}
+            Err(error) => {
+                debug!(%target, %error, "direct swim probe failed");
+            }
         }
 
         let intermediaries = self.indirect_targets(&context.device.device_id, &target);
@@ -1048,6 +1061,7 @@ impl LanManager {
         }
 
         self.mark_member(generation, &context, &target, MemberState::Suspect, None);
+        warn!(%target, "swim member marked suspect");
     }
 
     fn next_probe_target(&self, local_device_id: &str) -> Option<String> {
@@ -1292,10 +1306,12 @@ impl LanManager {
             return;
         };
 
+        debug!(%device_id, %ip, port = port, "trying trusted lan peer connection");
         let result = self
             .connect_outbound(generation, context, device_id.clone(), ip, port, false)
             .await;
-        if result.is_err() {
+        if let Err(error) = result {
+            warn!(%device_id, %error, "trusted lan peer connection failed");
             self.schedule_reconnect(generation, device_id);
         }
     }
@@ -1304,6 +1320,7 @@ impl LanManager {
         if !self.is_trusted(&device_id) || !self.begin_reconnect(generation, &device_id) {
             return;
         }
+        debug!(%device_id, "scheduling lan reconnect");
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             for attempt in 0..RECONNECT_MAX_ATTEMPTS {
@@ -1419,6 +1436,7 @@ impl LanManager {
     }
 
     fn remember_peer_endpoint(&self, device_id: &str, ip: IpAddr, port: u16) {
+        debug!(%device_id, %ip, port = port, "remembering lan peer endpoint");
         self.inner
             .lock_unpoisoned()
             .peer_endpoints
@@ -1434,6 +1452,7 @@ impl LanManager {
             inner.peers.remove(device_id).is_some()
         };
         if should_emit {
+            warn!(%device_id, "lan peer disconnected");
             let _ = self.event_tx.send(RuntimeEvent::LanDisconnected {
                 device_id: device_id.to_string(),
             });
@@ -1448,6 +1467,7 @@ impl LanManager {
             .remove(session_id)
             .is_some();
         if should_emit {
+            debug!(%session_id, "lan transfer stream detached");
             let _ = self.event_tx.send(RuntimeEvent::LanTransferClosed {
                 session_id: session_id.to_string(),
             });
@@ -1950,7 +1970,7 @@ async fn recv_monitor_event(
     receiver.recv_async().await.ok()
 }
 
-fn pick_local_ipv4() -> Option<IpAddr> {
+fn pick_primary_ipv4() -> Option<IpAddr> {
     get_if_addrs().ok().and_then(|interfaces| {
         interfaces
             .into_iter()

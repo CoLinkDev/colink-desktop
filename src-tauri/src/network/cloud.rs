@@ -11,6 +11,7 @@ use tokio::{
     time::{interval, sleep, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
@@ -20,10 +21,7 @@ use crate::{
     error::{AppError, AppResult},
     models::{AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
-    protocol::{
-        AnnouncePayload, BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope,
-        DeviceOnlinePayload,
-    },
+    protocol::{BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope, DeviceOnlinePayload},
     runtime_events::RuntimeEvent,
     shell,
     store::db::Database,
@@ -80,7 +78,6 @@ enum CloudCommand {
         to: String,
         message: BusinessEnvelope,
     },
-    Announce(AnnouncePayload),
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -135,6 +132,7 @@ impl CloudConnectionManager {
         };
 
         self.emit_status(CloudStatus::connecting());
+        info!(generation = generation, "cloud connection starting");
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -158,20 +156,18 @@ impl CloudConnectionManager {
         }
 
         self.emit_status(CloudStatus::disconnected());
+        info!("cloud connection stopped");
         let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(Some(
             "云端连接已停止".to_string(),
         )));
     }
 
     pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
+        debug!(to, message_type = %message.message_type, "queueing cloud relay");
         self.send_command(CloudCommand::Relay {
             to: to.to_string(),
             message,
         })
-    }
-
-    pub fn announce(&self, payload: AnnouncePayload) -> AppResult<()> {
-        self.send_command(CloudCommand::Announce(payload))
     }
 
     async fn run(&self, generation: u64, mut cancel_rx: watch::Receiver<bool>) {
@@ -185,15 +181,18 @@ impl CloudConnectionManager {
             let context = match self.load_context().await {
                 ContextLoad::Ready(context) => *context,
                 ContextLoad::NoSession => {
+                    debug!("cloud connection skipped because no session exists");
                     let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
                     self.clear_command_sender(generation);
                     return;
                 }
                 ContextLoad::Invalidated(message) => {
+                    warn!(%message, "cloud auth invalidated while loading context");
                     self.invalidate_auth(message, generation);
                     return;
                 }
                 ContextLoad::Retryable(message) => {
+                    warn!(attempt = attempt + 1, %message, "cloud context load failed");
                     attempt += 1;
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
                     let _ = self.update_status_if_current(generation, status.clone());
@@ -217,13 +216,22 @@ impl CloudConnectionManager {
             };
             let _ = self.update_status_if_current(generation, phase.clone());
             self.emit_status(phase);
+            info!(attempt = attempt, "cloud connect attempt starting");
 
             match self.connect_once(generation, context, &mut cancel_rx).await {
-                Ok(ConnectionExit::Cancelled) => return,
+                Ok(ConnectionExit::Cancelled) => {
+                    debug!("cloud connection cancelled");
+                    return;
+                }
                 Ok(ConnectionExit::Disconnected {
                     connected_for,
                     reason,
                 }) => {
+                    warn!(
+                        connected_for_ms = connected_for.as_millis() as u64,
+                        reason = reason.as_deref().unwrap_or("unknown"),
+                        "cloud connection disconnected"
+                    );
                     self.clear_command_sender(generation);
                     attempt = if connected_for.as_secs() >= 60 {
                         1
@@ -239,11 +247,13 @@ impl CloudConnectionManager {
                     }
                 }
                 Err(ConnectionFailure::Invalidated(message)) => {
+                    warn!(%message, "cloud auth invalidated");
                     self.clear_command_sender(generation);
                     self.invalidate_auth(message, generation);
                     return;
                 }
                 Err(ConnectionFailure::Retryable(message)) => {
+                    warn!(%message, "cloud connect attempt failed");
                     self.clear_command_sender(generation);
                     attempt += 1;
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
@@ -273,17 +283,13 @@ impl CloudConnectionManager {
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
-        let session = match auth::refresh_session_if_needed(
-            &self.database,
-            &self.http,
-            &settings,
-            session,
-        )
-        .await
-        {
-            Ok(session) => session,
-            Err(error) => return ContextLoad::Invalidated(error.to_string()),
-        };
+        let session =
+            match auth::refresh_session_if_needed(&self.database, &self.http, &settings, session)
+                .await
+            {
+                Ok(session) => session,
+                Err(error) => return ContextLoad::Invalidated(error.to_string()),
+            };
 
         let device = match self.database.load_device_identity() {
             Ok(Some(device)) => device,
@@ -312,6 +318,7 @@ impl CloudConnectionManager {
             device_id: &context.device.device_id,
         };
 
+        debug!(device_id = %context.device.device_id, "requesting cloud websocket ticket");
         let ticket: TicketResponse = self
             .http
             .post(
@@ -325,6 +332,7 @@ impl CloudConnectionManager {
 
         let ws_url = build_ws_url(&context.settings.server_url, &ticket.ticket)
             .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
+        debug!(url = %ws_url, "connecting cloud websocket");
         let (stream, _) = connect_async(ws_url.as_str())
             .await
             .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
@@ -336,6 +344,7 @@ impl CloudConnectionManager {
         let connected = CloudStatus::connected();
         let _ = self.update_status_if_current(generation, connected.clone());
         self.emit_status(connected);
+        info!("cloud websocket connected");
 
         let _ = self.sync_devices_from_server(&context).await;
         let _ = self.event_tx.send(RuntimeEvent::CloudConnected);
@@ -360,6 +369,7 @@ impl CloudConnectionManager {
                         payload: None,
                     };
                     if write_client_message(&mut writer, ping).await.is_err() {
+                        warn!("cloud ping failed");
                         return Ok(ConnectionExit::Disconnected {
                             connected_for: connected_at.elapsed(),
                             reason: Some("云端连接已断开".to_string()),
@@ -373,6 +383,7 @@ impl CloudConnectionManager {
 
                     let outbound = match command {
                         CloudCommand::Relay { to, message } => {
+                            debug!(to, message_type = %message.message_type, "sending cloud relay");
                             CloudClientEnvelope {
                                 id: Uuid::new_v4().to_string(),
                                 message_type: "relay".to_string(),
@@ -380,17 +391,10 @@ impl CloudConnectionManager {
                                 payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
                             }
                         }
-                        CloudCommand::Announce(payload) => {
-                            CloudClientEnvelope {
-                                id: Uuid::new_v4().to_string(),
-                                message_type: "announce".to_string(),
-                                to: None,
-                                payload: Some(serde_json::to_value(payload).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
-                            }
-                        }
                     };
 
                     if write_client_message(&mut writer, outbound).await.is_err() {
+                        warn!("cloud message send failed");
                         return Ok(ConnectionExit::Disconnected {
                             connected_for: connected_at.elapsed(),
                             reason: Some("云端发送失败".to_string()),
@@ -400,9 +404,11 @@ impl CloudConnectionManager {
                 message = reader.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
+                            debug!(bytes = text.len(), "received cloud text frame");
                             self.handle_server_message(text.as_str()).await;
                         }
                         Some(Ok(Message::Close(_))) => {
+                            info!("cloud websocket closed by server");
                             return Ok(ConnectionExit::Disconnected {
                                 connected_for: connected_at.elapsed(),
                                 reason: Some("服务端关闭了连接".to_string()),
@@ -418,6 +424,7 @@ impl CloudConnectionManager {
                         }
                         Some(Ok(_)) => {}
                         Some(Err(error)) => {
+                            warn!(%error, "cloud websocket read failed");
                             return Ok(ConnectionExit::Disconnected {
                                 connected_for: connected_at.elapsed(),
                                 reason: Some(error.to_string()),
@@ -437,11 +444,16 @@ impl CloudConnectionManager {
 
     async fn handle_server_message(&self, raw: &str) {
         let Ok(message) = serde_json::from_str::<CloudServerEnvelope>(raw) else {
+            warn!("received invalid cloud message");
             return;
         };
 
         match message.message_type.as_str() {
             "device.online" => {
+                debug!(
+                    from = message.from.as_deref().unwrap_or("unknown"),
+                    "cloud device online"
+                );
                 let payload = message
                     .payload
                     .and_then(|value| serde_json::from_value::<DeviceOnlinePayload>(value).ok());
@@ -454,6 +466,10 @@ impl CloudConnectionManager {
                 }
             }
             "device.offline" => {
+                debug!(
+                    from = message.from.as_deref().unwrap_or("unknown"),
+                    "cloud device offline"
+                );
                 if let Some(device_id) = message.from {
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
@@ -463,6 +479,10 @@ impl CloudConnectionManager {
                 }
             }
             "relay" => {
+                debug!(
+                    from = message.from.as_deref().unwrap_or("unknown"),
+                    "cloud relay received"
+                );
                 let Some(from) = message.from else {
                     return;
                 };
@@ -477,7 +497,9 @@ impl CloudConnectionManager {
                     message: business,
                 });
             }
-            _ => {}
+            _ => {
+                debug!(message_type = %message.message_type, "ignored cloud message");
+            }
         }
     }
 
@@ -494,6 +516,7 @@ impl CloudConnectionManager {
         let _ = self
             .event_tx
             .send(RuntimeEvent::DevicesSnapshot(response.devices));
+        debug!("synced devices from cloud server");
         Ok(())
     }
 
@@ -526,11 +549,12 @@ impl CloudConnectionManager {
 
     fn invalidate_auth(&self, message: String, generation: u64) {
         if let Err(error) = self.database.clear_session() {
-            eprintln!("failed to clear session during auth invalidation: {error}");
+            error!(%error, "failed to clear session during auth invalidation");
         }
         if let Err(error) = self.database.clear_cached_devices() {
-            eprintln!("failed to clear device cache during auth invalidation: {error}");
+            error!(%error, "failed to clear device cache during auth invalidation");
         }
+        warn!(%message, "invalidating cloud auth");
         let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());
         self.emit_status(CloudStatus::disconnected());

@@ -18,12 +18,6 @@ pub fn reconcile_devices(
         .into_iter()
         .map(|mut device| {
             if let Some(existing) = previous_by_id.get(device.device_id.as_str()) {
-                if device.local_ip.is_none() {
-                    device.local_ip = existing.local_ip.clone();
-                }
-                if device.local_port.is_none() {
-                    device.local_port = existing.local_port;
-                }
                 if device.security_state == "unverified" {
                     device.security_state = existing.security_state.clone();
                 }
@@ -33,10 +27,6 @@ pub fn reconcile_devices(
             device.lan_available = lan_available;
             if lan_available {
                 device.security_state = "verified".to_string();
-            }
-            if !device.online && !lan_available {
-                device.local_ip = None;
-                device.local_port = None;
             }
             device.active_route = if lan_available {
                 Some("lan".to_string())
@@ -69,8 +59,6 @@ pub fn reconcile_devices(
             online: lan_available,
             last_seen: None,
             public_key: record.public_key.clone(),
-            local_ip: None,
-            local_port: None,
             lan_available,
             active_route: lan_available.then(|| "lan".to_string()),
             security_state: "verified".to_string(),
@@ -97,8 +85,6 @@ mod tests {
             online: true,
             last_seen: None,
             public_key: "pk".to_string(),
-            local_ip: None,
-            local_port: None,
             lan_available: false,
             active_route: None,
             security_state: "unverified".to_string(),
@@ -110,8 +96,6 @@ mod tests {
             online: true,
             last_seen: None,
             public_key: "pk".to_string(),
-            local_ip: Some("192.168.1.5".to_string()),
-            local_port: Some(27777),
             lan_available: true,
             active_route: Some("lan".to_string()),
             security_state: "verified".to_string(),
@@ -123,7 +107,5 @@ mod tests {
         assert_eq!(reconciled[0].active_route.as_deref(), Some("lan"));
         assert!(reconciled[0].lan_available);
         assert_eq!(reconciled[0].security_state, "verified");
-        assert_eq!(reconciled[0].local_ip.as_deref(), Some("192.168.1.5"));
-        assert_eq!(reconciled[0].local_port, Some(27777));
     }
 }

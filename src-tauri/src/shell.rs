@@ -83,9 +83,9 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
     let devices = state.database.load_cached_devices().unwrap_or_default();
     let transfers = state.database.load_transfers(50).unwrap_or_default();
     let cloud = state.cloud.snapshot();
-    let active_transfer = transfers.iter().any(|item| {
-        matches!(item.status.as_str(), "offered" | "sending" | "receiving")
-    });
+    let active_transfer = transfers
+        .iter()
+        .any(|item| matches!(item.status.as_str(), "offered" | "sending" | "receiving"));
     let icon_state = if active_transfer {
         "syncing"
     } else if cloud.connected || devices.iter().any(|item| item.lan_available) {
@@ -180,7 +180,8 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
         .collect::<Vec<_>>();
     let online_submenu = build_online_devices_submenu(app, &online_devices)?;
 
-    Menu::with_items(app, &[&open, &online_submenu, &settings, &separator, &quit]).map_err(Into::into)
+    Menu::with_items(app, &[&open, &online_submenu, &settings, &separator, &quit])
+        .map_err(Into::into)
 }
 
 fn build_online_devices_submenu(
@@ -188,14 +189,23 @@ fn build_online_devices_submenu(
     devices: &[DeviceInfo],
 ) -> AppResult<Submenu<tauri::Wry>> {
     if devices.is_empty() {
-        let empty = MenuItem::with_id(app, "tray-device-empty", "暂无在线设备", false, None::<&str>)?;
+        let empty = MenuItem::with_id(
+            app,
+            "tray-device-empty",
+            "暂无在线设备",
+            false,
+            None::<&str>,
+        )?;
         return Submenu::with_items(app, "在线设备", true, &[&empty]).map_err(Into::into);
     }
 
     let items = devices
         .iter()
         .map(|item| {
-            let route = item.active_route.clone().unwrap_or_else(|| "cloud".to_string());
+            let route = item
+                .active_route
+                .clone()
+                .unwrap_or_else(|| "cloud".to_string());
             MenuItem::with_id(
                 app,
                 format!("{MENU_DEVICE_PREFIX}{}", item.device_id),
@@ -205,7 +215,10 @@ fn build_online_devices_submenu(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let refs = items.iter().map(|item| item as &dyn IsMenuItem<_>).collect::<Vec<_>>();
+    let refs = items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<_>)
+        .collect::<Vec<_>>();
     Submenu::with_items(app, "在线设备", true, &refs).map_err(Into::into)
 }
 

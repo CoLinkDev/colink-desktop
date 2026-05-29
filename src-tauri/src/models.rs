@@ -105,10 +105,6 @@ pub struct DeviceInfo {
     pub last_seen: Option<String>,
     pub public_key: String,
     #[serde(default)]
-    pub local_ip: Option<String>,
-    #[serde(default)]
-    pub local_port: Option<u16>,
-    #[serde(default)]
     pub lan_available: bool,
     #[serde(default)]
     pub active_route: Option<String>,

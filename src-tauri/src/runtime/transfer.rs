@@ -8,6 +8,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{Mutex as AsyncMutex, Notify},
 };
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -73,6 +74,13 @@ impl AppRuntime {
             let file_id = Uuid::new_v4().to_string();
             let created_at = unix_now_millis();
             let route = self.preferred_route(&payload.device_id);
+            debug!(
+                device_id = %payload.device_id,
+                path = %source_path.display(),
+                file_size = file_size,
+                route = %route.as_str(),
+                "preparing outgoing file transfer"
+            );
 
             let record = FileTransferRecord {
                 file_id: file_id.clone(),
@@ -203,6 +211,14 @@ impl AppRuntime {
             .database
             .load_settings()?
             .ok_or_else(|| AppError::message("本地设置未初始化"))?;
+        info!(
+            from = %from,
+            session_id = %payload.session_id,
+            file_name = %payload.file_name,
+            file_size = payload.file_size,
+            route = %route,
+            "received file offer"
+        );
         let download_path = PathBuf::from(&settings.download_path);
         fs::create_dir_all(&download_path)?;
         let temp_name = format!("{}.part", sanitize(&payload.file_name));
@@ -225,6 +241,7 @@ impl AppRuntime {
         .unwrap_or(MessageDialogResult::No);
 
         if accepted != MessageDialogResult::Yes {
+            info!(from = %from, session_id = %payload.session_id, "file offer rejected by user");
             let envelope = BusinessEnvelope::from_payload(
                 FILE_REJECT_TYPE,
                 FileRejectPayload {
@@ -279,6 +296,12 @@ impl AppRuntime {
             },
         )?;
         let _ = self.send_business_message(from, envelope)?;
+        info!(
+            from,
+            session_id = %record.file_id,
+            route = %record.route,
+            "file offer accepted"
+        );
         self.emit_transfers()?;
         self.notify("文件接收", &format!("开始接收 {}", payload.file_name))?;
         if record.total_chunks == 0
@@ -306,8 +329,10 @@ impl AppRuntime {
         };
         self.inner.database.save_transfer(&record)?;
         self.emit_transfers()?;
+        info!(file_id = %file_id, device_id = %record.device_id, "starting outgoing file transfer");
 
         if let Some((ip, port)) = self.lan_endpoint_for_device(&record.device_id) {
+            debug!(file_id = %file_id, device_id = %record.device_id, %ip, port = port, "trying lan data connection");
             match self
                 .inner
                 .lan
@@ -317,6 +342,7 @@ impl AppRuntime {
                 Ok(()) => {
                     record.route = TransferRoute::Lan.as_str().to_string();
                     self.update_outgoing_route(&file_id, TransferRoute::Lan)?;
+                    info!(file_id = %file_id, "using lan data route for file transfer");
                     let ready = BusinessEnvelope::from_payload(
                         FILE_READY_TYPE,
                         FileReadyPayload {
@@ -328,6 +354,7 @@ impl AppRuntime {
                 }
                 Err(error) => {
                     let reason = format!("LAN data connection failed: {error}");
+                    warn!(file_id = %file_id, %error, "lan data connection failed");
                     let cancel = BusinessEnvelope::from_payload(
                         FILE_CANCEL_TYPE,
                         FileCancelPayload {
@@ -344,6 +371,7 @@ impl AppRuntime {
 
         record.route = TransferRoute::Cloud.as_str().to_string();
         self.update_outgoing_route(&file_id, TransferRoute::Cloud)?;
+        info!(file_id = %file_id, "using cloud relay route for file transfer");
         self.send_file_data_relay(file_id, source_path, record)
             .await
     }
@@ -447,10 +475,9 @@ impl AppRuntime {
             ChunkTransport::Lan => {
                 let index =
                     u32::try_from(index).map_err(|_| AppError::message("文件分块索引过大"))?;
-                self.inner.lan.send_transfer_frame(
-                    file_id,
-                    FileDataFrame::chunk(index, bytes.to_vec()),
-                )?;
+                self.inner
+                    .lan
+                    .send_transfer_frame(file_id, FileDataFrame::chunk(index, bytes.to_vec()))?;
             }
         }
         Ok(())
@@ -502,6 +529,12 @@ impl AppRuntime {
     pub(super) async fn handle_file_chunk(&self, payload: FileChunkPayload) -> AppResult<()> {
         let session_id = payload.session_id;
         let bytes = STANDARD.decode(payload.data)?;
+        debug!(
+            session_id = %session_id,
+            chunk_index = payload.chunk_index,
+            bytes = bytes.len(),
+            "received relay file chunk"
+        );
         self.process_incoming_chunk(&session_id, payload.chunk_index, &bytes, true)
             .await
     }
@@ -511,6 +544,7 @@ impl AppRuntime {
         session_id: &str,
         frame: FileDataFrame,
     ) -> AppResult<()> {
+        debug!(%session_id, kind = ?frame.kind, index = frame.index, "received lan transfer frame");
         match frame.kind {
             FileDataFrameKind::Chunk => {
                 self.handle_lan_file_chunk(session_id, frame.index as i64, frame.payload)
@@ -562,10 +596,22 @@ impl AppRuntime {
         .ok_or_else(|| AppError::message("接收中的文件不存在"))?;
 
         if chunk_index < received_chunks {
+            debug!(
+                %session_id,
+                chunk_index = chunk_index,
+                received_chunks = received_chunks,
+                "ignoring duplicate file chunk"
+            );
             self.send_file_ack(&device_id, session_id, received_chunks)?;
             return Ok(());
         }
         if chunk_index > received_chunks {
+            warn!(
+                %session_id,
+                chunk_index = chunk_index,
+                received_chunks = received_chunks,
+                "missing file chunk detected"
+            );
             self.send_file_retransmit(&device_id, session_id, received_chunks)?;
             return Ok(());
         }
@@ -623,6 +669,11 @@ impl AppRuntime {
         };
 
         self.inner.database.save_transfer(&record)?;
+        debug!(
+            session_id = %payload.session_id,
+            next_expected_index = payload.next_expected_index,
+            "processed file ack"
+        );
         if let Some(bytes_per_second) = bytes_per_second {
             self.emit_transfer_progress(record, bytes_per_second);
         }
@@ -799,6 +850,7 @@ impl AppRuntime {
         self.inner.database.save_transfer(&record)?;
         self.emit_transfers()?;
         self.inner.lan.unregister_transfer(file_id);
+        info!(%file_id, %status, "outgoing file transfer finished");
         self.inner
             .state
             .lock_unpoisoned()
@@ -808,6 +860,7 @@ impl AppRuntime {
     }
 
     pub(super) fn handle_file_cancel(&self, file_id: &str, reason: String) -> AppResult<()> {
+        warn!(%file_id, %reason, "file transfer cancelled by peer");
         self.inner.lan.unregister_transfer(file_id);
         if let Some(incoming) = self
             .inner
@@ -833,10 +886,12 @@ impl AppRuntime {
         };
 
         if cancelled {
+            debug!(%file_id, "ignored lan transfer close for cancelled transfer");
             return Ok(());
         }
 
         if let Some(incoming) = incoming {
+            warn!(%file_id, "incoming lan transfer closed before completion");
             if let Some(temp_path) = incoming.record.temp_path.as_ref() {
                 let _ = fs::remove_file(temp_path);
             }
@@ -851,6 +906,7 @@ impl AppRuntime {
         }
 
         if outgoing_active {
+            warn!(%file_id, "outgoing lan transfer closed before completion");
             self.finish_outgoing_transfer(
                 file_id,
                 "failed",
@@ -863,23 +919,14 @@ impl AppRuntime {
 
     fn lan_endpoint_for_device(&self, device_id: &str) -> Option<(String, u16)> {
         if !self.inner.lan.has_peer(device_id) {
+            debug!(%device_id, "lan endpoint unavailable because peer is not connected");
             return None;
         }
-        self.inner.lan.peer_endpoint(device_id).or_else(|| {
-            self.inner
-                .database
-                .load_cached_devices()
-                .ok()
-                .and_then(|devices| {
-                    devices.into_iter().find_map(|device| {
-                        if device.device_id == device_id {
-                            Some((device.local_ip?, device.local_port?))
-                        } else {
-                            None
-                        }
-                    })
-                })
-        })
+        let endpoint = self.inner.lan.peer_endpoint(device_id);
+        if endpoint.is_none() {
+            debug!(%device_id, "lan endpoint unavailable in peer endpoint table");
+        }
+        endpoint
     }
 
     fn update_outgoing_route(&self, file_id: &str, route: TransferRoute) -> AppResult<()> {
@@ -894,6 +941,7 @@ impl AppRuntime {
             outgoing.record.clone()
         };
         self.inner.database.save_transfer(&record)?;
+        debug!(%file_id, route = %route.as_str(), "updated outgoing transfer route");
         self.emit_transfers()
     }
 
