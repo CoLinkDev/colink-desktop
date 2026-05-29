@@ -3,12 +3,8 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    device_cache::reconcile_devices,
-    error::AppResult,
-    models::DeviceInfo,
-    network::cloud::DEVICES_UPDATED_EVENT,
-    protocol::DeviceOnlinePayload,
-    shell,
+    device_cache::reconcile_devices, error::AppResult, models::DeviceInfo,
+    network::cloud::DEVICES_UPDATED_EVENT, protocol::DeviceOnlinePayload, shell,
     store::db::Database,
 };
 
@@ -19,7 +15,18 @@ pub fn replace_all(
     devices: Vec<DeviceInfo>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let previous = database.load_cached_devices()?;
-    let reconciled = reconcile_devices(devices, &previous, lan_peers);
+    let local_device_id = database
+        .load_device_identity()?
+        .map(|identity| identity.device_id);
+    database.ensure_lan_trusts_for_devices(&devices, local_device_id.as_deref())?;
+    let trusted = database.load_lan_trusts()?;
+    let reconciled = reconcile_devices(
+        devices,
+        &previous,
+        lan_peers,
+        &trusted,
+        local_device_id.as_deref(),
+    );
     save_and_publish(database, app, reconciled)
 }
 
@@ -49,7 +56,17 @@ pub fn update_one(
         device.local_port = None;
     }
 
-    let reconciled = reconcile_devices(devices, &previous, lan_peers);
+    let local_device_id = database
+        .load_device_identity()?
+        .map(|identity| identity.device_id);
+    let trusted = database.load_lan_trusts()?;
+    let reconciled = reconcile_devices(
+        devices,
+        &previous,
+        lan_peers,
+        &trusted,
+        local_device_id.as_deref(),
+    );
     save_and_publish(database, app, reconciled).map(Some)
 }
 
@@ -59,7 +76,17 @@ pub fn reconcile_routes(
     lan_peers: &HashSet<String>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let devices = database.load_cached_devices()?;
-    let reconciled = reconcile_devices(devices.clone(), &devices, lan_peers);
+    let local_device_id = database
+        .load_device_identity()?
+        .map(|identity| identity.device_id);
+    let trusted = database.load_lan_trusts()?;
+    let reconciled = reconcile_devices(
+        devices.clone(),
+        &devices,
+        lan_peers,
+        &trusted,
+        local_device_id.as_deref(),
+    );
     save_and_publish(database, app, reconciled)
 }
 

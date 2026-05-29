@@ -5,6 +5,7 @@ import type {
   FileTransferRecord,
   BootstrapPayload,
   DeviceInfo,
+  LanPairingCandidate,
   LoginPayload,
   RegisterPayload,
   SendFilePayload,
@@ -54,6 +55,28 @@ export function rotateDeviceKey(deviceId: string) {
     payload: {
       deviceId,
     },
+  })
+}
+
+export function listLanPairingCandidates() {
+  return invoke<LanPairingCandidate[]>('list_lan_pairing_candidates')
+}
+
+export function startLanPairing(deviceId: string) {
+  return invoke<void>('start_lan_pairing', {
+    payload: { deviceId },
+  })
+}
+
+export function respondLanPairing(requestId: string, accepted: boolean) {
+  return invoke<void>('respond_lan_pairing', {
+    payload: { requestId, accepted },
+  })
+}
+
+export function forgetLanTrust(deviceId: string) {
+  return invoke<DeviceInfo[]>('forget_lan_trust', {
+    payload: { deviceId },
   })
 }
 

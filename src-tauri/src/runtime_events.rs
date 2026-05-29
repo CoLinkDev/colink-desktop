@@ -1,5 +1,5 @@
 use crate::{
-    models::DeviceInfo,
+    models::{DeviceInfo, LanPairingCandidate, LanPairingRequest},
     protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload, FileDataFrame},
 };
 
@@ -41,6 +41,8 @@ pub enum RuntimeEvent {
     LanTransferClosed {
         session_id: String,
     },
+    LanPairingRequested(LanPairingRequest),
+    LanPairingCandidatesUpdated(Vec<LanPairingCandidate>),
     LocalEndpoint {
         ip: String,
         port: u16,

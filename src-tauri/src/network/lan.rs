@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv4Addr},
+    collections::{HashMap, HashSet, VecDeque},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,11 +8,11 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use if_addrs::get_if_addrs;
 use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceEvent, ServiceInfo};
-use serde_json::json;
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, watch},
-    time::{sleep, timeout, Instant, MissedTickBehavior},
+    sync::{mpsc, oneshot, watch},
+    time::{interval, sleep, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
@@ -27,12 +27,19 @@ use url::{form_urlencoded, Url};
 use uuid::Uuid;
 
 use crate::{
-    crypto::keys::{account_hash, sign_payload, verify_signature},
+    crypto::{
+        keys::{sign_payload, verify_signature},
+        lan::{choose_suite, pairing_code, supported_suites, LanSessionCrypto, AES_256_GCM_SUITE},
+    },
     error::{AppError, AppResult},
-    models::{unix_now_millis, DeviceIdentity, LAN_PORT},
+    models::{
+        unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingRequest, LanTrustRecord,
+        LAN_PORT,
+    },
     protocol::{
-        AuthFailPayload, AuthRequestPayload, AuthResponsePayload, BusinessEnvelope, FileDataFrame,
-        PeerEnvelope,
+        BusinessEnvelope, BusinessNegotiatePayload, EncryptedBusinessPayload, FileDataFrame,
+        HandshakeAcceptPayload, HandshakeProofPayload, HandshakeRejectPayload, PeerEnvelope,
+        SwimEnvelope, SwimGossip, SwimPayload,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -41,14 +48,20 @@ use crate::{
 
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPLAY_DRIFT_MILLIS: i64 = 30_000;
-const FAILURE_COOLDOWN_MILLIS: i64 = 60_000;
 const PING_INTERVAL_SECS: u64 = 15;
 const PING_TIMEOUT_SECS: u64 = 45;
-const RECONNECT_MAX_ATTEMPTS: u32 = 5;
+const SWIM_PERIOD: Duration = Duration::from_millis(1_000);
+const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(500);
+const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(500);
+const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 5_000;
+const SWIM_MAX_GOSSIP: usize = 10;
+const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
 const RECONNECT_BASE_DELAY_MS: u64 = 2_000;
 const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
+const RECONNECT_MAX_ATTEMPTS: u32 = 5;
 
 enum TransferStreamEvent {
     Activity,
@@ -56,8 +69,7 @@ enum TransferStreamEvent {
 }
 
 enum LanCommand {
-    PeerDisconnected { generation: u64, device_id: String },
-    RestartBrowse { generation: u64 },
+    TryConnect { generation: u64, device_id: String },
 }
 
 #[derive(Clone)]
@@ -73,21 +85,90 @@ struct LanState {
     command_tx: Option<mpsc::UnboundedSender<LanCommand>>,
     peers: HashMap<String, mpsc::UnboundedSender<BusinessEnvelope>>,
     peer_endpoints: HashMap<String, (String, u16)>,
+    members: HashMap<String, MemberRecord>,
+    gossip: VecDeque<SwimGossip>,
+    probe_cursor: usize,
+    seq: u64,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
-    blocked_until: HashMap<String, i64>,
     reconnecting: HashSet<String>,
+    pending_pairings: HashMap<String, oneshot::Sender<bool>>,
+    pairing_candidates: HashMap<String, LanPairingCandidate>,
+}
+
+#[derive(Debug, Clone)]
+struct MemberRecord {
+    state: MemberState,
+    incarnation: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberState {
+    Alive,
+    Suspect,
+    Dead,
+    Left,
+}
+
+impl MemberState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Alive => "alive",
+            Self::Suspect => "suspect",
+            Self::Dead => "dead",
+            Self::Left => "left",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "alive" => Some(Self::Alive),
+            "suspect" => Some(Self::Suspect),
+            "dead" => Some(Self::Dead),
+            "left" => Some(Self::Left),
+            _ => None,
+        }
+    }
+
+    fn priority(self) -> u8 {
+        match self {
+            Self::Alive => 0,
+            Self::Suspect => 1,
+            Self::Dead => 2,
+            Self::Left => 3,
+        }
+    }
 }
 
 #[derive(Clone)]
 struct LanContext {
     device: DeviceIdentity,
-    account_hash: String,
+    incarnation: i64,
 }
 
 enum InboundRoute {
     Peer,
     Transfer { session_id: String },
+}
+
+enum TrustState {
+    Trusted,
+    Unknown,
+    KeyChanged,
+}
+
+struct HandshakeResult<S> {
+    stream: WebSocketStream<S>,
+    peer_device_id: String,
+    crypto: LanSessionCrypto,
+}
+
+struct PeerProof {
+    device_id: String,
+    public_key: String,
+    name: String,
+    nonce: String,
 }
 
 impl LanManager {
@@ -101,10 +182,15 @@ impl LanManager {
                 command_tx: None,
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
+                members: HashMap::new(),
+                gossip: VecDeque::new(),
+                probe_cursor: 0,
+                seq: 0,
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
-                blocked_until: HashMap::new(),
                 reconnecting: HashSet::new(),
+                pending_pairings: HashMap::new(),
+                pairing_candidates: HashMap::new(),
             })),
         }
     }
@@ -118,6 +204,7 @@ impl LanManager {
             self.stop();
             return Ok(());
         }
+
         let session = self.database.load_session()?;
         let device = self.database.load_device_identity()?;
         let (Some(session), Some(device)) = (session, device) else {
@@ -130,8 +217,8 @@ impl LanManager {
         }
 
         let context = LanContext {
-            account_hash: account_hash(&session.user_id),
             device,
+            incarnation: unix_now_millis(),
         };
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -144,11 +231,26 @@ impl LanManager {
             inner.cancel = Some(cancel_tx);
             inner.command_tx = Some(command_tx);
             inner.peers.clear();
+            inner.peer_endpoints.clear();
+            inner.members.clear();
+            inner.gossip.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
             inner.reconnecting.clear();
+            inner.pending_pairings.clear();
+            inner.pairing_candidates.clear();
+            inner.seq = 0;
+            inner.probe_cursor = 0;
             inner.generation
         };
+
+        self.push_gossip(SwimGossip {
+            device_id: context.device.device_id.clone(),
+            state: MemberState::Alive.as_str().to_string(),
+            incarnation: context.incarnation,
+        });
+        self.emit_pairing_candidates();
+
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             manager
@@ -159,7 +261,7 @@ impl LanManager {
     }
 
     pub fn stop(&self) {
-        let (peers, transfer_senders) = {
+        let (peers, transfer_senders, pending) = {
             let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
@@ -167,14 +269,19 @@ impl LanManager {
             inner.generation += 1;
             inner.command_tx = None;
             inner.peer_endpoints.clear();
+            inner.members.clear();
+            inner.gossip.clear();
+            inner.pairing_candidates.clear();
             inner.transfer_tokens.clear();
             inner.reconnecting.clear();
             (
                 std::mem::take(&mut inner.peers),
                 std::mem::take(&mut inner.transfer_senders),
+                std::mem::take(&mut inner.pending_pairings),
             )
         };
-        drop((peers, transfer_senders));
+        drop((peers, transfer_senders, pending));
+        self.emit_pairing_candidates();
     }
 
     pub fn has_peer(&self, device_id: &str) -> bool {
@@ -204,6 +311,55 @@ impl LanManager {
             .peer_endpoints
             .get(device_id)
             .cloned()
+    }
+
+    pub fn list_pairing_candidates(&self) -> Vec<LanPairingCandidate> {
+        let mut candidates = self
+            .inner
+            .lock_unpoisoned()
+            .pairing_candidates
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+        candidates
+    }
+
+    pub fn respond_pairing(&self, request_id: &str, accepted: bool) -> AppResult<()> {
+        let sender = self
+            .inner
+            .lock_unpoisoned()
+            .pending_pairings
+            .remove(request_id)
+            .ok_or_else(|| AppError::message("配对请求不存在或已过期"))?;
+        sender
+            .send(accepted)
+            .map_err(|_| AppError::message("配对请求已结束"))
+    }
+
+    pub fn forget_trust(&self, device_id: &str) -> AppResult<()> {
+        self.database.remove_lan_trust(device_id)?;
+        self.detach_peer(self.current_generation(), device_id);
+        Ok(())
+    }
+
+    pub fn start_pairing(&self, device_id: &str) -> AppResult<()> {
+        let generation = self.current_generation();
+        let context = self.load_context()?;
+        let (ip, port) = self
+            .peer_endpoint(device_id)
+            .ok_or_else(|| AppError::message("未发现该 LAN 设备"))?;
+        let ip = ip
+            .parse::<IpAddr>()
+            .map_err(|_| AppError::message("LAN 设备地址无效"))?;
+        let manager = self.clone();
+        let device_id = device_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            let _ = manager
+                .connect_outbound(generation, context, device_id, ip, port, true)
+                .await;
+        });
+        Ok(())
     }
 
     pub fn register_transfer_token(&self, session_id: &str, token: &str) {
@@ -278,7 +434,7 @@ impl LanManager {
         };
 
         let _ = mdns.set_ip_check_interval(5);
-        let mut browse_rx = match mdns.browse(SERVICE_TYPE) {
+        let browse_rx = match mdns.browse(SERVICE_TYPE) {
             Ok(receiver) => receiver,
             Err(error) => {
                 let _ = self.event_tx.send(RuntimeEvent::Log {
@@ -290,6 +446,10 @@ impl LanManager {
             }
         };
         let monitor_rx = mdns.monitor().ok();
+        let mut swim_interval = interval(SWIM_PERIOD);
+        swim_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut suspect_interval = interval(Duration::from_millis(500));
+        suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         if let Some(ip) = pick_local_ipv4() {
             let _ = self.register_service(&mdns, &context, ip);
@@ -303,17 +463,18 @@ impl LanManager {
             tokio::select! {
                 changed = cancel_rx.changed() => {
                     if changed.is_ok() && *cancel_rx.borrow() {
+                        self.broadcast_left(&context).await;
                         break;
                     }
                 }
                 accepted = listener.accept() => {
-                    let Ok((stream, _addr)) = accepted else {
+                    let Ok((stream, addr)) = accepted else {
                         continue;
                     };
                     let manager = self.clone();
                     let context = context.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = manager.handle_inbound(generation, context, stream).await;
+                        let _ = manager.handle_inbound_tcp(generation, context, stream, addr).await;
                     });
                 }
                 event = browse_rx.recv_async() => {
@@ -329,20 +490,19 @@ impl LanManager {
                         break;
                     };
                     match command {
-                        LanCommand::PeerDisconnected { generation: command_generation, device_id }
+                        LanCommand::TryConnect { generation: command_generation, device_id }
                             if command_generation == generation =>
                         {
-                            self.handle_peer_disconnected(generation, context.clone(), device_id);
-                        }
-                        LanCommand::RestartBrowse { generation: command_generation }
-                            if command_generation == generation =>
-                        {
-                            if let Some(receiver) = self.restart_browse(&mdns) {
-                                browse_rx = receiver;
-                            }
+                            self.try_connect_trusted(generation, context.clone(), device_id).await;
                         }
                         _ => {}
                     }
+                }
+                _ = swim_interval.tick() => {
+                    self.probe_next_member(generation, context.clone()).await;
+                }
+                _ = suspect_interval.tick() => {
+                    self.promote_expired_suspects(generation);
                 }
                 event = recv_monitor_event(&monitor_rx), if monitor_rx.is_some() => {
                     if let Some(event) = event {
@@ -388,7 +548,6 @@ impl LanManager {
             .unwrap_or_else(|| "colink-desktop".to_string());
         let instance_name = format!("colink-{}", &context.device.device_id[..8]);
         let properties = [
-            ("accountHash", context.account_hash.as_str()),
             ("deviceId", context.device.device_id.as_str()),
             ("version", "1"),
         ];
@@ -412,10 +571,10 @@ impl LanManager {
         context: LanContext,
         service: mdns_sd::ResolvedService,
     ) {
-        let Some(found_account_hash) = service.get_property_val_str("accountHash") else {
+        let Some(version) = service.get_property_val_str("version") else {
             return;
         };
-        if found_account_hash != context.account_hash {
+        if version != "1" {
             return;
         }
         let Some(device_id) = service.get_property_val_str("deviceId").map(str::to_string) else {
@@ -435,61 +594,71 @@ impl LanManager {
         };
 
         let port = service.get_port();
+        self.remember_peer_endpoint(&device_id, ip, port);
         let _ = self.event_tx.send(RuntimeEvent::LanDiscovered {
             device_id: device_id.clone(),
             ip: ip.to_string(),
             port,
             source: "mdns".to_string(),
         });
-        self.remember_peer_endpoint(&device_id, ip, port);
-
-        if !should_initiate(&context.device.device_id, &device_id) {
-            return;
-        }
-        if self.has_peer(&device_id)
-            || self.is_blocked(&device_id)
-            || self.is_reconnecting(&device_id)
-        {
-            return;
-        }
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = manager
-                .connect_outbound(generation, context, device_id, ip, port, true)
-                .await;
+            if let Ok(ack) = manager.send_swim_ping(&context, &device_id).await {
+                manager.process_swim_message(generation, &context, ack, None);
+            }
         });
     }
 
-    async fn connect_outbound(
+    async fn handle_inbound_tcp(
         &self,
         generation: u64,
         context: LanContext,
-        device_id: String,
-        ip: IpAddr,
-        port: u16,
-        block_on_failure: bool,
+        stream: TcpStream,
+        remote_addr: SocketAddr,
     ) -> AppResult<()> {
-        let url = Url::parse(&format!("ws://{ip}:{port}/peer"))?;
-        let (stream, _) = connect_async(url.as_str())
-            .await
-            .map_err(|error| AppError::message(error.to_string()))?;
-        match perform_outbound_handshake(stream, &context, &self.database).await {
-            Ok((stream, peer_device_id)) => {
-                self.attach_peer_stream(generation, peer_device_id, stream)
-                    .await
-            }
-            Err(error) => {
-                if block_on_failure {
-                    self.block_device(&device_id);
-                }
-                Err(error)
-            }
+        let mut peek = [0_u8; 32];
+        let read = stream.peek(&mut peek).await?;
+        if read > 0 && peek[..read].starts_with(b"POST /peer/swim/v1") {
+            return self
+                .handle_swim_http(generation, context, stream, remote_addr)
+                .await;
         }
+
+        self.handle_inbound_ws(generation, context, stream).await
     }
 
-    #[allow(clippy::result_large_err)]
-    async fn handle_inbound(
+    async fn handle_swim_http(
+        &self,
+        generation: u64,
+        context: LanContext,
+        mut stream: TcpStream,
+        remote_addr: SocketAddr,
+    ) -> AppResult<()> {
+        let request = match read_http_body(&mut stream).await {
+            Ok(body) => body,
+            Err(error) => {
+                let _ =
+                    write_http_response(&mut stream, StatusCode::BAD_REQUEST, &error.to_string())
+                        .await;
+                return Err(error);
+            }
+        };
+        let message = serde_json::from_slice::<SwimEnvelope>(&request)?;
+        let response = self
+            .handle_swim_message(generation, &context, message, remote_addr)
+            .await?;
+        let payload = serde_json::to_vec(&response)?;
+        write_http_response(
+            &mut stream,
+            StatusCode::OK,
+            &String::from_utf8_lossy(&payload),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_inbound_ws(
         &self,
         generation: u64,
         context: LanContext,
@@ -516,10 +685,9 @@ impl LanManager {
         let route = route.lock_unpoisoned().take().unwrap_or(InboundRoute::Peer);
         match route {
             InboundRoute::Peer => {
-                let (stream, peer_device_id) =
-                    perform_inbound_handshake(stream, &context, &self.database).await?;
-                self.attach_peer_stream(generation, peer_device_id, stream)
-                    .await
+                let session =
+                    perform_inbound_handshake(self, stream, &context, &self.database).await?;
+                self.attach_peer_stream(generation, session).await
             }
             InboundRoute::Transfer { session_id } => {
                 self.attach_transfer_stream(session_id, stream).await
@@ -527,11 +695,35 @@ impl LanManager {
         }
     }
 
+    async fn connect_outbound(
+        &self,
+        generation: u64,
+        context: LanContext,
+        expected_device_id: String,
+        ip: IpAddr,
+        port: u16,
+        allow_pairing: bool,
+    ) -> AppResult<()> {
+        let url = Url::parse(&format!("ws://{ip}:{port}/peer"))?;
+        let (stream, _) = connect_async(url.as_str())
+            .await
+            .map_err(|error| AppError::message(error.to_string()))?;
+        let session = perform_outbound_handshake(
+            self,
+            stream,
+            &context,
+            &self.database,
+            &expected_device_id,
+            allow_pairing,
+        )
+        .await?;
+        self.attach_peer_stream(generation, session).await
+    }
+
     async fn attach_peer_stream<S>(
         &self,
         generation: u64,
-        peer_device_id: String,
-        stream: WebSocketStream<S>,
+        session: HandshakeResult<S>,
     ) -> AppResult<()>
     where
         WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
@@ -540,31 +732,29 @@ impl LanManager {
             + Send
             + 'static,
     {
-        let now = unix_now_millis();
         {
             let inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
                 return Ok(());
             }
-            if let Some(until) = inner.blocked_until.get(&peer_device_id) {
-                if *until > now {
-                    return Ok(());
-                }
-            }
         }
 
+        let peer_device_id = session.peer_device_id;
         let (tx, mut rx) = mpsc::unbounded_channel::<BusinessEnvelope>();
         {
             let mut inner = self.inner.lock_unpoisoned();
             inner.peers.insert(peer_device_id.clone(), tx);
+            inner.pairing_candidates.remove(&peer_device_id);
         }
+        self.emit_pairing_candidates();
         let _ = self.event_tx.send(RuntimeEvent::LanConnected {
             device_id: peer_device_id.clone(),
         });
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            let (mut writer, mut reader) = stream.split();
+            let (mut writer, mut reader) = session.stream.split();
+            let mut crypto = session.crypto;
             let mut last_activity = Instant::now();
             let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -578,7 +768,18 @@ impl LanManager {
                         let Some(outbound) = outbound else {
                             break;
                         };
-                        if let Ok(text) = serde_json::to_string(&outbound) {
+                        let encrypted = match crypto.encrypt(&outbound) {
+                            Ok(payload) => payload,
+                            Err(_) => break,
+                        };
+                        let envelope = PeerEnvelope {
+                            message_type: "business.v1.message".to_string(),
+                            payload: match serde_json::to_value(encrypted) {
+                                Ok(value) => value,
+                                Err(_) => break,
+                            },
+                        };
+                        if let Ok(text) = serde_json::to_string(&envelope) {
                             if writer.send(Message::Text(text.into())).await.is_err() {
                                 break;
                             }
@@ -593,11 +794,23 @@ impl LanManager {
                         match inbound {
                             Some(Ok(Message::Text(text))) => {
                                 last_activity = Instant::now();
-                                if let Ok(message) = serde_json::from_str::<BusinessEnvelope>(&text) {
-                                    let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
-                                        from: peer_device_id.clone(),
-                                        message,
-                                    });
+                                let Ok(envelope) = serde_json::from_str::<PeerEnvelope>(&text) else {
+                                    continue;
+                                };
+                                if envelope.message_type != "business.v1.message" {
+                                    continue;
+                                }
+                                let Ok(payload) = serde_json::from_value::<EncryptedBusinessPayload>(envelope.payload) else {
+                                    break;
+                                };
+                                match crypto.decrypt(&payload) {
+                                    Ok(message) => {
+                                        let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
+                                            from: peer_device_id.clone(),
+                                            message,
+                                        });
+                                    }
+                                    Err(_) => break,
                                 }
                             }
                             Some(Ok(Message::Pong(_))) => {
@@ -618,6 +831,7 @@ impl LanManager {
                 }
             }
             manager.detach_peer(generation, &peer_device_id);
+            manager.schedule_reconnect(generation, peer_device_id);
         });
         Ok(())
     }
@@ -690,6 +904,527 @@ impl LanManager {
         Ok(())
     }
 
+    async fn handle_swim_message(
+        &self,
+        generation: u64,
+        context: &LanContext,
+        message: SwimEnvelope,
+        remote_addr: SocketAddr,
+    ) -> AppResult<SwimEnvelope> {
+        if message.payload.from != context.device.device_id {
+            self.remember_peer_endpoint(&message.payload.from, remote_addr.ip(), LAN_PORT);
+        }
+
+        match message.message_type.as_str() {
+            "swim.ping" => {
+                let seq = message.payload.seq;
+                self.process_swim_message(generation, context, message, Some(remote_addr.ip()));
+                Ok(self.swim_ack(context, seq))
+            }
+            "swim.ping-req" => {
+                self.process_swim_message(
+                    generation,
+                    context,
+                    message.clone(),
+                    Some(remote_addr.ip()),
+                );
+                let target = message
+                    .payload
+                    .target
+                    .ok_or_else(|| AppError::message("missing swim target"))?;
+                if target == context.device.device_id {
+                    return Ok(self.swim_ack(context, message.payload.seq));
+                }
+                self.send_swim_ping(context, &target)
+                    .await
+                    .map_err(|error| AppError::message(error.to_string()))
+            }
+            _ => Err(AppError::message("unknown swim message")),
+        }
+    }
+
+    fn process_swim_message(
+        &self,
+        generation: u64,
+        context: &LanContext,
+        message: SwimEnvelope,
+        source_ip: Option<IpAddr>,
+    ) {
+        if self.current_generation() != generation {
+            return;
+        }
+        if let Some(ip) = source_ip {
+            self.remember_peer_endpoint(&message.payload.from, ip, LAN_PORT);
+        }
+        for entry in message.payload.gossip {
+            if entry.device_id == context.device.device_id
+                && entry.state == MemberState::Suspect.as_str()
+            {
+                self.push_self_alive(context);
+                continue;
+            }
+            self.merge_member(generation, context, &message.payload.from, entry);
+        }
+    }
+
+    async fn send_swim_ping(&self, context: &LanContext, target: &str) -> AppResult<SwimEnvelope> {
+        let message = SwimEnvelope {
+            message_type: "swim.ping".to_string(),
+            payload: SwimPayload {
+                seq: self.next_seq(),
+                from: context.device.device_id.clone(),
+                target: None,
+                gossip: self.gossip_batch(),
+            },
+        };
+        self.post_swim(target, message, SWIM_DIRECT_TIMEOUT).await
+    }
+
+    async fn send_swim_ping_req(
+        &self,
+        context: &LanContext,
+        intermediary: &str,
+        target: &str,
+    ) -> AppResult<SwimEnvelope> {
+        let message = SwimEnvelope {
+            message_type: "swim.ping-req".to_string(),
+            payload: SwimPayload {
+                seq: self.next_seq(),
+                from: context.device.device_id.clone(),
+                target: Some(target.to_string()),
+                gossip: self.gossip_batch(),
+            },
+        };
+        self.post_swim(intermediary, message, SWIM_INDIRECT_TIMEOUT)
+            .await
+    }
+
+    async fn post_swim(
+        &self,
+        target: &str,
+        message: SwimEnvelope,
+        timeout_duration: Duration,
+    ) -> AppResult<SwimEnvelope> {
+        let (ip, port) = self
+            .peer_endpoint(target)
+            .ok_or_else(|| AppError::message("SWIM target endpoint missing"))?;
+        let url = format!("http://{ip}:{port}/peer/swim/v1");
+        let client = reqwest::Client::new();
+        let response = client
+            .post(url)
+            .timeout(timeout_duration)
+            .json(&message)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(AppError::message("SWIM request failed"));
+        }
+        Ok(response.json::<SwimEnvelope>().await?)
+    }
+
+    async fn probe_next_member(&self, generation: u64, context: LanContext) {
+        let Some(target) = self.next_probe_target(&context.device.device_id) else {
+            return;
+        };
+        match self.send_swim_ping(&context, &target).await {
+            Ok(ack) => {
+                self.process_swim_message(generation, &context, ack, None);
+                self.mark_member(generation, &context, &target, MemberState::Alive, None);
+                return;
+            }
+            Err(_) => {}
+        }
+
+        let intermediaries = self.indirect_targets(&context.device.device_id, &target);
+        for intermediary in intermediaries {
+            if let Ok(ack) = self
+                .send_swim_ping_req(&context, &intermediary, &target)
+                .await
+            {
+                self.process_swim_message(generation, &context, ack, None);
+                self.mark_member(generation, &context, &target, MemberState::Alive, None);
+                return;
+            }
+        }
+
+        self.mark_member(generation, &context, &target, MemberState::Suspect, None);
+    }
+
+    fn next_probe_target(&self, local_device_id: &str) -> Option<String> {
+        let mut inner = self.inner.lock_unpoisoned();
+        let candidates = inner
+            .members
+            .iter()
+            .filter(|(device_id, member)| {
+                device_id.as_str() != local_device_id
+                    && matches!(member.state, MemberState::Alive | MemberState::Suspect)
+                    && inner.peer_endpoints.contains_key(*device_id)
+            })
+            .map(|(device_id, _)| device_id.clone())
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return None;
+        }
+        if inner.probe_cursor >= candidates.len() {
+            inner.probe_cursor = 0;
+        }
+        let target = candidates[inner.probe_cursor].clone();
+        inner.probe_cursor = (inner.probe_cursor + 1) % candidates.len();
+        Some(target)
+    }
+
+    fn indirect_targets(&self, local_device_id: &str, target: &str) -> Vec<String> {
+        self.inner
+            .lock_unpoisoned()
+            .members
+            .iter()
+            .filter(|(device_id, member)| {
+                device_id.as_str() != local_device_id
+                    && device_id.as_str() != target
+                    && member.state == MemberState::Alive
+            })
+            .take(2)
+            .map(|(device_id, _)| device_id.clone())
+            .collect()
+    }
+
+    fn merge_member(&self, generation: u64, context: &LanContext, origin: &str, entry: SwimGossip) {
+        if entry.incarnation > unix_now_millis() + 5 * 60 * 1000 {
+            return;
+        }
+        let Some(state) = MemberState::from_str(&entry.state) else {
+            return;
+        };
+        if state == MemberState::Left && origin != entry.device_id {
+            return;
+        }
+        self.mark_member(
+            generation,
+            context,
+            &entry.device_id,
+            state,
+            Some(entry.incarnation),
+        );
+    }
+
+    fn mark_member(
+        &self,
+        generation: u64,
+        context: &LanContext,
+        device_id: &str,
+        state: MemberState,
+        incarnation: Option<i64>,
+    ) {
+        if device_id == context.device.device_id {
+            return;
+        }
+        let now = unix_now_millis();
+        let mut changed = false;
+        let next_incarnation = incarnation.unwrap_or_else(|| {
+            self.inner
+                .lock_unpoisoned()
+                .members
+                .get(device_id)
+                .map(|member| member.incarnation)
+                .unwrap_or(now)
+        });
+
+        {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return;
+            }
+            let accept = match inner.members.get(device_id) {
+                Some(existing) if next_incarnation < existing.incarnation => false,
+                Some(existing) if next_incarnation == existing.incarnation => {
+                    if existing.state == MemberState::Left
+                        && matches!(state, MemberState::Suspect | MemberState::Dead)
+                    {
+                        false
+                    } else {
+                        state.priority() > existing.state.priority() || state != existing.state
+                    }
+                }
+                _ => true,
+            };
+            if accept {
+                inner.members.insert(
+                    device_id.to_string(),
+                    MemberRecord {
+                        state,
+                        incarnation: next_incarnation,
+                        updated_at: now,
+                    },
+                );
+                changed = true;
+            }
+        }
+
+        if !changed {
+            return;
+        }
+
+        self.push_gossip(SwimGossip {
+            device_id: device_id.to_string(),
+            state: state.as_str().to_string(),
+            incarnation: next_incarnation,
+        });
+
+        match state {
+            MemberState::Alive => {
+                self.update_pairing_candidate(device_id, state);
+                self.send_command(LanCommand::TryConnect {
+                    generation,
+                    device_id: device_id.to_string(),
+                });
+            }
+            MemberState::Dead | MemberState::Left => {
+                self.remove_pairing_candidate(device_id);
+                self.detach_peer(generation, device_id);
+            }
+            MemberState::Suspect => {
+                self.update_pairing_candidate(device_id, state);
+            }
+        }
+    }
+
+    fn promote_expired_suspects(&self, generation: u64) {
+        let now = unix_now_millis();
+        let expired = {
+            let inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return;
+            }
+            inner
+                .members
+                .iter()
+                .filter(|(_, member)| {
+                    member.state == MemberState::Suspect
+                        && now - member.updated_at >= SWIM_SUSPECT_TIMEOUT_MILLIS
+                })
+                .map(|(device_id, _)| device_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let Ok(context) = self.load_context() else {
+            return;
+        };
+        for device_id in expired {
+            self.mark_member(generation, &context, &device_id, MemberState::Dead, None);
+        }
+    }
+
+    fn swim_ack(&self, context: &LanContext, seq: u64) -> SwimEnvelope {
+        SwimEnvelope {
+            message_type: "swim.ack".to_string(),
+            payload: SwimPayload {
+                seq,
+                from: context.device.device_id.clone(),
+                target: None,
+                gossip: self.gossip_batch(),
+            },
+        }
+    }
+
+    async fn broadcast_left(&self, context: &LanContext) {
+        let entry = SwimGossip {
+            device_id: context.device.device_id.clone(),
+            state: MemberState::Left.as_str().to_string(),
+            incarnation: unix_now_millis(),
+        };
+        self.push_gossip(entry);
+        let targets = self
+            .inner
+            .lock_unpoisoned()
+            .members
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for target in targets {
+            let _ = self.send_swim_ping(context, &target).await;
+        }
+    }
+
+    fn push_self_alive(&self, context: &LanContext) {
+        self.push_gossip(SwimGossip {
+            device_id: context.device.device_id.clone(),
+            state: MemberState::Alive.as_str().to_string(),
+            incarnation: unix_now_millis(),
+        });
+    }
+
+    fn push_gossip(&self, entry: SwimGossip) {
+        let mut inner = self.inner.lock_unpoisoned();
+        inner.gossip.push_back(entry);
+        while inner.gossip.len() > SWIM_MAX_GOSSIP * 4 {
+            inner.gossip.pop_front();
+        }
+    }
+
+    fn gossip_batch(&self) -> Vec<SwimGossip> {
+        self.inner
+            .lock_unpoisoned()
+            .gossip
+            .iter()
+            .rev()
+            .take(SWIM_MAX_GOSSIP)
+            .cloned()
+            .collect()
+    }
+
+    fn next_seq(&self) -> u64 {
+        let mut inner = self.inner.lock_unpoisoned();
+        inner.seq = inner.seq.saturating_add(1);
+        inner.seq
+    }
+
+    async fn try_connect_trusted(&self, generation: u64, context: LanContext, device_id: String) {
+        if !should_initiate(&context.device.device_id, &device_id)
+            || self.has_peer(&device_id)
+            || !self.is_trusted(&device_id)
+        {
+            return;
+        }
+
+        let Some((ip, port)) = self.peer_endpoint(&device_id) else {
+            return;
+        };
+        let Ok(ip) = ip.parse::<IpAddr>() else {
+            return;
+        };
+
+        let result = self
+            .connect_outbound(generation, context, device_id.clone(), ip, port, false)
+            .await;
+        if result.is_err() {
+            self.schedule_reconnect(generation, device_id);
+        }
+    }
+
+    fn schedule_reconnect(&self, generation: u64, device_id: String) {
+        if !self.is_trusted(&device_id) || !self.begin_reconnect(generation, &device_id) {
+            return;
+        }
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            for attempt in 0..RECONNECT_MAX_ATTEMPTS {
+                if !manager.is_generation_current(generation)
+                    || manager.has_peer(&device_id)
+                    || !manager.is_trusted(&device_id)
+                {
+                    break;
+                }
+                let delay_ms = (RECONNECT_BASE_DELAY_MS << attempt).min(RECONNECT_MAX_DELAY_MS);
+                sleep(Duration::from_millis(delay_ms)).await;
+                manager.send_command(LanCommand::TryConnect {
+                    generation,
+                    device_id: device_id.clone(),
+                });
+                if manager.has_peer(&device_id) {
+                    break;
+                }
+            }
+            manager.finish_reconnect(&device_id);
+        });
+    }
+
+    fn is_trusted(&self, device_id: &str) -> bool {
+        self.database
+            .load_lan_trusts()
+            .map(|records| records.iter().any(|record| record.device_id == device_id))
+            .unwrap_or(false)
+    }
+
+    async fn request_pairing(
+        &self,
+        device_id: &str,
+        name: &str,
+        public_key: &str,
+        code: &str,
+        reason: &str,
+    ) -> AppResult<bool> {
+        let request_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .lock_unpoisoned()
+            .pending_pairings
+            .insert(request_id.clone(), tx);
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::LanPairingRequested(LanPairingRequest {
+                request_id: request_id.clone(),
+                device_id: device_id.to_string(),
+                name: name.to_string(),
+                code: code.to_string(),
+                reason: reason.to_string(),
+                public_key: public_key.to_string(),
+            }));
+
+        let result = timeout(PAIRING_TIMEOUT, rx).await;
+        self.inner
+            .lock_unpoisoned()
+            .pending_pairings
+            .remove(&request_id);
+        result
+            .map_err(|_| AppError::message("LAN 配对超时"))?
+            .map_err(|_| AppError::message("LAN 配对已取消"))
+    }
+
+    fn trust_peer(&self, proof: &PeerProof) -> AppResult<()> {
+        self.database.upsert_lan_trust(LanTrustRecord {
+            device_id: proof.device_id.clone(),
+            name: proof.name.clone(),
+            public_key: proof.public_key.clone(),
+            trusted_at: unix_now_millis(),
+        })
+    }
+
+    fn update_pairing_candidate(&self, device_id: &str, state: MemberState) {
+        if self.is_trusted(device_id) {
+            self.remove_pairing_candidate(device_id);
+            return;
+        }
+        let Some((ip, port)) = self.peer_endpoint(device_id) else {
+            return;
+        };
+        self.inner.lock_unpoisoned().pairing_candidates.insert(
+            device_id.to_string(),
+            LanPairingCandidate {
+                device_id: device_id.to_string(),
+                ip,
+                port,
+                state: state.as_str().to_string(),
+            },
+        );
+        self.emit_pairing_candidates();
+    }
+
+    fn remove_pairing_candidate(&self, device_id: &str) {
+        let removed = self
+            .inner
+            .lock_unpoisoned()
+            .pairing_candidates
+            .remove(device_id)
+            .is_some();
+        if removed {
+            self.emit_pairing_candidates();
+        }
+    }
+
+    fn emit_pairing_candidates(&self) {
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::LanPairingCandidatesUpdated(
+                self.list_pairing_candidates(),
+            ));
+    }
+
+    fn remember_peer_endpoint(&self, device_id: &str, ip: IpAddr, port: u16) {
+        self.inner
+            .lock_unpoisoned()
+            .peer_endpoints
+            .insert(device_id.to_string(), (ip.to_string(), port));
+    }
+
     fn detach_peer(&self, generation: u64, device_id: &str) {
         let should_emit = {
             let mut inner = self.inner.lock_unpoisoned();
@@ -700,10 +1435,6 @@ impl LanManager {
         };
         if should_emit {
             let _ = self.event_tx.send(RuntimeEvent::LanDisconnected {
-                device_id: device_id.to_string(),
-            });
-            self.send_command(LanCommand::PeerDisconnected {
-                generation,
                 device_id: device_id.to_string(),
             });
         }
@@ -738,164 +1469,6 @@ impl LanManager {
         }
     }
 
-    fn is_blocked(&self, device_id: &str) -> bool {
-        let now = unix_now_millis();
-        self.inner
-            .lock_unpoisoned()
-            .blocked_until
-            .get(device_id)
-            .map(|until| *until > now)
-            .unwrap_or(false)
-    }
-
-    fn block_device(&self, device_id: &str) {
-        self.inner.lock_unpoisoned().blocked_until.insert(
-            device_id.to_string(),
-            unix_now_millis() + FAILURE_COOLDOWN_MILLIS,
-        );
-    }
-
-    fn remember_peer_endpoint(&self, device_id: &str, ip: IpAddr, port: u16) {
-        self.inner
-            .lock_unpoisoned()
-            .peer_endpoints
-            .insert(device_id.to_string(), (ip.to_string(), port));
-    }
-
-    fn handle_peer_disconnected(&self, generation: u64, context: LanContext, device_id: String) {
-        if !should_initiate(&context.device.device_id, &device_id) {
-            return;
-        }
-        if self.has_peer(&device_id) || self.is_blocked(&device_id) {
-            return;
-        }
-        if !self.begin_reconnect(generation, &device_id) {
-            return;
-        }
-
-        let manager = self.clone();
-        tauri::async_runtime::spawn(async move {
-            manager.reconnect_peer(generation, context, device_id).await;
-        });
-    }
-
-    async fn reconnect_peer(&self, generation: u64, context: LanContext, device_id: String) {
-        for attempt in 0..RECONNECT_MAX_ATTEMPTS {
-            if !self.is_generation_current(generation)
-                || self.has_peer(&device_id)
-                || self.is_blocked(&device_id)
-            {
-                self.finish_reconnect(&device_id);
-                return;
-            }
-
-            let Some((ip, port)) = self.peer_endpoint(&device_id) else {
-                break;
-            };
-            let Ok(ip) = ip.parse::<IpAddr>() else {
-                break;
-            };
-
-            if self
-                .connect_outbound(
-                    generation,
-                    context.clone(),
-                    device_id.clone(),
-                    ip,
-                    port,
-                    false,
-                )
-                .await
-                .is_ok()
-            {
-                self.finish_reconnect(&device_id);
-                return;
-            }
-
-            if self.has_peer(&device_id) {
-                self.finish_reconnect(&device_id);
-                return;
-            }
-
-            if attempt + 1 >= RECONNECT_MAX_ATTEMPTS {
-                break;
-            }
-
-            let delay_ms = (RECONNECT_BASE_DELAY_MS << attempt).min(RECONNECT_MAX_DELAY_MS);
-            sleep(Duration::from_millis(delay_ms)).await;
-        }
-
-        self.block_device(&device_id);
-        self.finish_reconnect(&device_id);
-        self.send_command(LanCommand::RestartBrowse { generation });
-    }
-
-    fn restart_browse(&self, mdns: &ServiceDaemon) -> Option<mdns_sd::Receiver<ServiceEvent>> {
-        if let Err(error) = mdns.stop_browse(SERVICE_TYPE) {
-            let _ = self.event_tx.send(RuntimeEvent::Log {
-                level: "warn".to_string(),
-                source: "lan".to_string(),
-                message: format!("mDNS 浏览停止失败: {error}"),
-            });
-        }
-
-        match mdns.browse(SERVICE_TYPE) {
-            Ok(receiver) => Some(receiver),
-            Err(error) => {
-                let _ = self.event_tx.send(RuntimeEvent::Log {
-                    level: "warn".to_string(),
-                    source: "lan".to_string(),
-                    message: format!("mDNS 浏览重启失败: {error}"),
-                });
-                None
-            }
-        }
-    }
-
-    fn is_generation_current(&self, generation: u64) -> bool {
-        self.inner.lock_unpoisoned().generation == generation
-    }
-
-    fn send_command(&self, command: LanCommand) {
-        let sender = self.inner.lock_unpoisoned().command_tx.clone();
-        if let Some(sender) = sender {
-            let _ = sender.send(command);
-        }
-    }
-
-    fn begin_reconnect(&self, generation: u64, device_id: &str) -> bool {
-        let mut inner = self.inner.lock_unpoisoned();
-        if inner.generation != generation
-            || inner.reconnecting.contains(device_id)
-            || !inner.peer_endpoints.contains_key(device_id)
-        {
-            return false;
-        }
-        inner.reconnecting.insert(device_id.to_string());
-        true
-    }
-
-    fn finish_reconnect(&self, device_id: &str) {
-        self.inner.lock_unpoisoned().reconnecting.remove(device_id);
-    }
-
-    fn is_reconnecting(&self, device_id: &str) -> bool {
-        self.inner
-            .lock_unpoisoned()
-            .reconnecting
-            .contains(device_id)
-    }
-
-    fn finalize_generation(&self, generation: u64) {
-        let mut inner = self.inner.lock_unpoisoned();
-        if inner.generation != generation {
-            return;
-        }
-        inner.command_tx = None;
-        inner.reconnecting.clear();
-    }
-
-    #[allow(clippy::result_large_err)]
     fn resolve_inbound_route(&self, request: &Request) -> Result<InboundRoute, ErrorResponse> {
         let path = request.uri().path();
         if path == "/peer" || path == "/" {
@@ -942,6 +1515,57 @@ impl LanManager {
             _ => false,
         }
     }
+
+    fn load_context(&self) -> AppResult<LanContext> {
+        let device = self
+            .database
+            .load_device_identity()?
+            .ok_or_else(|| AppError::message("当前设备尚未注册"))?;
+        Ok(LanContext {
+            device,
+            incarnation: unix_now_millis(),
+        })
+    }
+
+    fn send_command(&self, command: LanCommand) {
+        let sender = self.inner.lock_unpoisoned().command_tx.clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(command);
+        }
+    }
+
+    fn begin_reconnect(&self, generation: u64, device_id: &str) -> bool {
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation != generation
+            || inner.reconnecting.contains(device_id)
+            || !inner.peer_endpoints.contains_key(device_id)
+        {
+            return false;
+        }
+        inner.reconnecting.insert(device_id.to_string());
+        true
+    }
+
+    fn finish_reconnect(&self, device_id: &str) {
+        self.inner.lock_unpoisoned().reconnecting.remove(device_id);
+    }
+
+    fn is_generation_current(&self, generation: u64) -> bool {
+        self.inner.lock_unpoisoned().generation == generation
+    }
+
+    fn current_generation(&self) -> u64 {
+        self.inner.lock_unpoisoned().generation
+    }
+
+    fn finalize_generation(&self, generation: u64) {
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation != generation {
+            return;
+        }
+        inner.command_tx = None;
+        inner.reconnecting.clear();
+    }
 }
 
 fn reject_ws(status: StatusCode, body: &str) -> ErrorResponse {
@@ -952,132 +1576,274 @@ fn reject_ws(status: StatusCode, body: &str) -> ErrorResponse {
 }
 
 async fn perform_outbound_handshake(
+    manager: &LanManager,
     mut stream: WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     context: &LanContext,
     database: &Database,
-) -> AppResult<(
-    WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
-    String,
-)> {
-    let nonce = Uuid::new_v4().simple().to_string();
-    let timestamp = unix_now_millis();
-    let proof = format!("{}{}{}", context.device.device_id, timestamp, nonce);
-    let signature = sign_payload(&context.device.private_key, proof.as_bytes())?;
-    let request = PeerEnvelope {
-        message_type: "auth.request".to_string(),
-        payload: serde_json::to_value(AuthRequestPayload {
-            device_id: context.device.device_id.clone(),
-            timestamp,
-            nonce: nonce.clone(),
-            signature,
-        })?,
-    };
-    write_peer_message(&mut stream, &request).await?;
+    expected_device_id: &str,
+    allow_pairing: bool,
+) -> AppResult<HandshakeResult<tokio_tungstenite::MaybeTlsStream<TcpStream>>> {
+    let request_nonce = Uuid::new_v4().simple().to_string();
+    let request = build_handshake_proof(&context.device, &request_nonce)?;
+    write_peer_message(&mut stream, "handshake.v1.request", &request).await?;
 
-    let response = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
+    let exchange = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
         .await
         .map_err(|_| AppError::message("LAN 握手超时"))??;
-    if response.message_type == "auth.fail" {
-        let payload: AuthFailPayload = serde_json::from_value(response.payload)?;
+    if exchange.message_type == "handshake.v1.reject" {
+        let payload: HandshakeRejectPayload = serde_json::from_value(exchange.payload)?;
         return Err(AppError::message(payload.reason));
     }
-    if response.message_type != "auth.response" {
+    if exchange.message_type != "handshake.v1.exchange" {
         return Err(AppError::message("LAN 握手响应类型错误"));
     }
-    let payload: AuthResponsePayload = serde_json::from_value(response.payload)?;
-    if payload.peer_nonce != nonce {
-        return Err(AppError::message("LAN 握手 nonce 不匹配"));
+    let peer_payload: HandshakeProofPayload = serde_json::from_value(exchange.payload)?;
+    if peer_payload.device_id != expected_device_id {
+        return Err(AppError::message("LAN 握手设备不匹配"));
     }
-    verify_known_peer(database, &payload.device_id, |public_key| {
-        let proof = format!(
-            "{}{}{}{}",
-            payload.device_id, payload.timestamp, payload.nonce, payload.peer_nonce
-        );
-        verify_signature(public_key, proof.as_bytes(), &payload.signature)
-    })?;
-    ensure_timestamp(payload.timestamp)?;
-
-    let confirm = PeerEnvelope {
-        message_type: "auth.confirm".to_string(),
-        payload: json!({}),
+    verify_handshake_proof(&peer_payload)?;
+    let proof = PeerProof {
+        device_id: peer_payload.device_id,
+        public_key: peer_payload.public_key,
+        name: peer_payload.name,
+        nonce: peer_payload.nonce,
     };
-    write_peer_message(&mut stream, &confirm).await?;
-    Ok((stream, payload.device_id))
+    let trust = trust_state(database, &proof)?;
+    if !matches!(trust, TrustState::Trusted) {
+        if !allow_pairing {
+            return Err(AppError::message("LAN 设备密钥未信任"));
+        }
+        let reason = match trust {
+            TrustState::Unknown => "unknown_device",
+            TrustState::KeyChanged => "key_changed",
+            TrustState::Trusted => "trusted",
+        };
+        let code = pairing_code(
+            &context.device.public_key,
+            &proof.public_key,
+            &request_nonce,
+            &proof.nonce,
+        );
+        if !manager
+            .request_pairing(
+                &proof.device_id,
+                &proof.name,
+                &proof.public_key,
+                &code,
+                reason,
+            )
+            .await?
+        {
+            return Err(AppError::message("用户取消 LAN 配对"));
+        }
+    }
+
+    let final_message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
+        .await
+        .map_err(|_| AppError::message("LAN 握手超时"))??;
+    if final_message.message_type == "handshake.v1.reject" {
+        let payload: HandshakeRejectPayload = serde_json::from_value(final_message.payload)?;
+        return Err(AppError::message(payload.reason));
+    }
+    if final_message.message_type != "handshake.v1.accept" {
+        return Err(AppError::message("LAN 握手确认类型错误"));
+    }
+    let accept: HandshakeAcceptPayload = serde_json::from_value(final_message.payload)?;
+    if accept.device_id != proof.device_id {
+        return Err(AppError::message("LAN 握手确认设备不匹配"));
+    }
+    if !matches!(trust, TrustState::Trusted) {
+        manager.trust_peer(&proof)?;
+    }
+
+    let crypto = negotiate_business_crypto(&mut stream, context, &proof, true).await?;
+    Ok(HandshakeResult {
+        stream,
+        peer_device_id: proof.device_id,
+        crypto,
+    })
 }
 
 async fn perform_inbound_handshake(
+    manager: &LanManager,
     mut stream: WebSocketStream<TcpStream>,
     context: &LanContext,
     database: &Database,
-) -> AppResult<(WebSocketStream<TcpStream>, String)> {
+) -> AppResult<HandshakeResult<TcpStream>> {
     let request = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
         .await
         .map_err(|_| AppError::message("LAN 握手超时"))??;
-    if request.message_type != "auth.request" {
-        let _ = send_auth_fail(&mut stream, "invalid auth.request").await;
+    if request.message_type != "handshake.v1.request" {
+        let _ = write_peer_message(
+            &mut stream,
+            "handshake.v1.reject",
+            &HandshakeRejectPayload {
+                reason: "invalid_handshake".to_string(),
+            },
+        )
+        .await;
         return Err(AppError::message("LAN 握手请求类型错误"));
     }
-    let payload: AuthRequestPayload = serde_json::from_value(request.payload)?;
-    ensure_timestamp(payload.timestamp)?;
-    verify_known_peer(database, &payload.device_id, |public_key| {
-        let proof = format!(
-            "{}{}{}",
-            payload.device_id, payload.timestamp, payload.nonce
+    let peer_payload: HandshakeProofPayload = serde_json::from_value(request.payload)?;
+    verify_handshake_proof(&peer_payload)?;
+    let proof = PeerProof {
+        device_id: peer_payload.device_id,
+        public_key: peer_payload.public_key,
+        name: peer_payload.name,
+        nonce: peer_payload.nonce,
+    };
+
+    let exchange_nonce = Uuid::new_v4().simple().to_string();
+    let exchange = build_handshake_proof(&context.device, &exchange_nonce)?;
+    write_peer_message(&mut stream, "handshake.v1.exchange", &exchange).await?;
+
+    let trust = trust_state(database, &proof)?;
+    if !matches!(trust, TrustState::Trusted) {
+        let reason = match trust {
+            TrustState::Unknown => "unknown_device",
+            TrustState::KeyChanged => "key_changed",
+            TrustState::Trusted => "trusted",
+        };
+        let code = pairing_code(
+            &proof.public_key,
+            &context.device.public_key,
+            &proof.nonce,
+            &exchange_nonce,
         );
-        verify_signature(public_key, proof.as_bytes(), &payload.signature)
-    })?;
-
-    let nonce = Uuid::new_v4().simple().to_string();
-    let timestamp = unix_now_millis();
-    let proof = format!(
-        "{}{}{}{}",
-        context.device.device_id, timestamp, nonce, payload.nonce
-    );
-    let signature = sign_payload(&context.device.private_key, proof.as_bytes())?;
-    let response = PeerEnvelope {
-        message_type: "auth.response".to_string(),
-        payload: serde_json::to_value(AuthResponsePayload {
-            device_id: context.device.device_id.clone(),
-            timestamp,
-            nonce,
-            peer_nonce: payload.nonce.clone(),
-            signature,
-        })?,
-    };
-    write_peer_message(&mut stream, &response).await?;
-
-    let confirm = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
-        .await
-        .map_err(|_| AppError::message("LAN 握手超时"))??;
-    if confirm.message_type != "auth.confirm" {
-        return Err(AppError::message("LAN 握手确认类型错误"));
+        let accepted = manager
+            .request_pairing(
+                &proof.device_id,
+                &proof.name,
+                &proof.public_key,
+                &code,
+                reason,
+            )
+            .await?;
+        if !accepted {
+            write_peer_message(
+                &mut stream,
+                "handshake.v1.reject",
+                &HandshakeRejectPayload {
+                    reason: "user_rejected".to_string(),
+                },
+            )
+            .await?;
+            return Err(AppError::message("用户拒绝 LAN 配对"));
+        }
+        manager.trust_peer(&proof)?;
     }
-    Ok((stream, payload.device_id))
+
+    write_peer_message(
+        &mut stream,
+        "handshake.v1.accept",
+        &HandshakeAcceptPayload {
+            device_id: context.device.device_id.clone(),
+        },
+    )
+    .await?;
+
+    let crypto = negotiate_business_crypto(&mut stream, context, &proof, false).await?;
+    Ok(HandshakeResult {
+        stream,
+        peer_device_id: proof.device_id,
+        crypto,
+    })
 }
 
-async fn send_auth_fail<S>(stream: &mut WebSocketStream<S>, reason: &str) -> AppResult<()>
-where
-    WebSocketStream<S>:
-        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-{
-    let frame = PeerEnvelope {
-        message_type: "auth.fail".to_string(),
-        payload: serde_json::to_value(AuthFailPayload {
-            reason: reason.to_string(),
-        })?,
-    };
-    write_peer_message(stream, &frame).await
-}
-
-async fn write_peer_message<S>(
+async fn negotiate_business_crypto<S>(
     stream: &mut WebSocketStream<S>,
-    value: &PeerEnvelope,
+    context: &LanContext,
+    proof: &PeerProof,
+    local_is_initiator: bool,
+) -> AppResult<LanSessionCrypto>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let local_supported = supported_suites();
+    write_peer_message(
+        stream,
+        "business.v1.negotiate",
+        &BusinessNegotiatePayload {
+            supported: local_supported.clone(),
+            preferred: AES_256_GCM_SUITE.to_string(),
+        },
+    )
+    .await?;
+    let message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(stream))
+        .await
+        .map_err(|_| AppError::message("LAN 加密协商超时"))??;
+    if message.message_type != "business.v1.negotiate" {
+        return Err(AppError::message("LAN 加密协商类型错误"));
+    }
+    let peer: BusinessNegotiatePayload = serde_json::from_value(message.payload)?;
+    let suite = choose_suite(&local_supported, &peer.supported, local_is_initiator)
+        .ok_or_else(|| AppError::message("LAN 加密协商无可用套件"))?;
+    LanSessionCrypto::new(
+        suite,
+        &context.device.private_key,
+        &proof.public_key,
+        local_is_initiator,
+    )
+}
+
+fn build_handshake_proof(device: &DeviceIdentity, nonce: &str) -> AppResult<HandshakeProofPayload> {
+    let timestamp = unix_now_millis();
+    let proof = format!("{}{}{}", device.device_id, timestamp, nonce);
+    let signature = sign_payload(&device.private_key, proof.as_bytes())?;
+    Ok(HandshakeProofPayload {
+        device_id: device.device_id.clone(),
+        public_key: device.public_key.clone(),
+        name: device.name.clone(),
+        timestamp,
+        nonce: nonce.to_string(),
+        signature,
+    })
+}
+
+fn verify_handshake_proof(payload: &HandshakeProofPayload) -> AppResult<()> {
+    ensure_timestamp(payload.timestamp)?;
+    let proof = format!(
+        "{}{}{}",
+        payload.device_id, payload.timestamp, payload.nonce
+    );
+    if !verify_signature(&payload.public_key, proof.as_bytes(), &payload.signature)? {
+        return Err(AppError::message("signature invalid"));
+    }
+    Ok(())
+}
+
+fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> {
+    let trusts = database.load_lan_trusts()?;
+    let Some(record) = trusts
+        .iter()
+        .find(|record| record.device_id == proof.device_id)
+    else {
+        return Ok(TrustState::Unknown);
+    };
+    if record.public_key == proof.public_key {
+        Ok(TrustState::Trusted)
+    } else {
+        Ok(TrustState::KeyChanged)
+    }
+}
+
+async fn write_peer_message<S, T>(
+    stream: &mut WebSocketStream<S>,
+    message_type: &str,
+    payload: &T,
 ) -> AppResult<()>
 where
+    T: serde::Serialize,
     WebSocketStream<S>:
         futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
-    let text = serde_json::to_string(value)?;
+    let envelope = PeerEnvelope {
+        message_type: message_type.to_string(),
+        payload: serde_json::to_value(payload)?,
+    };
+    let text = serde_json::to_string(&envelope)?;
     stream
         .send(Message::Text(text.into()))
         .await
@@ -1099,28 +1865,82 @@ where
     Err(AppError::message("LAN 连接已结束"))
 }
 
-fn verify_known_peer<F>(database: &Database, device_id: &str, verify: F) -> AppResult<()>
-where
-    F: FnOnce(&str) -> AppResult<bool>,
-{
-    let devices = database.load_cached_devices()?;
-    let public_key = devices
-        .iter()
-        .find(|item| item.device_id == device_id)
-        .map(|item| item.public_key.as_str())
-        .ok_or_else(|| AppError::message("unknown device"))?;
-    if !verify(public_key)? {
-        return Err(AppError::message("signature invalid"));
-    }
-    Ok(())
-}
-
 fn ensure_timestamp(timestamp: i64) -> AppResult<()> {
     let drift = (unix_now_millis() - timestamp).abs();
     if drift > REPLAY_DRIFT_MILLIS {
         return Err(AppError::message("timestamp drift too large"));
     }
     Ok(())
+}
+
+async fn read_http_body(stream: &mut TcpStream) -> AppResult<Vec<u8>> {
+    let mut buffer = Vec::new();
+    let header_end;
+    loop {
+        let mut chunk = [0_u8; 1024];
+        let read = timeout(Duration::from_secs(5), stream.read(&mut chunk))
+            .await
+            .map_err(|_| AppError::message("HTTP request timeout"))??;
+        if read == 0 {
+            return Err(AppError::message("HTTP request ended"));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(index) = find_header_end(&buffer) {
+            header_end = index;
+            break;
+        }
+        if buffer.len() > SWIM_MAX_BODY_BYTES {
+            return Err(AppError::message("HTTP request too large"));
+        }
+    }
+
+    let headers = String::from_utf8_lossy(&buffer[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .ok_or_else(|| AppError::message("missing content-length"))?;
+    if content_length > SWIM_MAX_BODY_BYTES {
+        return Err(AppError::message("SWIM request too large"));
+    }
+
+    let body_start = header_end + 4;
+    while buffer.len() < body_start + content_length {
+        let mut chunk = vec![0_u8; body_start + content_length - buffer.len()];
+        let read = timeout(Duration::from_secs(5), stream.read(&mut chunk))
+            .await
+            .map_err(|_| AppError::message("HTTP body timeout"))??;
+        if read == 0 {
+            return Err(AppError::message("HTTP body ended"));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+
+    Ok(buffer[body_start..body_start + content_length].to_vec())
+}
+
+async fn write_http_response(
+    stream: &mut TcpStream,
+    status: StatusCode,
+    body: &str,
+) -> AppResult<()> {
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or(""),
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
+fn find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 async fn recv_monitor_event(

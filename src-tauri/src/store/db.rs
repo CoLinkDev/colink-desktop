@@ -7,7 +7,7 @@ use crate::{
     error::AppResult,
     models::{
         unix_now, AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord,
-        SessionRecord, TextMessageRecord,
+        LanTrustRecord, SessionRecord, TextMessageRecord,
     },
 };
 
@@ -15,6 +15,7 @@ const SETTINGS_KEY: &str = "settings";
 const SESSION_KEY: &str = "session";
 const DEVICE_IDENTITY_KEY: &str = "device_identity";
 const DEVICE_CACHE_KEY: &str = "device_cache";
+const LAN_TRUST_KEY: &str = "lan_trust";
 const MAX_LOG_ENTRIES: i64 = 300;
 
 #[derive(Clone)]
@@ -133,6 +134,73 @@ impl Database {
 
     pub fn clear_cached_devices(&self) -> AppResult<()> {
         self.delete_record(DEVICE_CACHE_KEY)
+    }
+
+    pub fn load_lan_trusts(&self) -> AppResult<Vec<LanTrustRecord>> {
+        Ok(self.load_record(LAN_TRUST_KEY)?.unwrap_or_default())
+    }
+
+    pub fn save_lan_trusts(&self, records: &[LanTrustRecord]) -> AppResult<()> {
+        self.save_record(LAN_TRUST_KEY, records)
+    }
+
+    pub fn upsert_lan_trust(&self, record: LanTrustRecord) -> AppResult<()> {
+        let mut records = self.load_lan_trusts()?;
+        if let Some(existing) = records
+            .iter_mut()
+            .find(|item| item.device_id == record.device_id)
+        {
+            *existing = record;
+        } else {
+            records.push(record);
+        }
+        self.save_lan_trusts(&records)
+    }
+
+    pub fn remove_lan_trust(&self, device_id: &str) -> AppResult<()> {
+        let records = self
+            .load_lan_trusts()?
+            .into_iter()
+            .filter(|item| item.device_id != device_id)
+            .collect::<Vec<_>>();
+        self.save_lan_trusts(&records)
+    }
+
+    pub fn ensure_lan_trusts_for_devices(
+        &self,
+        devices: &[DeviceInfo],
+        local_device_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut records = self.load_lan_trusts()?;
+        let now = unix_now();
+        let mut changed = false;
+
+        for device in devices {
+            if local_device_id == Some(device.device_id.as_str()) {
+                continue;
+            }
+            if device.public_key.trim().is_empty()
+                || records
+                    .iter()
+                    .any(|record| record.device_id == device.device_id)
+            {
+                continue;
+            }
+
+            records.push(LanTrustRecord {
+                device_id: device.device_id.clone(),
+                name: device.name.clone(),
+                public_key: device.public_key.clone(),
+                trusted_at: now,
+            });
+            changed = true;
+        }
+
+        if changed {
+            self.save_lan_trusts(&records)?;
+        }
+
+        Ok(())
     }
 
     pub fn load_messages(&self, limit: usize) -> AppResult<Vec<TextMessageRecord>> {

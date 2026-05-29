@@ -44,6 +44,7 @@ struct LogoutRequest<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceRegisterRequest<'a> {
+    device_id: &'a str,
     name: &'a str,
     #[serde(rename = "type")]
     device_type: &'a str,
@@ -336,10 +337,12 @@ async fn ensure_device_identity(
     }
 
     let generated = generate_key_pair()?;
+    let device_id = uuid::Uuid::new_v4().to_string();
     let name = detect_device_name();
     let device_type = detect_device_type();
     let settings = load_settings(state)?;
     let request = DeviceRegisterRequest {
+        device_id: &device_id,
         name: &name,
         device_type: &device_type,
         public_key: &generated.public_key,

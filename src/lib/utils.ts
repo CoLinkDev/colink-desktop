@@ -57,6 +57,7 @@ export function formatPlatformName(platform: string) {
     linux: 'Linux',
     android: 'Android',
     ios: 'iOS',
+    unknown: 'LAN Device',
   }
   return mapping[platform.toLowerCase()] ?? platform
 }

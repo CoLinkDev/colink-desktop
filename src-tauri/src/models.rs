@@ -118,6 +118,48 @@ pub struct DeviceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LanTrustRecord {
+    pub device_id: String,
+    pub name: String,
+    pub public_key: String,
+    pub trusted_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPairingCandidate {
+    pub device_id: String,
+    pub ip: String,
+    pub port: u16,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPairingRequest {
+    pub request_id: String,
+    pub device_id: String,
+    pub name: String,
+    pub code: String,
+    pub reason: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPairingDecisionPayload {
+    pub request_id: String,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartLanPairingPayload {
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudStatus {
     pub state: String,
     pub connected: bool,

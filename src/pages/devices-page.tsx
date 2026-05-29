@@ -1,11 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
 import { DeviceCard } from '../components/device-card'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { Button } from '../components/ui/button'
+import { forgetLanTrust, listLanPairingCandidates, startLanPairing } from '../lib/api'
+import type { LanPairingCandidate } from '../lib/types'
 
 export function DevicesPage() {
   const { t } = useTranslation()
@@ -13,10 +16,38 @@ export function DevicesPage() {
     devices,
     device,
     rotateDeviceKey,
+    refreshDevices,
   } = useAppState()
   const [actingId, setActingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rotateConfirmId, setRotateConfirmId] = useState<string | null>(null)
+  const [candidates, setCandidates] = useState<LanPairingCandidate[]>([])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+
+    void (async () => {
+      try {
+        const initial = await listLanPairingCandidates()
+        if (!disposed) {
+          setCandidates(initial)
+        }
+        unlisten = await listen<LanPairingCandidate[]>('lan-pairing-candidates-updated', (event) => {
+          if (!disposed) {
+            setCandidates(event.payload)
+          }
+        })
+      } catch {
+        // Desktop runtime only.
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   function handleInitiateRotate(deviceId: string) {
     setRotateConfirmId(deviceId)
@@ -32,6 +63,29 @@ export function DevicesPage() {
       await rotateDeviceKey(rotateConfirmId)
       setRotateConfirmId(null)
       toast.success(t('devices.rotateSuccess'))
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    } finally {
+      setActingId(null)
+    }
+  }
+
+  async function handleStartPairing(deviceId: string) {
+    setActingId(deviceId)
+    try {
+      await startLanPairing(deviceId)
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    } finally {
+      setActingId(null)
+    }
+  }
+
+  async function handleForgetTrust(deviceId: string) {
+    setActingId(deviceId)
+    try {
+      await forgetLanTrust(deviceId)
+      await refreshDevices()
     } catch (requestError) {
       toast.error(readErrorMessage(requestError))
     } finally {
@@ -61,10 +115,44 @@ export function DevicesPage() {
               device={item}
               isLocalDevice={item.deviceId === device?.deviceId}
               onRotateKey={handleInitiateRotate}
+              onForgetTrust={handleForgetTrust}
               actingId={actingId}
             />
           ))}
         </div>
+      )}
+
+      {candidates.length > 0 && (
+        <section className="space-y-3">
+          <div className="text-[12px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">
+            {t('devices.lanCandidates', { defaultValue: 'LAN pairing candidates' })}
+          </div>
+          <div className="grid gap-2 lg:grid-cols-2">
+            {candidates.map((candidate) => (
+              <div
+                key={candidate.deviceId}
+                className="flex items-center justify-between rounded-lg border bg-[hsl(var(--panel))] px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-mono text-[12px] text-[hsl(var(--text))]">
+                    {candidate.deviceId}
+                  </div>
+                  <div className="mt-1 text-[12px] text-[hsl(var(--muted))]">
+                    {candidate.ip}:{candidate.port} · {candidate.state}
+                  </div>
+                </div>
+                <Button
+                  disabled={actingId === candidate.deviceId}
+                  onClick={() => handleStartPairing(candidate.deviceId)}
+                  size="sm"
+                  variant="secondary"
+                >
+                  {t('devices.pair', { defaultValue: 'Pair' })}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Rotate Key Confirmation Modal */}

@@ -10,16 +10,17 @@ mod network;
 mod protocol;
 mod runtime;
 mod runtime_events;
-mod shell;
 mod service;
+mod shell;
 mod state;
 mod store;
 mod sync;
 
 use commands::{
-    bootstrap_app, cancel_transfer, clear_transfers, delete_device, get_settings, list_devices, login, logout,
-    pick_download_directory, pick_files, register_account, rotate_device_key, send_files,
-    send_text, update_device_name, update_settings,
+    bootstrap_app, cancel_transfer, clear_transfers, delete_device, forget_lan_trust, get_settings,
+    list_devices, list_lan_pairing_candidates, login, logout, pick_download_directory, pick_files,
+    register_account, respond_lan_pairing, rotate_device_key, send_files, send_text,
+    start_lan_pairing, update_device_name, update_settings,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -62,7 +63,11 @@ fn main() {
             list_devices,
             update_device_name,
             delete_device,
+            forget_lan_trust,
             rotate_device_key,
+            list_lan_pairing_candidates,
+            start_lan_pairing,
+            respond_lan_pairing,
             get_settings,
             update_settings,
             pick_download_directory,

@@ -1,9 +1,7 @@
+use crate::error::{AppError, AppResult};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
-
-use crate::error::{AppError, AppResult};
 
 pub struct GeneratedKeyPair {
     pub public_key: String,
@@ -51,16 +49,9 @@ pub fn verify_signature(public_key: &str, payload: &[u8], signature: &str) -> Ap
     Ok(verifying_key.verify(payload, &signature).is_ok())
 }
 
-pub fn account_hash(user_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(user_id.as_bytes());
-    let digest = hasher.finalize();
-    format!("{digest:x}")[..8].to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{account_hash, generate_key_pair, sign_payload, verify_signature};
+    use super::{generate_key_pair, sign_payload, verify_signature};
 
     #[test]
     fn signs_and_verifies_payload() {
@@ -72,14 +63,5 @@ mod tests {
 
         assert!(valid);
         assert!(!invalid);
-    }
-
-    #[test]
-    fn hashes_user_id_to_short_value() {
-        let first = account_hash("user-a");
-        let second = account_hash("user-b");
-
-        assert_eq!(first.len(), 8);
-        assert_ne!(first, second);
     }
 }

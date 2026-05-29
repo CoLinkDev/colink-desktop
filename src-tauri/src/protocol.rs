@@ -274,8 +274,10 @@ pub struct PeerEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthRequestPayload {
+pub struct HandshakeProofPayload {
     pub device_id: String,
+    pub public_key: String,
+    pub name: String,
     pub timestamp: i64,
     pub nonce: String,
     pub signature: String,
@@ -283,18 +285,54 @@ pub struct AuthRequestPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthResponsePayload {
+pub struct HandshakeAcceptPayload {
     pub device_id: String,
-    pub timestamp: i64,
-    pub nonce: String,
-    pub peer_nonce: String,
-    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthFailPayload {
+pub struct HandshakeRejectPayload {
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessNegotiatePayload {
+    pub supported: Vec<String>,
+    pub preferred: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedBusinessPayload {
+    pub ciphertext: String,
+    pub nonce: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwimEnvelope {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub payload: SwimPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwimPayload {
+    pub seq: u64,
+    pub from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub gossip: Vec<SwimGossip>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwimGossip {
+    pub device_id: String,
+    pub state: String,
+    pub incarnation: i64,
 }
 
 #[cfg(test)]

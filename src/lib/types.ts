@@ -1,4 +1,4 @@
-export type DevicePlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios'
+export type DevicePlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'unknown'
 
 export interface AppSettings {
   serverUrl: string
@@ -31,6 +31,22 @@ export interface DeviceInfo {
   lanAvailable: boolean
   activeRoute: string | null
   securityState: string
+}
+
+export interface LanPairingCandidate {
+  deviceId: string
+  ip: string
+  port: number
+  state: string
+}
+
+export interface LanPairingRequest {
+  requestId: string
+  deviceId: string
+  name: string
+  code: string
+  reason: 'unknown_device' | 'key_changed' | string
+  publicKey: string
 }
 
 export interface CloudStatus {

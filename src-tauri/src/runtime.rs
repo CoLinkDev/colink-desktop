@@ -30,14 +30,11 @@ use crate::{
     device_presence,
     error::{AppError, AppResult},
     models::{
-        unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, SendTextPayload,
-        TextMessageRecord, MAX_TEXT_LENGTH,
+        unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, LanPairingCandidate,
+        LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
+        MAX_TEXT_LENGTH,
     },
-    network::{
-        cloud::CloudConnectionManager,
-        http::HttpClient,
-        lan::LanManager,
-    },
+    network::{cloud::CloudConnectionManager, http::HttpClient, lan::LanManager},
     protocol::{
         AnnouncePayload, BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
         FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
@@ -56,6 +53,8 @@ pub const TRANSFERS_UPDATED_EVENT: &str = "transfers-updated";
 pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
 pub const TRANSFER_PREPARING_EVENT: &str = "transfer-preparing";
 pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
+pub const LAN_PAIRING_REQUESTED_EVENT: &str = "lan-pairing-requested";
+pub const LAN_PAIRING_CANDIDATES_UPDATED_EVENT: &str = "lan-pairing-candidates-updated";
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
@@ -234,6 +233,26 @@ impl AppRuntime {
         )
     }
 
+    pub fn list_lan_pairing_candidates(&self) -> Vec<LanPairingCandidate> {
+        self.inner.lan.list_pairing_candidates()
+    }
+
+    pub fn start_lan_pairing(&self, payload: StartLanPairingPayload) -> AppResult<()> {
+        self.inner.lan.start_pairing(&payload.device_id)
+    }
+
+    pub fn respond_lan_pairing(&self, payload: LanPairingDecisionPayload) -> AppResult<()> {
+        self.inner
+            .lan
+            .respond_pairing(&payload.request_id, payload.accepted)
+    }
+
+    pub fn forget_lan_trust(&self, device_id: &str) -> AppResult<Vec<DeviceInfo>> {
+        self.inner.lan.forget_trust(device_id)?;
+        self.reconcile_device_routes()?;
+        self.inner.database.load_cached_devices()
+    }
+
     fn spawn_event_loop(&self, mut event_rx: mpsc::UnboundedReceiver<RuntimeEvent>) {
         let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -340,6 +359,15 @@ impl AppRuntime {
             }
             RuntimeEvent::LanTransferClosed { session_id } => {
                 let _ = self.handle_lan_transfer_closed(&session_id);
+            }
+            RuntimeEvent::LanPairingRequested(request) => {
+                let _ = self.inner.app.emit(LAN_PAIRING_REQUESTED_EVENT, request);
+            }
+            RuntimeEvent::LanPairingCandidatesUpdated(candidates) => {
+                let _ = self
+                    .inner
+                    .app
+                    .emit(LAN_PAIRING_CANDIDATES_UPDATED_EVENT, candidates);
             }
             RuntimeEvent::LocalEndpoint { ip, port } => {
                 let _ = self.inner.cloud.announce(AnnouncePayload {
