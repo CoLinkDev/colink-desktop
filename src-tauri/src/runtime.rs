@@ -337,8 +337,7 @@ impl AppRuntime {
                 } else {
                     format!("{device_name} 已离线")
                 };
-                let _ = self.append_log("info", "device", body.clone());
-                let _ = self.notify("设备状态变化", &body);
+                let _ = self.append_log("info", "device", body);
             }
             RuntimeEvent::DevicesSnapshot(devices) => {
                 debug!(count = devices.len(), "runtime received devices snapshot");

@@ -190,6 +190,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: '确认密码',
         confirmPasswordPlaceholder: '再次输入密码',
+        logoutConfirmDesc: '退出当前账户？',
         serverRequired: '请输入服务器地址',
         formIncomplete: '请输入完整信息',
         validation: {
@@ -403,6 +404,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: 'Confirm Password',
         confirmPasswordPlaceholder: 'Confirm your password',
+        logoutConfirmDesc: 'Log out of the current account?',
         serverRequired: 'Please enter server address',
         formIncomplete: 'Please fill in all fields',
         validation: {
@@ -616,6 +618,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: '確認密碼',
         confirmPasswordPlaceholder: '再次輸入密碼',
+        logoutConfirmDesc: '要登出目前帳戶嗎？',
         serverRequired: '請輸入伺服器地址',
         formIncomplete: '請輸入完整資訊',
         validation: {
@@ -829,6 +832,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: 'パスワードの確認',
         confirmPasswordPlaceholder: 'パスワードを再入力',
+        logoutConfirmDesc: '現在のアカウントからログアウトしますか？',
         serverRequired: 'サーバーアドレスを入力してください',
         formIncomplete: 'すべての項目を入力してください',
         validation: {
@@ -1040,6 +1044,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: '비밀번호 확인',
         confirmPasswordPlaceholder: '비밀번호를 재입력하세요',
+        logoutConfirmDesc: '현재 계정에서 로그아웃할까요?',
         serverRequired: '서버 주소를 입력하세요',
         formIncomplete: '모든 필드를 채워주세요',
         validation: {
@@ -1251,6 +1256,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: 'Confirmar contraseña',
         confirmPasswordPlaceholder: 'Confirme su contraseña',
+        logoutConfirmDesc: '¿Cerrar sesión en la cuenta actual?',
         serverRequired: 'Por favor, introduzca la dirección del servidor',
         formIncomplete: 'Por favor, rellene todos los campos',
         validation: {
@@ -1462,6 +1468,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: 'Passwort bestätigen',
         confirmPasswordPlaceholder: 'Passwort bestätigen',
+        logoutConfirmDesc: 'Vom aktuellen Konto abmelden?',
         serverRequired: 'Bitte Serveradresse eingeben',
         formIncomplete: 'Bitte alle Felder ausfüllen',
         validation: {
@@ -1673,6 +1680,7 @@ const resources = {
         usernamePlaceholder: 'brook.user',
         confirmPassword: 'Подтверждение пароля',
         confirmPasswordPlaceholder: 'Повторите пароль',
+        logoutConfirmDesc: 'Выйти из текущего аккаунта?',
         serverRequired: 'Введите адрес сервера',
         formIncomplete: 'Пожалуйста, заполните все поля',
         validation: {

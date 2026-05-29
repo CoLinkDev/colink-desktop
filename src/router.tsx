@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import { AppLayout } from './components/app-layout'
 import { LoadingScreen } from './components/loading-screen'
 import { useAppState } from './hooks/use-app-state'
-import { AuthPage } from './pages/auth-page'
 import { DevicesPage } from './pages/devices-page'
 import { MessagesPage } from './pages/messages-page'
 import { TransfersPage } from './pages/transfers-page'
@@ -41,10 +40,6 @@ export const router = createHashRouter([
   {
     path: '/',
     element: <RootRedirect />,
-  },
-  {
-    path: '/login',
-    element: <AuthPage />,
   },
   {
     path: '/',

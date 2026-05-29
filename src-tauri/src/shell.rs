@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use image::{Rgba, RgbaImage};
 use tauri::{
     image::Image,
-    menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WebviewWindow,
 };
@@ -20,7 +20,6 @@ const TRAY_ID: &str = "main-tray";
 const MENU_OPEN: &str = "tray-open";
 const MENU_SETTINGS: &str = "tray-settings";
 const MENU_QUIT: &str = "tray-quit";
-const MENU_DEVICE_PREFIX: &str = "tray-device:";
 
 pub struct ShellState {
     allow_exit: AtomicBool,
@@ -111,9 +110,6 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) -> AppResult<()> {
     if id == MENU_QUIT {
         return quit_app(app);
     }
-    if let Some(device_id) = id.strip_prefix(MENU_DEVICE_PREFIX) {
-        return show_main_window(app, Some(&format!("/messages?deviceId={device_id}")));
-    }
     Ok(())
 }
 
@@ -170,56 +166,7 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
     let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
 
-    let online_devices = app
-        .state::<AppState>()
-        .database
-        .load_cached_devices()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|item| item.online)
-        .collect::<Vec<_>>();
-    let online_submenu = build_online_devices_submenu(app, &online_devices)?;
-
-    Menu::with_items(app, &[&open, &online_submenu, &settings, &separator, &quit])
-        .map_err(Into::into)
-}
-
-fn build_online_devices_submenu(
-    app: &AppHandle,
-    devices: &[DeviceInfo],
-) -> AppResult<Submenu<tauri::Wry>> {
-    if devices.is_empty() {
-        let empty = MenuItem::with_id(
-            app,
-            "tray-device-empty",
-            "暂无在线设备",
-            false,
-            None::<&str>,
-        )?;
-        return Submenu::with_items(app, "在线设备", true, &[&empty]).map_err(Into::into);
-    }
-
-    let items = devices
-        .iter()
-        .map(|item| {
-            let route = item
-                .active_route
-                .clone()
-                .unwrap_or_else(|| "cloud".to_string());
-            MenuItem::with_id(
-                app,
-                format!("{MENU_DEVICE_PREFIX}{}", item.device_id),
-                format!("{} ({route})", item.name),
-                true,
-                None::<&str>,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let refs = items
-        .iter()
-        .map(|item| item as &dyn IsMenuItem<_>)
-        .collect::<Vec<_>>();
-    Submenu::with_items(app, "在线设备", true, &refs).map_err(Into::into)
+    Menu::with_items(app, &[&open, &settings, &separator, &quit]).map_err(Into::into)
 }
 
 fn main_window(app: &AppHandle) -> AppResult<WebviewWindow<tauri::Wry>> {

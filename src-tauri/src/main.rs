@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod api;
 mod auth;
 mod commands;
@@ -29,6 +31,9 @@ use tauri::{Manager, WindowEvent};
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = shell::show_main_window(app, None);
+        }))
         .setup(|app| {
             let tracing_guard = dev_log::initialize(app.handle())?;
             app.manage(tracing_guard);

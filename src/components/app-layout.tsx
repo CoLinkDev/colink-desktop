@@ -4,12 +4,14 @@ import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
 import { Toaster } from 'sonner'
 
 import { useAppState, readErrorMessage } from '../hooks/use-app-state'
 import { cn } from '../lib/utils'
+import { AuthDialog } from './auth-dialog'
 import { Button } from './ui/button'
 
 export function AppLayout({ children }: PropsWithChildren) {
@@ -21,6 +23,10 @@ export function AppLayout({ children }: PropsWithChildren) {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [showThemeModal, setShowThemeModal] = useState(false)
+  const [showAuthDialog, setShowAuthDialog] = useState(false)
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState<string | null>(null)
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -49,6 +55,20 @@ export function AppLayout({ children }: PropsWithChildren) {
       setRefreshError(readErrorMessage(err))
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  async function handleConfirmLogout() {
+    setLoggingOut(true)
+    setLogoutError(null)
+    try {
+      await logout()
+      setShowLogoutConfirm(false)
+      navigate('/devices')
+    } catch (err) {
+      setLogoutError(readErrorMessage(err))
+    } finally {
+      setLoggingOut(false)
     }
   }
 
@@ -133,12 +153,12 @@ export function AppLayout({ children }: PropsWithChildren) {
             </button>
 
             <button
-              onClick={async () => {
+              onClick={() => {
                 if (session) {
-                  await logout()
-                  navigate('/devices')
+                  setLogoutError(null)
+                  setShowLogoutConfirm(true)
                 } else {
-                  navigate('/login')
+                  setShowAuthDialog(true)
                 }
               }}
               className="group flex h-[38px] w-full items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium text-[hsl(var(--muted))] transition-all duration-200 hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--danger))]"
@@ -242,6 +262,43 @@ export function AppLayout({ children }: PropsWithChildren) {
           </div>
         </div>
       )}
+
+      {showLogoutConfirm && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('nav.logout')}</div>
+            <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+              {t('auth.logoutConfirmDesc')}
+            </p>
+
+            {logoutError && (
+              <div className="mt-4 rounded-lg border border-[hsl(var(--danger)/0.15)] bg-[hsl(var(--danger)/0.08)] px-3.5 py-2.5 text-[12px] text-[hsl(var(--danger))]">
+                {logoutError}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                disabled={loggingOut}
+                onClick={() => setShowLogoutConfirm(false)}
+                variant="secondary"
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                disabled={loggingOut}
+                onClick={handleConfirmLogout}
+                variant="danger"
+              >
+                {loggingOut ? t('common.logout') : t('common.confirm')}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      <AuthDialog open={showAuthDialog} onClose={() => setShowAuthDialog(false)} />
 
       {/* Toast Notification Container */}
       <Toaster theme={theme === 'auto' ? 'system' : theme} position="top-right" closeButton richColors />
