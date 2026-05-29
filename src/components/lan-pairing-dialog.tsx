@@ -60,8 +60,8 @@ export function LanPairingDialog() {
           <div>
             <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
               {request.reason === 'key_changed'
-                ? t('lanPairing.keyChangedTitle', { defaultValue: 'Confirm key change' })
-                : t('lanPairing.title', { defaultValue: 'LAN pairing' })}
+                ? t('lanPairing.keyChangedTitle')
+                : t('lanPairing.title')}
             </div>
             <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">
               {request.name || request.deviceId}
@@ -71,7 +71,7 @@ export function LanPairingDialog() {
 
         <div className="mt-5 rounded-lg border bg-[hsl(var(--panel-2))] px-4 py-4 text-center">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">
-            {t('lanPairing.code', { defaultValue: 'Pairing code' })}
+            {t('lanPairing.code')}
           </div>
           <div className="mt-2 font-mono text-[32px] font-semibold tracking-[0.18em] text-[hsl(var(--text))]">
             {request.code}
@@ -79,9 +79,7 @@ export function LanPairingDialog() {
         </div>
 
         <p className="mt-4 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
-          {t('lanPairing.description', {
-            defaultValue: 'Confirm the other device shows the same code before accepting.',
-          })}
+          {t('lanPairing.description')}
         </p>
 
         <div className="mt-6 flex justify-end gap-2">
@@ -89,7 +87,7 @@ export function LanPairingDialog() {
             {t('common.cancel')}
           </Button>
           <Button disabled={acting} onClick={() => respond(true)} variant="primary">
-            {t('lanPairing.accept', { defaultValue: 'Accept' })}
+            {t('lanPairing.accept')}
           </Button>
         </div>
       </div>

@@ -5,10 +5,11 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
 import { DeviceCard } from '../components/device-card'
+import { DeviceDetailsDialog } from '../components/device-details-dialog'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { Button } from '../components/ui/button'
 import { forgetLanTrust, listLanPairingCandidates, startLanPairing } from '../lib/api'
-import type { LanPairingCandidate } from '../lib/types'
+import type { DeviceInfo, LanPairingCandidate } from '../lib/types'
 
 export function DevicesPage() {
   const { t } = useTranslation()
@@ -21,6 +22,7 @@ export function DevicesPage() {
   const [actingId, setActingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rotateConfirmId, setRotateConfirmId] = useState<string | null>(null)
+  const [detailsDevice, setDetailsDevice] = useState<DeviceInfo | null>(null)
   const [candidates, setCandidates] = useState<LanPairingCandidate[]>([])
 
   useEffect(() => {
@@ -114,6 +116,7 @@ export function DevicesPage() {
               key={item.deviceId}
               device={item}
               isLocalDevice={item.deviceId === device?.deviceId}
+              onViewDetails={setDetailsDevice}
               onRotateKey={handleInitiateRotate}
               onForgetTrust={handleForgetTrust}
               actingId={actingId}
@@ -125,7 +128,7 @@ export function DevicesPage() {
       {candidates.length > 0 && (
         <section className="space-y-3">
           <div className="text-[12px] font-semibold uppercase tracking-wider text-[hsl(var(--muted))]">
-            {t('devices.lanCandidates', { defaultValue: 'LAN pairing candidates' })}
+            {t('devices.lanCandidates')}
           </div>
           <div className="grid gap-2 lg:grid-cols-2">
             {candidates.map((candidate) => (
@@ -147,12 +150,20 @@ export function DevicesPage() {
                   size="sm"
                   variant="secondary"
                 >
-                  {t('devices.pair', { defaultValue: 'Pair' })}
+                  {t('devices.pair')}
                 </Button>
               </div>
             ))}
           </div>
         </section>
+      )}
+
+      {detailsDevice && (
+        <DeviceDetailsDialog
+          device={detailsDevice}
+          isLocalDevice={detailsDevice.deviceId === device?.deviceId}
+          onClose={() => setDetailsDevice(null)}
+        />
       )}
 
       {/* Rotate Key Confirmation Modal */}

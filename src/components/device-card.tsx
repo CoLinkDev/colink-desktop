@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, Key, Trash2 } from 'lucide-react'
+import { Computer, Laptop, Monitor, Smartphone, Tablet, Wifi, WifiOff, Key, Trash2, Info } from 'lucide-react'
+import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
 import type { DeviceInfo, DevicePlatform } from '../lib/types'
@@ -17,12 +18,20 @@ const iconByType: Record<DevicePlatform, LucideIcon> = {
 interface DeviceCardProps {
   device: DeviceInfo
   isLocalDevice: boolean
+  onViewDetails?: (device: DeviceInfo) => void
   onRotateKey?: (deviceId: string) => void
   onForgetTrust?: (deviceId: string) => void
   actingId?: string | null
 }
 
-export function DeviceCard({ device, isLocalDevice, onRotateKey, onForgetTrust, actingId }: DeviceCardProps) {
+export function DeviceCard({
+  device,
+  isLocalDevice,
+  onViewDetails,
+  onRotateKey,
+  onForgetTrust,
+  actingId,
+}: DeviceCardProps) {
   const { t } = useTranslation()
   const Icon = iconByType[device.type]
   const status = getDeviceStatus(device, isLocalDevice, t)
@@ -66,37 +75,50 @@ export function DeviceCard({ device, isLocalDevice, onRotateKey, onForgetTrust, 
         </div>
       </div>
 
-      {(isLocalDevice && onRotateKey || device.type === 'unknown' && onForgetTrust) && (
-        <div className="mt-5 flex items-center justify-end gap-2">
-          {isLocalDevice && onRotateKey && (
-            <button
-              onClick={() => onRotateKey(device.deviceId)}
-              disabled={actingId === device.deviceId}
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--panel-2))] dark:hover:bg-[hsl(var(--panel-2))] active:scale-[0.98] disabled:opacity-40"
-              type="button"
-            >
-              <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
-              {actingId === device.deviceId ? t('devices.rotating') : t('devices.rotateKey')}
-            </button>
-          )}
-          {device.type === 'unknown' && onForgetTrust && (
-            <button
-              onClick={() => onForgetTrust(device.deviceId)}
-              disabled={actingId === device.deviceId}
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--danger))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--danger)/0.08)] active:scale-[0.98] disabled:opacity-40"
-              type="button"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t('devices.forgetTrust', { defaultValue: 'Forget' })}
-            </button>
-          )}
-        </div>
-      )}
+      <div className="mt-5 flex items-center justify-end gap-2">
+        {onViewDetails && (
+          <button
+            onClick={() => onViewDetails(device)}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--panel-2))] dark:hover:bg-[hsl(var(--panel-2))] active:scale-[0.98]"
+            type="button"
+          >
+            <Info className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
+            {t('devices.details')}
+          </button>
+        )}
+
+        {(isLocalDevice && onRotateKey || device.type === 'unknown' && onForgetTrust) && (
+          <>
+            {isLocalDevice && onRotateKey && (
+              <button
+                onClick={() => onRotateKey(device.deviceId)}
+                disabled={actingId === device.deviceId}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--text))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--panel-2))] dark:hover:bg-[hsl(var(--panel-2))] active:scale-[0.98] disabled:opacity-40"
+                type="button"
+              >
+                <Key className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
+                {actingId === device.deviceId ? t('devices.rotating') : t('devices.rotateKey')}
+              </button>
+            )}
+            {device.type === 'unknown' && onForgetTrust && (
+              <button
+                onClick={() => onForgetTrust(device.deviceId)}
+                disabled={actingId === device.deviceId}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--danger))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--danger)/0.08)] active:scale-[0.98] disabled:opacity-40"
+                type="button"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('devices.forgetTrust')}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </article>
   )
 }
 
-function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean, t: any) {
+function getDeviceStatus(device: DeviceInfo, isLocalDevice: boolean, t: TFunction) {
   if (isLocalDevice) {
     return {
       Icon: Computer,
