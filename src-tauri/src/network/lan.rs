@@ -621,8 +621,20 @@ impl LanManager {
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Ok(ack) = manager.send_swim_ping(&context, &device_id).await {
-                manager.process_swim_message(generation, &context, ack, None);
+            match manager.send_swim_ping(&context, &device_id).await {
+                Ok(ack) => {
+                    debug!(
+                        device_id = %device_id,
+                        from = %ack.payload.from,
+                        seq = ack.payload.seq,
+                        gossip_count = ack.payload.gossip.len(),
+                        "mdns-triggered swim ping succeeded"
+                    );
+                    manager.process_swim_message(generation, &context, ack, None);
+                }
+                Err(error) => {
+                    debug!(device_id = %device_id, %error, "mdns-triggered swim ping failed");
+                }
             }
         });
     }
@@ -976,9 +988,12 @@ impl LanManager {
                 if target == context.device.device_id {
                     return Ok(self.swim_ack(context, message.payload.seq));
                 }
-                self.send_swim_ping(context, &target)
+                let ack = self
+                    .send_swim_ping(context, &target)
                     .await
-                    .map_err(|error| AppError::message(error.to_string()))
+                    .map_err(|error| AppError::message(error.to_string()))?;
+                self.process_swim_message(generation, context, ack.clone(), None);
+                Ok(ack)
             }
             _ => Err(AppError::message("unknown swim message")),
         }
@@ -992,20 +1007,54 @@ impl LanManager {
         source_ip: Option<IpAddr>,
     ) {
         if self.current_generation() != generation {
+            debug!(
+                generation,
+                from = %message.payload.from,
+                message_type = %message.message_type,
+                "ignored stale swim message"
+            );
             return;
         }
+        debug!(
+            from = %message.payload.from,
+            message_type = %message.message_type,
+            seq = message.payload.seq,
+            gossip_count = message.payload.gossip.len(),
+            "processing swim message"
+        );
         if let Some(ip) = source_ip {
             self.remember_peer_endpoint(&message.payload.from, ip, LAN_PORT);
         }
+        self.observe_swim_alive(generation, context, &message.payload.from);
         for entry in message.payload.gossip {
+            debug!(
+                origin = %message.payload.from,
+                device_id = %entry.device_id,
+                state = %entry.state,
+                incarnation = entry.incarnation,
+                "processing swim gossip entry"
+            );
             if entry.device_id == context.device.device_id
                 && entry.state == MemberState::Suspect.as_str()
             {
+                debug!(
+                    origin = %message.payload.from,
+                    incarnation = entry.incarnation,
+                    "received swim suspicion for local device; gossiping self alive"
+                );
                 self.push_self_alive(context);
                 continue;
             }
             self.merge_member(generation, context, &message.payload.from, entry);
         }
+    }
+
+    fn observe_swim_alive(&self, generation: u64, context: &LanContext, device_id: &str) {
+        if device_id == context.device.device_id {
+            return;
+        }
+        debug!(%device_id, "observed swim peer alive");
+        self.mark_member(generation, context, device_id, MemberState::Alive, None);
     }
 
     async fn send_swim_ping(&self, context: &LanContext, target: &str) -> AppResult<SwimEnvelope> {
@@ -1178,10 +1227,18 @@ impl LanManager {
         {
             let mut inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
+                debug!(
+                    generation,
+                    device_id,
+                    state = state.as_str(),
+                    incarnation = next_incarnation,
+                    "ignored stale swim member update"
+                );
                 return;
             }
+            let existing = inner.members.get(device_id).cloned();
             let accept = Self::should_accept_member_update(
-                inner.members.get(device_id),
+                existing.as_ref(),
                 state,
                 next_incarnation,
                 explicit_incarnation,
@@ -1196,6 +1253,31 @@ impl LanManager {
                     },
                 );
                 changed = true;
+                debug!(
+                    device_id,
+                    state = state.as_str(),
+                    incarnation = next_incarnation,
+                    previous_state = existing
+                        .as_ref()
+                        .map(|member| member.state.as_str())
+                        .unwrap_or("none"),
+                    previous_incarnation = existing.as_ref().map(|member| member.incarnation),
+                    explicit_incarnation,
+                    "accepted swim member update"
+                );
+            } else {
+                debug!(
+                    device_id,
+                    state = state.as_str(),
+                    incarnation = next_incarnation,
+                    existing_state = existing
+                        .as_ref()
+                        .map(|member| member.state.as_str())
+                        .unwrap_or("none"),
+                    existing_incarnation = existing.as_ref().map(|member| member.incarnation),
+                    explicit_incarnation,
+                    "rejected swim member update"
+                );
             }
         }
 
@@ -1344,18 +1426,33 @@ impl LanManager {
     }
 
     async fn try_connect_trusted(&self, generation: u64, context: LanContext, device_id: String) {
-        if !should_initiate(&context.device.device_id, &device_id)
-            || self.has_peer(&device_id)
-            || !self.is_trusted(&device_id)
-            || !self.is_member_connectable(&device_id)
-        {
+        if !should_initiate(&context.device.device_id, &device_id) {
+            debug!(
+                local_device_id = %context.device.device_id,
+                peer_device_id = %device_id,
+                "skipping trusted lan peer connection because local device is not initiator"
+            );
+            return;
+        }
+        if self.has_peer(&device_id) {
+            debug!(%device_id, "skipping trusted lan peer connection because peer is already connected");
+            return;
+        }
+        if !self.is_trusted(&device_id) {
+            debug!(%device_id, "skipping trusted lan peer connection because peer is not trusted");
+            return;
+        }
+        if !self.is_member_connectable(&device_id) {
+            debug!(%device_id, "skipping trusted lan peer connection because member is not connectable");
             return;
         }
 
         let Some((ip, port)) = self.peer_endpoint(&device_id) else {
+            debug!(%device_id, "skipping trusted lan peer connection because endpoint is missing");
             return;
         };
         let Ok(ip) = ip.parse::<IpAddr>() else {
+            debug!(%device_id, "skipping trusted lan peer connection because endpoint ip is invalid");
             return;
         };
 
