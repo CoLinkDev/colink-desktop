@@ -31,6 +31,7 @@ export interface DeviceInfo {
   cloudAvailable: boolean
   lastSeen: string | null
   publicKey: string
+  publicKeyUpdatedAt: number | null
   lanAvailable: boolean
   activeRoute: string | null
   deviceSources: string[]

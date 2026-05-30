@@ -35,6 +35,7 @@ pub(crate) struct CloudDeviceRecord {
     pub(crate) online: bool,
     pub(crate) last_seen: Option<String>,
     pub(crate) public_key: String,
+    pub(crate) public_key_updated_at: Option<String>,
 }
 
 impl From<CloudDeviceRecord> for DeviceInfo {
@@ -47,12 +48,21 @@ impl From<CloudDeviceRecord> for DeviceInfo {
             cloud_available: false,
             last_seen: record.last_seen,
             public_key: record.public_key,
+            public_key_updated_at: parse_timestamp_millis(record.public_key_updated_at),
             lan_available: false,
             active_route: None,
             device_sources: Vec::new(),
             security_state: "unverified".to_string(),
         }
     }
+}
+
+fn parse_timestamp_millis(value: Option<String>) -> Option<i64> {
+    value.and_then(|raw| {
+        chrono::DateTime::parse_from_rfc3339(raw.trim())
+            .ok()
+            .map(|timestamp| timestamp.timestamp_millis())
+    })
 }
 
 impl DeviceListResponse {

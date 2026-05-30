@@ -7,8 +7,8 @@ use serde_json::{Map, Value};
 use crate::{
     error::{AppError, AppResult},
     models::{
-        unix_now, AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord,
-        LanTrustRecord, SessionRecord, TextMessageRecord,
+        unix_now, unix_now_millis, AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo,
+        FileTransferRecord, LanTrustRecord, SessionRecord, TextMessageRecord,
     },
 };
 
@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "normalize_kv_records",
         run: migrate_2_normalize_kv_records,
+    },
+    Migration {
+        version: 3,
+        name: "add_device_public_key_updated_at",
+        run: migrate_3_add_device_public_key_updated_at,
     },
 ];
 
@@ -189,7 +194,7 @@ impl Database {
         local_device_id: Option<&str>,
     ) -> AppResult<()> {
         let mut records = self.load_lan_trusts()?;
-        let now = unix_now();
+        let now = unix_now_millis();
         let mut changed = false;
 
         for device in devices {
@@ -204,10 +209,18 @@ impl Database {
                 .iter_mut()
                 .find(|record| record.device_id == device.device_id)
             {
-                if record.name != device.name || record.public_key != device.public_key {
+                if record.public_key != device.public_key {
+                    if let Some(updated_at) = device.public_key_updated_at {
+                        if updated_at > record.trusted_at {
+                            record.public_key = device.public_key.clone();
+                            record.trusted_at = updated_at;
+                            changed = true;
+                        }
+                    }
+                }
+
+                if record.name != device.name {
                     record.name = device.name.clone();
-                    record.public_key = device.public_key.clone();
-                    record.trusted_at = now;
                     changed = true;
                 }
             } else {
@@ -645,6 +658,10 @@ fn migrate_2_normalize_kv_records(transaction: &Transaction<'_>) -> AppResult<()
     migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
 }
 
+fn migrate_3_add_device_public_key_updated_at(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -746,6 +763,9 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
         object
             .entry("securityState".to_string())
             .or_insert_with(|| Value::String("unverified".to_string()));
+        object
+            .entry("publicKeyUpdatedAt".to_string())
+            .or_insert(Value::Null);
         normalized.push(Value::Object(object));
     }
 
@@ -802,7 +822,8 @@ mod tests {
 
     use super::Database;
     use crate::models::{
-        AppLogEntry, AppSettings, DeviceIdentity, FileTransferRecord, TextMessageRecord,
+        AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord, LanTrustRecord,
+        TextMessageRecord,
     };
 
     #[test]
@@ -968,12 +989,13 @@ mod tests {
         assert_eq!(devices[0].active_route, None);
         assert_eq!(devices[0].device_sources, Vec::<String>::new());
         assert_eq!(devices[0].security_state, "unverified");
+        assert_eq!(devices[0].public_key_updated_at, None);
 
         let messages = database.load_messages(10).expect("load messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
-        assert_eq!(migration_versions(&path), vec![1, 2]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3]);
 
         let _ = fs::remove_file(path);
     }
@@ -986,7 +1008,7 @@ mod tests {
         database.initialize().expect("first init");
         database.initialize().expect("second init");
 
-        assert_eq!(migration_versions(&path), vec![1, 2]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3]);
 
         let _ = fs::remove_file(path);
     }
@@ -1019,7 +1041,52 @@ mod tests {
             .expect("load identity")
             .expect("identity");
         assert!(!identity.cloud_key_sync_pending);
-        assert_eq!(migration_versions(&path), vec![1, 2]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn applies_public_key_timestamp_migration_after_normalized_records() {
+        let path = temp_db_path();
+        create_legacy_database(&path);
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 3", [])
+            .expect("remove v3 marker");
+        connection
+            .execute(
+                "UPDATE kv_store SET value = ?2 WHERE key = ?1",
+                params![
+                    "device_cache",
+                    r#"[{
+                        "deviceId": "device-2",
+                        "name": "Peer",
+                        "type": "windows",
+                        "online": true,
+                        "lastSeen": null,
+                        "publicKey": "peer-pk",
+                        "cloudAvailable": true,
+                        "lanAvailable": false,
+                        "activeRoute": null,
+                        "deviceSources": [],
+                        "securityState": "unverified"
+                    }]"#
+                ],
+            )
+            .expect("seed v2 cache");
+        drop(connection);
+
+        let database = Database::new(path.clone());
+        database.initialize().expect("rerun db init");
+
+        let devices = database.load_cached_devices().expect("load devices");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].public_key_updated_at, None);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3]);
 
         let _ = fs::remove_file(path);
     }
@@ -1086,6 +1153,147 @@ mod tests {
             )
             .expect("identity json");
         assert!(!raw_identity.contains("cloudKeySyncPending"));
+
+        let raw_cache: String = connection
+            .query_row(
+                "SELECT value FROM kv_store WHERE key = ?1",
+                params!["device_cache"],
+                |row| row.get(0),
+            )
+            .expect("device cache json");
+        assert!(!raw_cache.contains("publicKeyUpdatedAt"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ensure_lan_trusts_preserves_newer_local_pairing() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_lan_trusts(&[LanTrustRecord {
+                device_id: "peer-1".to_string(),
+                name: "old".to_string(),
+                public_key: "local-new".to_string(),
+                trusted_at: 2_000,
+            }])
+            .expect("save trust");
+
+        database
+            .ensure_lan_trusts_for_devices(
+                &[DeviceInfo {
+                    device_id: "peer-1".to_string(),
+                    name: "cloud-name".to_string(),
+                    device_type: "windows".to_string(),
+                    online: true,
+                    cloud_available: true,
+                    last_seen: None,
+                    public_key: "cloud-old".to_string(),
+                    public_key_updated_at: Some(1_000),
+                    lan_available: false,
+                    active_route: None,
+                    device_sources: vec!["cloud".to_string()],
+                    security_state: "unverified".to_string(),
+                }],
+                None,
+            )
+            .expect("ensure trusts");
+
+        let trusts = database.load_lan_trusts().expect("load trusts");
+        assert_eq!(trusts.len(), 1);
+        assert_eq!(trusts[0].name, "cloud-name");
+        assert_eq!(trusts[0].public_key, "local-new");
+        assert_eq!(trusts[0].trusted_at, 2_000);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ensure_lan_trusts_accepts_newer_cloud_key() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_lan_trusts(&[LanTrustRecord {
+                device_id: "peer-1".to_string(),
+                name: "old".to_string(),
+                public_key: "local-old".to_string(),
+                trusted_at: 1_000,
+            }])
+            .expect("save trust");
+
+        database
+            .ensure_lan_trusts_for_devices(
+                &[DeviceInfo {
+                    device_id: "peer-1".to_string(),
+                    name: "cloud-name".to_string(),
+                    device_type: "windows".to_string(),
+                    online: true,
+                    cloud_available: true,
+                    last_seen: None,
+                    public_key: "cloud-new".to_string(),
+                    public_key_updated_at: Some(2_000),
+                    lan_available: false,
+                    active_route: None,
+                    device_sources: vec!["cloud".to_string()],
+                    security_state: "unverified".to_string(),
+                }],
+                None,
+            )
+            .expect("ensure trusts");
+
+        let trusts = database.load_lan_trusts().expect("load trusts");
+        assert_eq!(trusts.len(), 1);
+        assert_eq!(trusts[0].name, "cloud-name");
+        assert_eq!(trusts[0].public_key, "cloud-new");
+        assert_eq!(trusts[0].trusted_at, 2_000);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ensure_lan_trusts_skips_key_overwrite_without_timestamp() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_lan_trusts(&[LanTrustRecord {
+                device_id: "peer-1".to_string(),
+                name: "old".to_string(),
+                public_key: "local-new".to_string(),
+                trusted_at: 2_000,
+            }])
+            .expect("save trust");
+
+        database
+            .ensure_lan_trusts_for_devices(
+                &[DeviceInfo {
+                    device_id: "peer-1".to_string(),
+                    name: "cloud-name".to_string(),
+                    device_type: "windows".to_string(),
+                    online: true,
+                    cloud_available: true,
+                    last_seen: None,
+                    public_key: "cloud-unknown".to_string(),
+                    public_key_updated_at: None,
+                    lan_available: false,
+                    active_route: None,
+                    device_sources: vec!["cloud".to_string()],
+                    security_state: "unverified".to_string(),
+                }],
+                None,
+            )
+            .expect("ensure trusts");
+
+        let trusts = database.load_lan_trusts().expect("load trusts");
+        assert_eq!(trusts.len(), 1);
+        assert_eq!(trusts[0].name, "cloud-name");
+        assert_eq!(trusts[0].public_key, "local-new");
+        assert_eq!(trusts[0].trusted_at, 2_000);
 
         let _ = fs::remove_file(path);
     }

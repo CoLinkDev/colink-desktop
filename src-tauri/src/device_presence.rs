@@ -147,6 +147,7 @@ fn align_local_identity(database: &Database, devices: &mut Vec<DeviceInfo>) -> A
             cloud_available: false,
             last_seen: None,
             public_key: identity.public_key,
+            public_key_updated_at: None,
             lan_available: false,
             active_route: None,
             device_sources: vec!["local".to_string()],

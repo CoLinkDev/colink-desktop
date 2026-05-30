@@ -122,6 +122,7 @@ pub struct DeviceInfo {
     pub cloud_available: bool,
     pub last_seen: Option<String>,
     pub public_key: String,
+    pub public_key_updated_at: Option<i64>,
     pub lan_available: bool,
     pub active_route: Option<String>,
     pub device_sources: Vec<String>,
