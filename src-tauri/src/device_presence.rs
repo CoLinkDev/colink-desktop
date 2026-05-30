@@ -27,8 +27,8 @@ pub fn replace_all(
     let local_device_id = database
         .load_device_identity()?
         .map(|identity| identity.device_id);
-    database.ensure_lan_trusts_for_devices(&devices, local_device_id.as_deref())?;
-    let trusted = database.load_lan_trusts()?;
+    database.ensure_trusted_peer_keys_for_devices(&devices, local_device_id.as_deref())?;
+    let trusted = database.load_trusted_peer_keys()?;
     let reconciled = reconcile_devices(
         devices,
         &previous,
@@ -63,7 +63,7 @@ pub fn update_one(
     let local_device_id = database
         .load_device_identity()?
         .map(|identity| identity.device_id);
-    let trusted = database.load_lan_trusts()?;
+    let trusted = database.load_trusted_peer_keys()?;
     let reconciled = reconcile_devices(
         devices,
         &previous,
@@ -83,7 +83,7 @@ pub fn reconcile_routes(
     let local_device_id = database
         .load_device_identity()?
         .map(|identity| identity.device_id);
-    let trusted = database.load_lan_trusts()?;
+    let trusted = database.load_trusted_peer_keys()?;
     let reconciled = reconcile_devices(
         devices.clone(),
         &devices,
@@ -107,7 +107,7 @@ pub fn mark_cloud_unavailable(
     let local_device_id = database
         .load_device_identity()?
         .map(|identity| identity.device_id);
-    let trusted = database.load_lan_trusts()?;
+    let trusted = database.load_trusted_peer_keys()?;
     let reconciled = reconcile_devices(
         devices,
         &previous,

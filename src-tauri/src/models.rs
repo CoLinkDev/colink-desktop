@@ -131,11 +131,12 @@ pub struct DeviceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LanTrustRecord {
+pub struct TrustedPeerKeyRecord {
     pub device_id: String,
     pub name: String,
     pub public_key: String,
-    pub trusted_at: i64,
+    pub key_updated_at: i64,
+    pub trusted_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

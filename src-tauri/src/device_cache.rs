@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::models::{DeviceInfo, LanTrustRecord};
+use crate::models::{DeviceInfo, TrustedPeerKeyRecord};
 
 pub fn reconcile_devices(
     mut incoming: Vec<DeviceInfo>,
     previous: &[DeviceInfo],
     lan_peers: &HashSet<String>,
-    trusted_devices: &[LanTrustRecord],
+    trusted_devices: &[TrustedPeerKeyRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
     if let Some(local_device_id) = local_device_id {
@@ -84,7 +84,7 @@ pub fn reconcile_devices(
             cloud_available: false,
             last_seen: None,
             public_key: record.public_key.clone(),
-            public_key_updated_at: None,
+            public_key_updated_at: Some(record.key_updated_at),
             lan_available,
             active_route: lan_available.then(|| "lan".to_string()),
             device_sources: merge_sources(&[], false, true),
@@ -103,19 +103,19 @@ pub fn mark_cloud_sources(devices: &mut [DeviceInfo]) {
     }
 }
 
-fn merge_sources(current: &[String], local: bool, lan_trust: bool) -> Vec<String> {
+fn merge_sources(current: &[String], local: bool, trusted_peer_key: bool) -> Vec<String> {
     let mut sources = Vec::new();
     if local {
         push_source(&mut sources, "local");
     }
     for source in current {
         match source.as_str() {
-            "local" | "cloud" | "lan_trust" => push_source(&mut sources, source),
+            "local" | "cloud" | "trusted_peer_key" => push_source(&mut sources, source),
             _ => {}
         }
     }
-    if lan_trust {
-        push_source(&mut sources, "lan_trust");
+    if trusted_peer_key {
+        push_source(&mut sources, "trusted_peer_key");
     }
     sources
 }

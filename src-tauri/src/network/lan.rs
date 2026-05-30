@@ -34,8 +34,8 @@ use crate::{
     error::{AppError, AppResult},
     i18n::{self, TextKey},
     models::{
-        unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingRequest, LanTrustRecord,
-        LAN_PORT,
+        unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingRequest,
+        TrustedPeerKeyRecord, LAN_PORT,
     },
     protocol::{
         BusinessEnvelope, BusinessNegotiatePayload, EncryptedBusinessPayload, FileDataFrame,
@@ -356,7 +356,7 @@ impl LanManager {
     }
 
     pub fn forget_trust(&self, device_id: &str) -> AppResult<()> {
-        self.database.remove_lan_trust(device_id)?;
+        self.database.remove_trusted_peer_key(device_id)?;
         self.detach_peer(self.current_generation(), device_id);
         Ok(())
     }
@@ -1500,7 +1500,7 @@ impl LanManager {
 
     fn is_trusted(&self, device_id: &str) -> bool {
         self.database
-            .load_lan_trusts()
+            .load_trusted_peer_keys()
             .map(|records| records.iter().any(|record| record.device_id == device_id))
             .unwrap_or(false)
     }
@@ -1549,11 +1549,13 @@ impl LanManager {
     }
 
     fn trust_peer(&self, proof: &PeerProof) -> AppResult<()> {
-        self.database.upsert_lan_trust(LanTrustRecord {
+        let now = unix_now_millis();
+        self.database.upsert_trusted_peer_key(TrustedPeerKeyRecord {
             device_id: proof.device_id.clone(),
             name: proof.name.clone(),
             public_key: proof.public_key.clone(),
-            trusted_at: unix_now_millis(),
+            key_updated_at: now,
+            trusted_at: Some(now),
         })
     }
 
@@ -2041,7 +2043,7 @@ fn verify_handshake_proof(payload: &HandshakeProofPayload) -> AppResult<()> {
 }
 
 fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> {
-    let trusts = database.load_lan_trusts()?;
+    let trusts = database.load_trusted_peer_keys()?;
     let Some(record) = trusts
         .iter()
         .find(|record| record.device_id == proof.device_id)

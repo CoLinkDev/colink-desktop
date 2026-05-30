@@ -122,7 +122,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: '本机身份',
-          lanTrustStore: 'LAN 信任存储',
+          trustedPeerKey: '可信设备密钥',
           serverDeviceList: '服务端设备列表',
         },
         routes: {
@@ -351,7 +351,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: 'Local identity',
-          lanTrustStore: 'LAN trust store',
+          trustedPeerKey: 'Trusted peer key',
           serverDeviceList: 'Server device list',
         },
         routes: {
@@ -580,7 +580,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: '本機身份',
-          lanTrustStore: 'LAN 信任儲存',
+          trustedPeerKey: '可信裝置金鑰',
           serverDeviceList: '服務端設備列表',
         },
         routes: {
@@ -809,7 +809,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: 'ローカル ID',
-          lanTrustStore: 'LAN 信頼ストア',
+          trustedPeerKey: '信頼済みデバイスキー',
           serverDeviceList: 'サーバーデバイス一覧',
         },
         routes: {
@@ -1038,7 +1038,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: '로컬 ID',
-          lanTrustStore: 'LAN 신뢰 저장소',
+          trustedPeerKey: '신뢰된 디바이스 키',
           serverDeviceList: '서버 디바이스 목록',
         },
         routes: {
@@ -1267,7 +1267,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: 'Identidad local',
-          lanTrustStore: 'Almacén de confianza LAN',
+          trustedPeerKey: 'Clave de par confiable',
           serverDeviceList: 'Lista de dispositivos del servidor',
         },
         routes: {
@@ -1496,7 +1496,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: 'Lokale Identität',
-          lanTrustStore: 'LAN-Vertrauensspeicher',
+          trustedPeerKey: 'Vertrauenswürdiger Geräteschlüssel',
           serverDeviceList: 'Server-Geräteliste',
         },
         routes: {
@@ -1725,7 +1725,7 @@ const resources = {
         },
         detailsSources: {
           localIdentity: 'Локальная идентичность',
-          lanTrustStore: 'Хранилище доверия LAN',
+          trustedPeerKey: 'Доверенный ключ устройства',
           serverDeviceList: 'Список устройств сервера',
         },
         routes: {

@@ -132,8 +132,8 @@ function describeSources(device: DeviceInfo, isLocalDevice: boolean, t: (key: st
   if (deviceSources.includes('cloud')) {
     sources.add(t('devices.detailsSources.serverDeviceList'))
   }
-  if (deviceSources.includes('lan_trust')) {
-    sources.add(t('devices.detailsSources.lanTrustStore'))
+  if (deviceSources.includes('trusted_peer_key')) {
+    sources.add(t('devices.detailsSources.trustedPeerKey'))
   }
 
   if (sources.size === 0) {
