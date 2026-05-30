@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use image::{Rgba, RgbaImage};
+use image::ImageReader;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -216,23 +216,17 @@ fn tray_tooltip(app: &AppHandle, cloud: &CloudStatus, devices: &[DeviceInfo]) ->
 }
 
 fn build_tray_icon(state: &str) -> Image<'static> {
-    let color = match state {
-        "connected" => [52, 211, 153, 255],
-        "syncing" => [251, 191, 36, 255],
-        _ => [239, 68, 68, 255],
+    let bytes = match state {
+        "connected" => include_bytes!("../icons/tray/connected.png").as_slice(),
+        "syncing" => include_bytes!("../icons/tray/syncing.png").as_slice(),
+        _ => include_bytes!("../icons/tray/disconnected.png").as_slice(),
     };
-    let mut image = RgbaImage::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
-    for y in 0..32 {
-        for x in 0..32 {
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 16;
-            let distance = dx * dx + dy * dy;
-            if distance <= 100 {
-                image.put_pixel(x, y, Rgba(color));
-            } else if distance <= 132 {
-                image.put_pixel(x, y, Rgba([255, 255, 255, 180]));
-            }
-        }
-    }
-    Image::new_owned(image.into_raw(), 32, 32)
+    let image = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .expect("tray icon format should be readable")
+        .decode()
+        .expect("tray icon should decode")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Image::new_owned(image.into_raw(), width, height)
 }
