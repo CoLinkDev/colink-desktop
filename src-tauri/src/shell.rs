@@ -88,8 +88,10 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
         .any(|item| matches!(item.status.as_str(), "offered" | "sending" | "receiving"));
     let icon_state = if active_transfer {
         "syncing"
-    } else if cloud.connected || devices.iter().any(|item| item.lan_available) {
+    } else if cloud.connected {
         "connected"
+    } else if devices.iter().any(|item| item.lan_available) {
+        "idle"
     } else {
         "disconnected"
     };
@@ -219,6 +221,7 @@ fn build_tray_icon(state: &str) -> Image<'static> {
     let bytes = match state {
         "connected" => include_bytes!("../icons/tray/connected.png").as_slice(),
         "syncing" => include_bytes!("../icons/tray/syncing.png").as_slice(),
+        "idle" => include_bytes!("../icons/tray/idle.png").as_slice(),
         _ => include_bytes!("../icons/tray/disconnected.png").as_slice(),
     };
     let image = ImageReader::new(std::io::Cursor::new(bytes))
