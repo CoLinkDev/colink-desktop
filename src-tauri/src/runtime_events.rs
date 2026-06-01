@@ -31,6 +31,20 @@ pub enum RuntimeEvent {
     LanDisconnected {
         device_id: String,
     },
+    LanDeviceReachable {
+        device_id: String,
+    },
+    LanDeviceUnreachable {
+        device_id: String,
+    },
+    LanKeyChanged {
+        device_id: String,
+        name: String,
+    },
+    LanSendFailed {
+        device_id: String,
+        messages: Vec<BusinessEnvelope>,
+    },
     LanMessage {
         from: String,
         message: BusinessEnvelope,

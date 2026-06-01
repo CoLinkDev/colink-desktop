@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
-import { ShieldCheck, ShieldAlert } from 'lucide-react'
+import { ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { respondLanPairing } from '../lib/api'
@@ -48,20 +48,16 @@ export function LanPairingDialog() {
     }
   }
 
-  const Icon = request.reason === 'key_changed' ? ShieldAlert : ShieldCheck
-
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--panel-2))]">
-            <Icon className="h-4 w-4 text-[hsl(var(--accent))]" />
+            <ShieldCheck className="h-4 w-4 text-[hsl(var(--accent))]" />
           </div>
           <div>
             <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
-              {request.reason === 'key_changed'
-                ? t('lanPairing.keyChangedTitle')
-                : t('lanPairing.title')}
+              {t('lanPairing.title')}
             </div>
             <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">
               {request.name || request.deviceId}

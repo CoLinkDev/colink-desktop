@@ -50,7 +50,7 @@ export interface LanPairingRequest {
   deviceId: string
   name: string
   code: string
-  reason: 'unknown_device' | 'key_changed' | string
+  reason: 'unknown_device' | string
   publicKey: string
 }
 

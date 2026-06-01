@@ -36,7 +36,10 @@ use crate::{
         LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
         MAX_TEXT_LENGTH,
     },
-    network::{cloud::CloudConnectionManager, http::HttpClient, lan::LanManager},
+    network::{
+        cloud::CloudConnectionManager, http::HttpClient, lan::LanManager,
+        transport::TransportManager,
+    },
     protocol::{
         BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
         FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
@@ -72,6 +75,7 @@ struct RuntimeInner {
     database: Database,
     cloud: CloudConnectionManager,
     lan: LanManager,
+    transport: TransportManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Mutex<RuntimeState>,
 }
@@ -117,12 +121,14 @@ impl AppRuntime {
             http.clone(),
             event_tx.clone(),
         );
+        let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
                 database,
                 cloud: cloud.clone(),
                 lan,
+                transport,
                 event_tx: event_tx.clone(),
                 state: Mutex::new(RuntimeState {
                     watcher_shutdown: None,
@@ -165,7 +171,7 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {
+    pub async fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {
         let text = payload.text.trim().to_string();
         if text.is_empty() {
             return Err(AppError::message(self.user_text(TextKey::MessageEmpty)));
@@ -173,25 +179,27 @@ impl AppRuntime {
         if text.chars().count() > MAX_TEXT_LENGTH {
             return Err(AppError::message(self.user_text(TextKey::MessageTooLong)));
         }
-        let route = self.resolve_route(&payload.device_id)?;
 
-        let record = TextMessageRecord {
-            message_id: Uuid::new_v4().to_string(),
-            device_id: payload.device_id.clone(),
-            direction: "outbound".to_string(),
-            text: text.clone(),
-            route: route.as_str().to_string(),
-            created_at: unix_now_millis(),
-        };
+        let message_id = Uuid::new_v4().to_string();
 
         let envelope = BusinessEnvelope::from_payload(
             TEXT_MESSAGE_TYPE,
             TextMessagePayload {
-                message_id: record.message_id.clone(),
+                message_id: message_id.clone(),
                 text,
             },
         )?;
-        self.send_business_message_via(&payload.device_id, envelope, route)?;
+        let route = self
+            .send_business_message(&payload.device_id, envelope)
+            .await?;
+        let record = TextMessageRecord {
+            message_id,
+            device_id: payload.device_id.clone(),
+            direction: "outbound".to_string(),
+            text: payload.text.trim().to_string(),
+            route,
+            created_at: unix_now_millis(),
+        };
         self.inner.database.save_message(&record)?;
         self.emit_messages()?;
         self.append_log(
@@ -235,7 +243,7 @@ impl AppRuntime {
         device_presence::replace_all(
             &self.inner.database,
             &self.inner.app,
-            &self.inner.lan.peer_ids(),
+            &self.inner.lan.alive_trusted_ids(),
             devices,
             cloud_snapshot,
         )
@@ -299,7 +307,7 @@ impl AppRuntime {
                 let _ = device_presence::mark_cloud_unavailable(
                     &self.inner.database,
                     &self.inner.app,
-                    &self.inner.lan.peer_ids(),
+                    &self.inner.lan.alive_trusted_ids(),
                 );
             }
             RuntimeEvent::CloudRelay { from, message } => {
@@ -315,7 +323,7 @@ impl AppRuntime {
                 let _ = device_presence::update_one(
                     &self.inner.database,
                     &self.inner.app,
-                    &self.inner.lan.peer_ids(),
+                    &self.inner.lan.alive_trusted_ids(),
                     &device_id,
                     online,
                     payload.clone(),
@@ -347,7 +355,7 @@ impl AppRuntime {
             }
             RuntimeEvent::ClipboardChanged(payload) => {
                 debug!(content_type = %payload.content_type, "runtime received clipboard change");
-                let _ = self.broadcast_clipboard(payload);
+                let _ = self.broadcast_clipboard(payload).await;
             }
             RuntimeEvent::LanDiscovered {
                 device_id,
@@ -385,6 +393,41 @@ impl AppRuntime {
                         self.lookup_device_name(&device_id)
                     ),
                 );
+            }
+            RuntimeEvent::LanDeviceReachable { device_id } => {
+                debug!(%device_id, "runtime received lan device reachable");
+                let _ = self.reconcile_device_routes();
+            }
+            RuntimeEvent::LanDeviceUnreachable { device_id } => {
+                debug!(%device_id, "runtime received lan device unreachable");
+                let _ = self.reconcile_device_routes();
+            }
+            RuntimeEvent::LanKeyChanged { device_id, name } => {
+                warn!(%device_id, "runtime received lan key changed");
+                let _ = self.reconcile_device_routes();
+                let _ = self.inner.app.emit(
+                    "lan-key-changed",
+                    serde_json::json!({
+                        "deviceId": device_id,
+                        "name": name,
+                    }),
+                );
+                let _ = self.append_log(
+                    "warn",
+                    "lan",
+                    "LAN device key changed; LAN trust was revoked".to_string(),
+                );
+            }
+            RuntimeEvent::LanSendFailed {
+                device_id,
+                messages,
+            } => {
+                warn!(%device_id, count = messages.len(), "runtime received failed lan sends");
+                if self.inner.cloud.is_connected() {
+                    for message in messages {
+                        let _ = self.inner.cloud.send_relay(&device_id, message);
+                    }
+                }
             }
             RuntimeEvent::LanMessage { from, message } => {
                 debug!(%from, message_type = %message.message_type, "runtime received lan message");
@@ -530,7 +573,7 @@ impl AppRuntime {
         }
     }
 
-    fn broadcast_clipboard(&self, payload: ClipboardSyncPayload) -> AppResult<()> {
+    async fn broadcast_clipboard(&self, payload: ClipboardSyncPayload) -> AppResult<()> {
         let hash = hash_clipboard_payload(&payload);
         {
             let mut state = self.inner.state.lock_unpoisoned();
@@ -556,7 +599,9 @@ impl AppRuntime {
             .into_iter()
             .filter(|item| item.online && item.device_id != my_device_id)
         {
-            let _ = self.send_business_message(&device.device_id, envelope.clone());
+            let _ = self
+                .send_business_message(&device.device_id, envelope.clone())
+                .await;
         }
         self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())
@@ -696,45 +741,19 @@ impl AppRuntime {
         Ok(())
     }
 
-    fn send_business_message(
+    pub(super) async fn send_business_message(
         &self,
         device_id: &str,
         message: BusinessEnvelope,
     ) -> AppResult<String> {
-        let route = self.resolve_route(device_id)?;
-        self.send_business_message_via(device_id, message, route)?;
-        Ok(route.as_str().to_string())
-    }
-
-    fn send_business_message_via(
-        &self,
-        device_id: &str,
-        message: BusinessEnvelope,
-        route: TransferRoute,
-    ) -> AppResult<()> {
-        match route {
-            TransferRoute::Lan => self.inner.lan.send(device_id, message),
-            TransferRoute::Cloud => self.inner.cloud.send_relay(device_id, message),
-        }
-    }
-
-    fn resolve_route(&self, device_id: &str) -> AppResult<TransferRoute> {
-        if self.inner.lan.has_peer(device_id) {
-            return Ok(TransferRoute::Lan);
-        }
-        if self.inner.cloud.snapshot().connected {
-            return Ok(TransferRoute::Cloud);
-        }
-        Err(AppError::message(
-            self.user_text(TextKey::DeviceNotConnected),
-        ))
+        self.inner.transport.send(device_id, message).await
     }
 
     pub fn reconcile_device_routes(&self) -> AppResult<Vec<DeviceInfo>> {
         let devices = device_presence::reconcile_routes(
             &self.inner.database,
             &self.inner.app,
-            &self.inner.lan.peer_ids(),
+            &self.inner.lan.alive_trusted_ids(),
         )?;
         Ok(devices)
     }

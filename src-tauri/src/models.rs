@@ -137,6 +137,7 @@ pub struct TrustedPeerKeyRecord {
     pub public_key: String,
     pub key_updated_at: i64,
     pub trusted_at: Option<i64>,
+    pub lan_paired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

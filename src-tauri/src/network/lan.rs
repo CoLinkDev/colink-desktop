@@ -11,7 +11,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot, watch},
-    time::{interval, sleep, timeout, Instant, MissedTickBehavior},
+    time::{interval, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
@@ -52,25 +52,19 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REPLAY_DRIFT_MILLIS: i64 = 30_000;
+const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 180;
 const PING_INTERVAL_SECS: u64 = 15;
-const PING_TIMEOUT_SECS: u64 = 45;
+const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const SWIM_PERIOD: Duration = Duration::from_millis(1_000);
 const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 5_000;
 const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
-const RECONNECT_BASE_DELAY_MS: u64 = 2_000;
-const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
-const RECONNECT_MAX_ATTEMPTS: u32 = 5;
 
 enum TransferStreamEvent {
     Activity,
     Closed,
-}
-
-enum LanCommand {
-    TryConnect { generation: u64, device_id: String },
 }
 
 #[derive(Clone)]
@@ -84,8 +78,7 @@ struct LanState {
     generation: u64,
     active_device: Option<DeviceIdentity>,
     cancel: Option<watch::Sender<bool>>,
-    command_tx: Option<mpsc::UnboundedSender<LanCommand>>,
-    peers: HashMap<String, PeerConnection>,
+    peers: HashMap<String, PeerEntry>,
     peer_endpoints: HashMap<String, (String, u16)>,
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
@@ -93,7 +86,6 @@ struct LanState {
     seq: u64,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
-    reconnecting: HashSet<String>,
     pending_pairings: HashMap<String, oneshot::Sender<bool>>,
     pairing_candidates: HashMap<String, LanPairingCandidate>,
 }
@@ -108,6 +100,17 @@ struct MemberRecord {
 struct PeerConnection {
     connection_id: Uuid,
     sender: mpsc::UnboundedSender<BusinessEnvelope>,
+    initiated_by_local: bool,
+}
+
+struct PendingLanSend {
+    message: BusinessEnvelope,
+    result_tx: oneshot::Sender<AppResult<()>>,
+}
+
+enum PeerEntry {
+    Connected(PeerConnection),
+    Connecting(VecDeque<PendingLanSend>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +190,6 @@ impl LanManager {
                 generation: 0,
                 active_device: None,
                 cancel: None,
-                command_tx: None,
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
                 members: HashMap::new(),
@@ -196,7 +198,6 @@ impl LanManager {
                 seq: 0,
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
-                reconnecting: HashSet::new(),
                 pending_pairings: HashMap::new(),
                 pairing_candidates: HashMap::new(),
             })),
@@ -226,7 +227,6 @@ impl LanManager {
             incarnation: unix_now_millis(),
         };
         let (cancel_tx, cancel_rx) = watch::channel(false);
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
         let generation = {
             let mut inner = self.inner.lock_unpoisoned();
             if inner.cancel.is_some()
@@ -244,14 +244,12 @@ impl LanManager {
             inner.generation += 1;
             inner.active_device = Some(context.device.clone());
             inner.cancel = Some(cancel_tx);
-            inner.command_tx = Some(command_tx);
             inner.peers.clear();
             inner.peer_endpoints.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
-            inner.reconnecting.clear();
             inner.pending_pairings.clear();
             inner.pairing_candidates.clear();
             inner.seq = 0;
@@ -269,9 +267,7 @@ impl LanManager {
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager
-                .run(generation, context, cancel_rx, command_rx)
-                .await;
+            manager.run(generation, context, cancel_rx).await;
         });
         Ok(())
     }
@@ -284,13 +280,11 @@ impl LanManager {
             }
             inner.generation += 1;
             inner.active_device = None;
-            inner.command_tx = None;
             inner.peer_endpoints.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.pairing_candidates.clear();
             inner.transfer_tokens.clear();
-            inner.reconnecting.clear();
             (
                 std::mem::take(&mut inner.peers),
                 std::mem::take(&mut inner.transfer_senders),
@@ -302,25 +296,115 @@ impl LanManager {
         info!("lan manager stopped");
     }
 
-    pub fn has_peer(&self, device_id: &str) -> bool {
-        self.inner.lock_unpoisoned().peers.contains_key(device_id)
-    }
+    pub fn alive_trusted_ids(&self) -> HashSet<String> {
+        let trusted = self
+            .database
+            .load_trusted_peer_keys()
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| record.lan_paired)
+                    .map(|record| record.device_id)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
 
-    pub fn peer_ids(&self) -> HashSet<String> {
-        self.inner.lock_unpoisoned().peers.keys().cloned().collect()
-    }
-
-    pub fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<()> {
-        let sender = self
-            .inner
+        self.inner
             .lock_unpoisoned()
-            .peers
+            .members
+            .iter()
+            .filter(|(_, record)| matches!(record.state, MemberState::Alive | MemberState::Suspect))
+            .filter_map(|(device_id, _)| trusted.contains(device_id).then(|| device_id.clone()))
+            .collect()
+    }
+
+    pub fn is_swim_alive(&self, device_id: &str) -> bool {
+        self.inner
+            .lock_unpoisoned()
+            .members
             .get(device_id)
-            .map(|peer| peer.sender.clone())
-            .ok_or_else(|| AppError::message(self.user_text(TextKey::LanPeerNotConnected)))?;
-        sender
-            .send(message)
-            .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)))
+            .is_some_and(|member| matches!(member.state, MemberState::Alive | MemberState::Suspect))
+    }
+
+    pub fn is_available(&self, device_id: &str) -> bool {
+        self.is_swim_alive(device_id)
+            && self.is_lan_trusted(device_id)
+            && self.peer_endpoint(device_id).is_some()
+    }
+
+    pub async fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<()> {
+        if !self.is_available(device_id) {
+            return Err(AppError::message(
+                self.user_text(TextKey::LanPeerNotConnected),
+            ));
+        }
+
+        let context = self.load_context()?;
+        let generation = self.current_generation();
+        let (ip, port) = self
+            .peer_endpoint(device_id)
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::LanDeviceNotFound)))?;
+        let ip = ip
+            .parse::<IpAddr>()
+            .map_err(|_| AppError::message(self.user_text(TextKey::LanDeviceAddressInvalid)))?;
+
+        let mut message = message;
+        loop {
+            let receiver = {
+                let mut inner = self.inner.lock_unpoisoned();
+                if inner.generation != generation {
+                    return Err(AppError::message(
+                        self.user_text(TextKey::LanPeerUnavailable),
+                    ));
+                }
+
+                match inner.peers.get_mut(device_id) {
+                    Some(PeerEntry::Connected(peer)) => {
+                        let sender = peer.sender.clone();
+                        drop(inner);
+                        match sender.send(message) {
+                            Ok(()) => return Ok(()),
+                            Err(error) => {
+                                message = error.0;
+                                self.remove_stale_peer_sender(device_id, &sender);
+                                continue;
+                            }
+                        }
+                    }
+                    Some(PeerEntry::Connecting(queue)) => {
+                        let (tx, rx) = oneshot::channel();
+                        queue.push_back(PendingLanSend {
+                            message,
+                            result_tx: tx,
+                        });
+                        rx
+                    }
+                    None => {
+                        let (tx, rx) = oneshot::channel();
+                        let mut queue = VecDeque::new();
+                        queue.push_back(PendingLanSend {
+                            message,
+                            result_tx: tx,
+                        });
+                        inner
+                            .peers
+                            .insert(device_id.to_string(), PeerEntry::Connecting(queue));
+                        let manager = self.clone();
+                        let device_id = device_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            manager
+                                .connect_pending_peer(generation, context, device_id, ip, port)
+                                .await;
+                        });
+                        rx
+                    }
+                }
+            };
+
+            return receiver
+                .await
+                .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)))?;
+        }
     }
 
     pub fn peer_endpoint(&self, device_id: &str) -> Option<(String, u16)> {
@@ -431,7 +515,6 @@ impl LanManager {
         generation: u64,
         context: LanContext,
         mut cancel_rx: watch::Receiver<bool>,
-        mut command_rx: mpsc::UnboundedReceiver<LanCommand>,
     ) {
         let Ok(listener) = TcpListener::bind(("0.0.0.0", LAN_PORT)).await else {
             warn!(port = LAN_PORT, "lan listener bind failed");
@@ -502,19 +585,6 @@ impl LanManager {
                     };
                     if let ServiceEvent::ServiceResolved(service) = event {
                         self.handle_service_resolved(generation, context.clone(), *service);
-                    }
-                }
-                command = command_rx.recv() => {
-                    let Some(command) = command else {
-                        break;
-                    };
-                    match command {
-                        LanCommand::TryConnect { generation: command_generation, device_id }
-                            if command_generation == generation =>
-                        {
-                            self.try_connect_trusted(generation, context.clone(), device_id).await;
-                        }
-                        _ => {}
                     }
                 }
                 _ = swim_interval.tick() => {
@@ -719,7 +789,7 @@ impl LanManager {
                 let context = self.load_context().unwrap_or(context);
                 let session =
                     perform_inbound_handshake(self, stream, &context, &self.database).await?;
-                self.attach_peer_stream(generation, session).await
+                self.attach_peer_stream(generation, session, false).await
             }
             InboundRoute::Transfer { session_id } => {
                 debug!(%session_id, "handling inbound lan transfer websocket");
@@ -752,13 +822,70 @@ impl LanManager {
             allow_pairing,
         )
         .await?;
-        self.attach_peer_stream(generation, session).await
+        self.attach_peer_stream(generation, session, true).await
+    }
+
+    async fn connect_pending_peer(
+        &self,
+        generation: u64,
+        context: LanContext,
+        device_id: String,
+        ip: IpAddr,
+        port: u16,
+    ) {
+        let result = self
+            .connect_outbound(generation, context, device_id.clone(), ip, port, false)
+            .await;
+        if let Err(error) = result {
+            warn!(%device_id, %error, "on-demand lan peer connection failed");
+            self.fail_connecting_peer(generation, &device_id, error.to_string());
+        }
+    }
+
+    fn fail_connecting_peer(&self, generation: u64, device_id: &str, reason: String) {
+        let pending = {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return;
+            }
+            match inner.peers.remove(device_id) {
+                Some(PeerEntry::Connecting(queue)) => queue,
+                other => {
+                    if let Some(entry) = other {
+                        inner.peers.insert(device_id.to_string(), entry);
+                    }
+                    VecDeque::new()
+                }
+            }
+        };
+
+        for pending in pending {
+            let _ = pending
+                .result_tx
+                .send(Err(AppError::message(reason.clone())));
+        }
+    }
+
+    fn remove_stale_peer_sender(
+        &self,
+        device_id: &str,
+        sender: &mpsc::UnboundedSender<BusinessEnvelope>,
+    ) {
+        let mut inner = self.inner.lock_unpoisoned();
+        let should_remove = inner.peers.get(device_id).is_some_and(|entry| match entry {
+            PeerEntry::Connected(peer) => peer.sender.same_channel(sender),
+            PeerEntry::Connecting(_) => false,
+        });
+        if should_remove {
+            inner.peers.remove(device_id);
+        }
     }
 
     async fn attach_peer_stream<S>(
         &self,
         generation: u64,
         session: HandshakeResult<S>,
+        initiated_by_local: bool,
     ) -> AppResult<()>
     where
         WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
@@ -767,32 +894,56 @@ impl LanManager {
             + Send
             + 'static,
     {
-        {
-            let inner = self.inner.lock_unpoisoned();
-            if inner.generation != generation {
-                return Ok(());
-            }
-        }
-
         let peer_device_id = session.peer_device_id;
         let connection_id = Uuid::new_v4();
         let (tx, mut rx) = mpsc::unbounded_channel::<BusinessEnvelope>();
-        let was_connected = {
+        let (pending, was_connected) = {
             let mut inner = self.inner.lock_unpoisoned();
-            inner
-                .peers
-                .insert(
-                    peer_device_id.clone(),
-                    PeerConnection {
-                        connection_id,
-                        sender: tx,
-                    },
-                )
-                .is_some()
-        };
-        {
-            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return Ok(());
+            }
+
+            if let Some(PeerEntry::Connected(existing)) = inner.peers.get(&peer_device_id) {
+                let local_device_id = inner
+                    .active_device
+                    .as_ref()
+                    .map(|device| device.device_id.as_str())
+                    .unwrap_or_default();
+                let local_is_smaller = local_device_id < peer_device_id.as_str();
+                let keep_existing = if local_is_smaller {
+                    existing.initiated_by_local
+                } else {
+                    !existing.initiated_by_local
+                };
+                if keep_existing {
+                    debug!(device_id = %peer_device_id, "dropping duplicate lan peer stream");
+                    return Ok(());
+                }
+            }
+
+            let previous = inner.peers.remove(&peer_device_id);
+            let was_connected = matches!(previous, Some(PeerEntry::Connected(_)));
+            let pending = match previous {
+                Some(PeerEntry::Connecting(queue)) => queue,
+                _ => VecDeque::new(),
+            };
+            inner.peers.insert(
+                peer_device_id.clone(),
+                PeerEntry::Connected(PeerConnection {
+                    connection_id,
+                    sender: tx.clone(),
+                    initiated_by_local,
+                }),
+            );
             inner.pairing_candidates.remove(&peer_device_id);
+            (pending, was_connected)
+        };
+
+        for pending in pending {
+            let result = tx
+                .send(pending.message)
+                .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)));
+            let _ = pending.result_tx.send(result);
         }
         self.emit_pairing_candidates();
         if !was_connected {
@@ -806,12 +957,17 @@ impl LanManager {
         tauri::async_runtime::spawn(async move {
             let (mut writer, mut reader) = session.stream.split();
             let mut crypto = session.crypto;
-            let mut last_activity = Instant::now();
+            let mut last_business_activity = Instant::now();
+            let mut last_keepalive_activity = Instant::now();
             let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
             ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
             ping_interval.tick().await;
+            let mut failed_outbound = None;
             loop {
-                if last_activity.elapsed() >= Duration::from_secs(PING_TIMEOUT_SECS) {
+                if last_keepalive_activity.elapsed() >= Duration::from_secs(KEEPALIVE_TIMEOUT_SECS)
+                    || last_business_activity.elapsed()
+                        >= Duration::from_secs(BUSINESS_IDLE_TIMEOUT_SECS)
+                {
                     break;
                 }
                 tokio::select! {
@@ -821,20 +977,34 @@ impl LanManager {
                         };
                         let encrypted = match crypto.encrypt(&outbound) {
                             Ok(payload) => payload,
-                            Err(_) => break,
+                            Err(_) => {
+                                failed_outbound = Some(outbound);
+                                break;
+                            }
                         };
                         let envelope = PeerEnvelope {
                             message_type: "business.v1.message".to_string(),
                             payload: match serde_json::to_value(encrypted) {
                                 Ok(value) => value,
-                                Err(_) => break,
+                                Err(_) => {
+                                    failed_outbound = Some(outbound);
+                                    break;
+                                }
                             },
                         };
-                        if let Ok(text) = serde_json::to_string(&envelope) {
-                            if writer.send(Message::Text(text.into())).await.is_err() {
+                        let text = match serde_json::to_string(&envelope) {
+                            Ok(text) => text,
+                            Err(_) => {
+                                failed_outbound = Some(outbound);
                                 break;
                             }
+                        };
+                        if writer.send(Message::Text(text.into())).await.is_err() {
+                            failed_outbound = Some(outbound);
+                            break;
                         }
+                        last_business_activity = Instant::now();
+                        last_keepalive_activity = Instant::now();
                     }
                     _ = ping_interval.tick() => {
                         if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
@@ -844,7 +1014,7 @@ impl LanManager {
                     inbound = reader.next() => {
                         match inbound {
                             Some(Ok(Message::Text(text))) => {
-                                last_activity = Instant::now();
+                                last_keepalive_activity = Instant::now();
                                 let Ok(envelope) = serde_json::from_str::<PeerEnvelope>(&text) else {
                                     continue;
                                 };
@@ -856,6 +1026,7 @@ impl LanManager {
                                 };
                                 match crypto.decrypt(&payload) {
                                     Ok(message) => {
+                                        last_business_activity = Instant::now();
                                         let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
                                             from: peer_device_id.clone(),
                                             message,
@@ -865,25 +1036,38 @@ impl LanManager {
                                 }
                             }
                             Some(Ok(Message::Pong(_))) => {
-                                last_activity = Instant::now();
+                                last_keepalive_activity = Instant::now();
                             }
                             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                             Some(Ok(Message::Ping(payload))) => {
-                                last_activity = Instant::now();
+                                last_keepalive_activity = Instant::now();
                                 if writer.send(Message::Pong(payload)).await.is_err() {
                                     break;
                                 }
                             }
                             Some(Ok(_)) => {
-                                last_activity = Instant::now();
+                                last_keepalive_activity = Instant::now();
                             }
                         }
                     }
                 }
             }
+            let mut undelivered = Vec::new();
+            if let Some(message) = failed_outbound {
+                undelivered.push(message);
+            }
+            rx.close();
+            while let Ok(message) = rx.try_recv() {
+                undelivered.push(message);
+            }
+            if !undelivered.is_empty() {
+                let _ = manager.event_tx.send(RuntimeEvent::LanSendFailed {
+                    device_id: peer_device_id.clone(),
+                    messages: undelivered,
+                });
+            }
             manager.detach_peer_connection(generation, &peer_device_id, connection_id);
             debug!(device_id = %peer_device_id, "lan peer stream ended");
-            manager.schedule_reconnect(generation, peer_device_id);
         });
         Ok(())
     }
@@ -1294,13 +1478,17 @@ impl LanManager {
         match state {
             MemberState::Alive => {
                 self.update_pairing_candidate(device_id, state);
-                self.send_command(LanCommand::TryConnect {
-                    generation,
-                    device_id: device_id.to_string(),
-                });
+                if self.is_lan_trusted(device_id) {
+                    let _ = self.event_tx.send(RuntimeEvent::LanDeviceReachable {
+                        device_id: device_id.to_string(),
+                    });
+                }
             }
             MemberState::Dead | MemberState::Left => {
                 self.remove_pairing_candidate(device_id);
+                let _ = self.event_tx.send(RuntimeEvent::LanDeviceUnreachable {
+                    device_id: device_id.to_string(),
+                });
                 self.detach_peer(generation, device_id);
             }
             MemberState::Suspect => {
@@ -1425,92 +1613,15 @@ impl LanManager {
         inner.seq
     }
 
-    async fn try_connect_trusted(&self, generation: u64, context: LanContext, device_id: String) {
-        if !should_initiate(&context.device.device_id, &device_id) {
-            debug!(
-                local_device_id = %context.device.device_id,
-                peer_device_id = %device_id,
-                "skipping trusted lan peer connection because local device is not initiator"
-            );
-            return;
-        }
-        if self.has_peer(&device_id) {
-            debug!(%device_id, "skipping trusted lan peer connection because peer is already connected");
-            return;
-        }
-        if !self.is_trusted(&device_id) {
-            debug!(%device_id, "skipping trusted lan peer connection because peer is not trusted");
-            return;
-        }
-        if !self.is_member_connectable(&device_id) {
-            debug!(%device_id, "skipping trusted lan peer connection because member is not connectable");
-            return;
-        }
-
-        let Some((ip, port)) = self.peer_endpoint(&device_id) else {
-            debug!(%device_id, "skipping trusted lan peer connection because endpoint is missing");
-            return;
-        };
-        let Ok(ip) = ip.parse::<IpAddr>() else {
-            debug!(%device_id, "skipping trusted lan peer connection because endpoint ip is invalid");
-            return;
-        };
-
-        debug!(%device_id, %ip, port = port, "trying trusted lan peer connection");
-        let result = self
-            .connect_outbound(generation, context, device_id.clone(), ip, port, true)
-            .await;
-        if let Err(error) = result {
-            warn!(%device_id, %error, "trusted lan peer connection failed");
-            self.schedule_reconnect(generation, device_id);
-        }
-    }
-
-    fn schedule_reconnect(&self, generation: u64, device_id: String) {
-        if !self.is_trusted(&device_id)
-            || !self.is_member_connectable(&device_id)
-            || !self.begin_reconnect(generation, &device_id)
-        {
-            return;
-        }
-        debug!(%device_id, "scheduling lan reconnect");
-        let manager = self.clone();
-        tauri::async_runtime::spawn(async move {
-            for attempt in 0..RECONNECT_MAX_ATTEMPTS {
-                if !manager.is_generation_current(generation)
-                    || manager.has_peer(&device_id)
-                    || !manager.is_trusted(&device_id)
-                    || !manager.is_member_connectable(&device_id)
-                {
-                    break;
-                }
-                let delay_ms = (RECONNECT_BASE_DELAY_MS << attempt).min(RECONNECT_MAX_DELAY_MS);
-                sleep(Duration::from_millis(delay_ms)).await;
-                manager.send_command(LanCommand::TryConnect {
-                    generation,
-                    device_id: device_id.clone(),
-                });
-                if manager.has_peer(&device_id) {
-                    break;
-                }
-            }
-            manager.finish_reconnect(&device_id);
-        });
-    }
-
-    fn is_trusted(&self, device_id: &str) -> bool {
+    fn is_lan_trusted(&self, device_id: &str) -> bool {
         self.database
             .load_trusted_peer_keys()
-            .map(|records| records.iter().any(|record| record.device_id == device_id))
+            .map(|records| {
+                records
+                    .iter()
+                    .any(|record| record.device_id == device_id && record.lan_paired)
+            })
             .unwrap_or(false)
-    }
-
-    fn is_member_connectable(&self, device_id: &str) -> bool {
-        self.inner
-            .lock_unpoisoned()
-            .members
-            .get(device_id)
-            .is_none_or(|member| matches!(member.state, MemberState::Alive | MemberState::Suspect))
     }
 
     async fn request_pairing(
@@ -1548,6 +1659,16 @@ impl LanManager {
             .map_err(|_| AppError::message("LAN pairing was cancelled"))
     }
 
+    fn revoke_lan_pairing_for_key_change(&self, proof: &PeerProof) -> AppResult<()> {
+        self.database
+            .clear_lan_pairing(&proof.device_id, &proof.name, &proof.public_key)?;
+        let _ = self.event_tx.send(RuntimeEvent::LanKeyChanged {
+            device_id: proof.device_id.clone(),
+            name: proof.name.clone(),
+        });
+        Ok(())
+    }
+
     fn trust_peer(&self, proof: &PeerProof) -> AppResult<()> {
         let now = unix_now_millis();
         self.database.upsert_trusted_peer_key(TrustedPeerKeyRecord {
@@ -1556,6 +1677,7 @@ impl LanManager {
             public_key: proof.public_key.clone(),
             key_updated_at: now,
             trusted_at: Some(now),
+            lan_paired: true,
         })
     }
 
@@ -1564,7 +1686,7 @@ impl LanManager {
             self.remove_pairing_candidate(device_id);
             return;
         }
-        if self.is_trusted(device_id) {
+        if self.is_lan_trusted(device_id) {
             self.remove_pairing_candidate(device_id);
             return;
         }
@@ -1612,13 +1734,22 @@ impl LanManager {
     }
 
     fn detach_peer(&self, generation: u64, device_id: &str) {
-        let should_emit = {
+        let (should_emit, pending) = {
             let mut inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
                 return;
             }
-            inner.peers.remove(device_id).is_some()
+            match inner.peers.remove(device_id) {
+                Some(PeerEntry::Connected(_)) => (true, VecDeque::new()),
+                Some(PeerEntry::Connecting(queue)) => (false, queue),
+                None => (false, VecDeque::new()),
+            }
         };
+        for pending in pending {
+            let _ = pending.result_tx.send(Err(AppError::message(
+                self.user_text(TextKey::LanPeerUnavailable),
+            )));
+        }
         if should_emit {
             warn!(%device_id, "lan peer disconnected");
             let _ = self.event_tx.send(RuntimeEvent::LanDisconnected {
@@ -1633,10 +1764,10 @@ impl LanManager {
             if inner.generation != generation {
                 return;
             }
-            let should_remove = inner
-                .peers
-                .get(device_id)
-                .is_some_and(|peer| peer.connection_id == connection_id);
+            let should_remove = inner.peers.get(device_id).is_some_and(|entry| match entry {
+                PeerEntry::Connected(peer) => peer.connection_id == connection_id,
+                PeerEntry::Connecting(_) => false,
+            });
             if should_remove {
                 inner.peers.remove(device_id);
                 true
@@ -1673,7 +1804,11 @@ impl LanManager {
             if inner.generation != generation {
                 return;
             }
-            inner.peers.drain().map(|(key, _)| key).collect::<Vec<_>>()
+            inner
+                .peers
+                .drain()
+                .filter_map(|(key, entry)| matches!(entry, PeerEntry::Connected(_)).then_some(key))
+                .collect::<Vec<_>>()
         };
         for device_id in peer_ids {
             let _ = self
@@ -1740,33 +1875,6 @@ impl LanManager {
         })
     }
 
-    fn send_command(&self, command: LanCommand) {
-        let sender = self.inner.lock_unpoisoned().command_tx.clone();
-        if let Some(sender) = sender {
-            let _ = sender.send(command);
-        }
-    }
-
-    fn begin_reconnect(&self, generation: u64, device_id: &str) -> bool {
-        let mut inner = self.inner.lock_unpoisoned();
-        if inner.generation != generation
-            || inner.reconnecting.contains(device_id)
-            || !inner.peer_endpoints.contains_key(device_id)
-        {
-            return false;
-        }
-        inner.reconnecting.insert(device_id.to_string());
-        true
-    }
-
-    fn finish_reconnect(&self, device_id: &str) {
-        self.inner.lock_unpoisoned().reconnecting.remove(device_id);
-    }
-
-    fn is_generation_current(&self, generation: u64) -> bool {
-        self.inner.lock_unpoisoned().generation == generation
-    }
-
     fn current_generation(&self) -> u64 {
         self.inner.lock_unpoisoned().generation
     }
@@ -1778,8 +1886,6 @@ impl LanManager {
         }
         inner.active_device = None;
         inner.cancel = None;
-        inner.command_tx = None;
-        inner.reconnecting.clear();
     }
 
     fn user_text(&self, key: TextKey) -> String {
@@ -1835,14 +1941,26 @@ async fn perform_outbound_handshake(
         nonce: peer_payload.nonce,
     };
     let trust = trust_state(database, &proof)?;
+    if matches!(trust, TrustState::KeyChanged) {
+        manager.revoke_lan_pairing_for_key_change(&proof)?;
+        let _ = write_peer_message(
+            &mut stream,
+            "handshake.v1.reject",
+            &HandshakeRejectPayload {
+                reason: "key_changed".to_string(),
+            },
+        )
+        .await;
+        return Err(AppError::message("LAN device key changed"));
+    }
     if !matches!(trust, TrustState::Trusted) {
         if !allow_pairing {
             return Err(AppError::message("LAN device key is not trusted"));
         }
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
-            TrustState::KeyChanged => "key_changed",
             TrustState::Trusted => "trusted",
+            TrustState::KeyChanged => "key_changed",
         };
         let code = pairing_code(
             &context.device.public_key,
@@ -1920,17 +2038,29 @@ async fn perform_inbound_handshake(
         name: peer_payload.name,
         nonce: peer_payload.nonce,
     };
+    let trust = trust_state(database, &proof)?;
+    if matches!(trust, TrustState::KeyChanged) {
+        manager.revoke_lan_pairing_for_key_change(&proof)?;
+        write_peer_message(
+            &mut stream,
+            "handshake.v1.reject",
+            &HandshakeRejectPayload {
+                reason: "key_changed".to_string(),
+            },
+        )
+        .await?;
+        return Err(AppError::message("LAN device key changed"));
+    }
 
     let exchange_nonce = Uuid::new_v4().simple().to_string();
     let exchange = build_handshake_proof(&context.device, &exchange_nonce)?;
     write_peer_message(&mut stream, "handshake.v1.exchange", &exchange).await?;
 
-    let trust = trust_state(database, &proof)?;
     if !matches!(trust, TrustState::Trusted) {
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
-            TrustState::KeyChanged => "key_changed",
             TrustState::Trusted => "trusted",
+            TrustState::KeyChanged => "key_changed",
         };
         let code = pairing_code(
             &proof.public_key,
@@ -2050,6 +2180,9 @@ fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> 
     else {
         return Ok(TrustState::Unknown);
     };
+    if !record.lan_paired {
+        return Ok(TrustState::Unknown);
+    }
     if record.public_key == proof.public_key {
         Ok(TrustState::Trusted)
     } else {
@@ -2197,10 +2330,6 @@ fn is_usable_lan_ipv4(ip: Ipv4Addr) -> bool {
 
 fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
     left.device_id == right.device_id
-}
-
-fn should_initiate(local_device_id: &str, peer_device_id: &str) -> bool {
-    local_device_id < peer_device_id
 }
 
 #[cfg(test)]

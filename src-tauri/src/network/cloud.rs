@@ -119,6 +119,10 @@ impl CloudConnectionManager {
         self.inner.lock_unpoisoned().status.clone()
     }
 
+    pub fn is_connected(&self) -> bool {
+        self.snapshot().connected
+    }
+
     pub fn start(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let generation = {

@@ -58,6 +58,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "rename_lan_trust_device_source",
         run: migrate_6_rename_lan_trust_device_source,
     },
+    Migration {
+        version: 7,
+        name: "add_lan_paired_to_trusted_peer_keys",
+        run: migrate_7_add_lan_paired_to_trusted_peer_keys,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -115,7 +120,8 @@ CREATE TABLE IF NOT EXISTS trusted_peer_keys (
     name TEXT NOT NULL,
     public_key TEXT NOT NULL,
     key_updated_at INTEGER NOT NULL,
-    trusted_at INTEGER
+    trusted_at INTEGER,
+    lan_paired INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -215,6 +221,23 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_lan_pairing(
+        &self,
+        device_id: &str,
+        name: &str,
+        public_key: &str,
+    ) -> AppResult<()> {
+        let record = TrustedPeerKeyRecord {
+            device_id: device_id.to_string(),
+            name: name.to_string(),
+            public_key: public_key.to_string(),
+            key_updated_at: unix_now_millis(),
+            trusted_at: None,
+            lan_paired: false,
+        };
+        self.upsert_trusted_peer_key(record)
+    }
+
     pub fn ensure_trusted_peer_keys_for_devices(
         &self,
         devices: &[DeviceInfo],
@@ -242,6 +265,7 @@ impl Database {
                             record.public_key = device.public_key.clone();
                             record.key_updated_at = updated_at;
                             record.trusted_at = None;
+                            record.lan_paired = false;
                             changed = true;
                         }
                     }
@@ -258,6 +282,7 @@ impl Database {
                     public_key: device.public_key.clone(),
                     key_updated_at: device.public_key_updated_at.unwrap_or(now),
                     trusted_at: None,
+                    lan_paired: false,
                 });
                 changed = true;
             }
@@ -625,7 +650,7 @@ fn load_trusted_peer_keys_from_connection(
 ) -> AppResult<Vec<TrustedPeerKeyRecord>> {
     let mut statement = connection.prepare(
         "
-        SELECT device_id, name, public_key, key_updated_at, trusted_at
+        SELECT device_id, name, public_key, key_updated_at, trusted_at, lan_paired
         FROM trusted_peer_keys
         ORDER BY name COLLATE NOCASE ASC, device_id ASC
         ",
@@ -639,7 +664,7 @@ fn load_trusted_peer_keys_from_transaction(
 ) -> AppResult<Vec<TrustedPeerKeyRecord>> {
     let mut statement = transaction.prepare(
         "
-        SELECT device_id, name, public_key, key_updated_at, trusted_at
+        SELECT device_id, name, public_key, key_updated_at, trusted_at, lan_paired
         FROM trusted_peer_keys
         ORDER BY name COLLATE NOCASE ASC, device_id ASC
         ",
@@ -655,6 +680,7 @@ fn map_trusted_peer_key_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Trusted
         public_key: row.get(2)?,
         key_updated_at: row.get(3)?,
         trusted_at: row.get(4)?,
+        lan_paired: row.get(5)?,
     })
 }
 
@@ -664,20 +690,22 @@ fn upsert_trusted_peer_key_row(
 ) -> AppResult<()> {
     connection.execute(
         "
-        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at, lan_paired)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(device_id) DO UPDATE SET
             name = excluded.name,
             public_key = excluded.public_key,
             key_updated_at = excluded.key_updated_at,
-            trusted_at = excluded.trusted_at
+            trusted_at = excluded.trusted_at,
+            lan_paired = excluded.lan_paired
         ",
         params![
             record.device_id.trim(),
             record.name.trim(),
             record.public_key.trim(),
             normalize_timestamp_millis(record.key_updated_at),
-            record.trusted_at.map(normalize_timestamp_millis)
+            record.trusted_at.map(normalize_timestamp_millis),
+            record.lan_paired,
         ],
     )?;
     Ok(())
@@ -689,20 +717,22 @@ fn upsert_trusted_peer_key_row_in_transaction(
 ) -> AppResult<()> {
     transaction.execute(
         "
-        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at, lan_paired)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(device_id) DO UPDATE SET
             name = excluded.name,
             public_key = excluded.public_key,
             key_updated_at = excluded.key_updated_at,
-            trusted_at = excluded.trusted_at
+            trusted_at = excluded.trusted_at,
+            lan_paired = excluded.lan_paired
         ",
         params![
             record.device_id.trim(),
             record.name.trim(),
             record.public_key.trim(),
             normalize_timestamp_millis(record.key_updated_at),
-            record.trusted_at.map(normalize_timestamp_millis)
+            record.trusted_at.map(normalize_timestamp_millis),
+            record.lan_paired,
         ],
     )?;
     Ok(())
@@ -766,6 +796,18 @@ fn table_exists(connection: &Transaction<'_>, table_name: &str) -> AppResult<boo
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+fn table_has_column(
+    connection: &Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+) -> AppResult<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|column| column == column_name))
 }
 
 fn migrate_1_baseline(transaction: &Transaction<'_>) -> AppResult<()> {
@@ -839,6 +881,7 @@ fn migrate_5_migrate_lan_trusts_table_to_trusted_peer_keys(
                 public_key: row.get(2)?,
                 key_updated_at: trusted_at,
                 trusted_at: Some(trusted_at),
+                lan_paired: true,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -853,6 +896,22 @@ fn migrate_5_migrate_lan_trusts_table_to_trusted_peer_keys(
 
 fn migrate_6_rename_lan_trust_device_source(transaction: &Transaction<'_>) -> AppResult<()> {
     migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
+fn migrate_7_add_lan_paired_to_trusted_peer_keys(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute_batch(TRUSTED_PEER_KEYS_SCHEMA_SQL)?;
+    if !table_has_column(transaction, "trusted_peer_keys", "lan_paired")? {
+        transaction.execute(
+            "ALTER TABLE trusted_peer_keys ADD COLUMN lan_paired INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE trusted_peer_keys SET lan_paired = 1 WHERE trusted_at IS NOT NULL",
+        [],
+    )?;
+    let _ = load_trusted_peer_keys_from_transaction(transaction)?;
+    Ok(())
 }
 
 fn migrate_json_record(
@@ -1003,6 +1062,7 @@ fn normalize_legacy_lan_trust_json(value: Value) -> AppResult<Vec<TrustedPeerKey
         let timestamp = normalize_timestamp_millis(trusted_at);
         object.insert("keyUpdatedAt".to_string(), Value::Number(timestamp.into()));
         object.insert("trustedAt".to_string(), Value::Number(timestamp.into()));
+        object.insert("lanPaired".to_string(), Value::Bool(true));
         normalized.push(Value::Object(object));
     }
 
@@ -1241,7 +1301,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1254,7 +1314,7 @@ mod tests {
         database.initialize().expect("first init");
         database.initialize().expect("second init");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1287,7 +1347,7 @@ mod tests {
             .expect("load identity")
             .expect("identity");
         assert!(!identity.cloud_key_sync_pending);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1302,7 +1362,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1335,7 +1395,7 @@ mod tests {
         let devices = database.load_cached_devices().expect("load devices");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].public_key_updated_at, None);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1383,12 +1443,14 @@ mod tests {
             .expect("millis trust");
         assert_eq!(millis.key_updated_at, 1_780_077_510_545);
         assert_eq!(millis.trusted_at, Some(1_780_077_510_545));
+        assert!(millis.lan_paired);
         let seconds = trusts
             .iter()
             .find(|record| record.device_id == "peer-sec")
             .expect("seconds trust");
         assert_eq!(seconds.key_updated_at, 1_780_045_153_000);
         assert_eq!(seconds.trusted_at, Some(1_780_045_153_000));
+        assert!(seconds.lan_paired);
 
         let connection = Connection::open(&path).expect("open migrated db");
         let legacy_count: i64 = connection
@@ -1399,7 +1461,7 @@ mod tests {
             )
             .expect("count legacy lan trust");
         assert_eq!(legacy_count, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1413,7 +1475,10 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (5, 6)", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7)",
+                [],
+            )
             .expect("remove v5 marker");
         connection
             .execute_batch(
@@ -1441,6 +1506,7 @@ mod tests {
             .expect("migrated old table trust");
         assert_eq!(record.key_updated_at, 1_780_045_153_000);
         assert_eq!(record.trusted_at, Some(1_780_045_153_000));
+        assert!(record.lan_paired);
 
         let connection = Connection::open(&path).expect("open migrated db");
         let old_table_exists: i64 = connection
@@ -1451,7 +1517,7 @@ mod tests {
             )
             .expect("check old table");
         assert_eq!(old_table_exists, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1465,7 +1531,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 6", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (6, 7)", [])
             .expect("remove v6 marker");
         connection
             .execute(
@@ -1499,7 +1565,65 @@ mod tests {
             devices[0].device_sources,
             vec!["trusted_peer_key".to_string()]
         );
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_lan_paired_column_from_trusted_at() {
+        let path = temp_db_path();
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute_batch(super::BASELINE_SCHEMA_SQL)
+            .expect("create baseline schema");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at INTEGER NOT NULL
+                );
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES
+                    (1, 'baseline', 1),
+                    (2, 'normalize_kv_records', 1),
+                    (3, 'add_device_public_key_updated_at', 1),
+                    (4, 'move_trusted_peer_keys_to_table', 1),
+                    (5, 'migrate_lan_trusts_table_to_trusted_peer_keys', 1),
+                    (6, 'rename_lan_trust_device_source', 1);
+                CREATE TABLE trusted_peer_keys (
+                    device_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    public_key TEXT NOT NULL,
+                    key_updated_at INTEGER NOT NULL,
+                    trusted_at INTEGER
+                );
+                INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at)
+                VALUES
+                    ('paired', 'Paired', 'pk-paired', 2000, 2000),
+                    ('cloud', 'Cloud', 'pk-cloud', 3000, NULL);
+                ",
+            )
+            .expect("seed v6 db");
+        drop(connection);
+
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let trusts = database.load_trusted_peer_keys().expect("load trusts");
+        let paired = trusts
+            .iter()
+            .find(|record| record.device_id == "paired")
+            .expect("paired record");
+        let cloud = trusts
+            .iter()
+            .find(|record| record.device_id == "cloud")
+            .expect("cloud record");
+        assert!(paired.lan_paired);
+        assert!(!cloud.lan_paired);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
 
         let _ = fs::remove_file(path);
     }
@@ -1592,6 +1716,7 @@ mod tests {
                 public_key: "local-new".to_string(),
                 key_updated_at: 2_000_000_000_000,
                 trusted_at: Some(2_000_000_000_000),
+                lan_paired: true,
             }])
             .expect("save trust");
 
@@ -1621,6 +1746,7 @@ mod tests {
         assert_eq!(trusts[0].public_key, "local-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
         assert_eq!(trusts[0].trusted_at, Some(2_000_000_000_000));
+        assert!(trusts[0].lan_paired);
 
         let _ = fs::remove_file(path);
     }
@@ -1638,6 +1764,7 @@ mod tests {
                 public_key: "local-old".to_string(),
                 key_updated_at: 1_000_000_000_000,
                 trusted_at: Some(1_000_000_000_000),
+                lan_paired: true,
             }])
             .expect("save trust");
 
@@ -1667,6 +1794,7 @@ mod tests {
         assert_eq!(trusts[0].public_key, "cloud-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
         assert_eq!(trusts[0].trusted_at, None);
+        assert!(!trusts[0].lan_paired);
 
         let _ = fs::remove_file(path);
     }
@@ -1684,6 +1812,7 @@ mod tests {
                 public_key: "local-new".to_string(),
                 key_updated_at: 2_000_000_000_000,
                 trusted_at: Some(2_000_000_000_000),
+                lan_paired: true,
             }])
             .expect("save trust");
 
@@ -1713,6 +1842,7 @@ mod tests {
         assert_eq!(trusts[0].public_key, "local-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
         assert_eq!(trusts[0].trusted_at, Some(2_000_000_000_000));
+        assert!(trusts[0].lan_paired);
 
         let _ = fs::remove_file(path);
     }

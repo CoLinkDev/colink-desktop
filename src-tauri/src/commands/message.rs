@@ -6,13 +6,14 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn send_text(
+pub async fn send_text(
     state: State<'_, AppState>,
     payload: SendTextPayload,
 ) -> Result<TextMessageRecord, String> {
     state
         .runtime
         .send_text(payload)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -29,10 +30,10 @@ pub async fn send_files(
     state: State<'_, AppState>,
     payload: SendFilePayload,
 ) -> Result<Vec<FileTransferRecord>, String> {
-    let runtime = state.runtime.clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.send_files(payload))
+    state
+        .runtime
+        .send_files(payload)
         .await
-        .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
 }
 

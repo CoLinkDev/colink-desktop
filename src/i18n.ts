@@ -140,6 +140,7 @@ const resources = {
       lanPairing: {
         title: '局域网配对',
         keyChangedTitle: '确认密钥变更',
+        keyChangedToast: '设备 {{name}} 的密钥已变更，需要重新配对才能使用 LAN。',
         code: '配对码',
         description: '接受前确认另一台设备显示相同配对码。',
         accept: '接受',
@@ -369,6 +370,7 @@ const resources = {
       lanPairing: {
         title: 'LAN pairing',
         keyChangedTitle: 'Confirm key change',
+        keyChangedToast: 'Device {{name}} key changed. Pair again to use LAN.',
         code: 'Pairing code',
         description: 'Confirm the other device shows the same code before accepting.',
         accept: 'Accept',
@@ -598,6 +600,7 @@ const resources = {
       lanPairing: {
         title: '區域網路配對',
         keyChangedTitle: '確認金鑰變更',
+        keyChangedToast: '裝置 {{name}} 的金鑰已變更，需要重新配對才能使用 LAN。',
         code: '配對碼',
         description: '接受前請確認另一台設備顯示相同配對碼。',
         accept: '接受',
@@ -827,6 +830,7 @@ const resources = {
       lanPairing: {
         title: 'LAN ペアリング',
         keyChangedTitle: 'キー変更の確認',
+        keyChangedToast: 'デバイス {{name}} のキーが変更されました。LAN を使うには再度ペアリングしてください。',
         code: 'ペアリングコード',
         description: '承認する前に、相手のデバイスにも同じコードが表示されていることを確認してください。',
         accept: '承認',
@@ -1056,6 +1060,7 @@ const resources = {
       lanPairing: {
         title: 'LAN 페어링',
         keyChangedTitle: '키 변경 확인',
+        keyChangedToast: '{{name}} 기기의 키가 변경되었습니다. LAN을 사용하려면 다시 페어링하세요.',
         code: '페어링 코드',
         description: '수락하기 전에 다른 디바이스에 같은 코드가 표시되는지 확인하세요.',
         accept: '수락',
@@ -1285,6 +1290,7 @@ const resources = {
       lanPairing: {
         title: 'Emparejamiento LAN',
         keyChangedTitle: 'Confirmar cambio de clave',
+        keyChangedToast: 'La clave del dispositivo {{name}} cambió. Vuelve a emparejar para usar LAN.',
         code: 'Código de emparejamiento',
         description: 'Confirme que el otro dispositivo muestra el mismo código antes de aceptar.',
         accept: 'Aceptar',
@@ -1514,6 +1520,7 @@ const resources = {
       lanPairing: {
         title: 'LAN-Kopplung',
         keyChangedTitle: 'Schlüsseländerung bestätigen',
+        keyChangedToast: 'Der Schlüssel von Gerät {{name}} wurde geändert. Für LAN erneut koppeln.',
         code: 'Kopplungscode',
         description: 'Bestätigen Sie vor dem Akzeptieren, dass das andere Gerät denselben Code zeigt.',
         accept: 'Akzeptieren',
@@ -1743,6 +1750,7 @@ const resources = {
       lanPairing: {
         title: 'LAN-сопряжение',
         keyChangedTitle: 'Подтвердить смену ключа',
+        keyChangedToast: 'Ключ устройства {{name}} изменился. Выполните сопряжение заново для LAN.',
         code: 'Код сопряжения',
         description: 'Перед принятием проверьте, что на другом устройстве показан тот же код.',
         accept: 'Принять',

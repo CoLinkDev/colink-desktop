@@ -44,11 +44,10 @@ enum ChunkTransport {
 }
 
 impl AppRuntime {
-    pub fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
+    pub async fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
         if payload.paths.is_empty() {
             return Err(AppError::message(self.user_text(TextKey::SelectFiles)));
         }
-        let route = self.resolve_route(&payload.device_id)?;
 
         let mut records = Vec::new();
         let total = payload.paths.len();
@@ -81,10 +80,23 @@ impl AppRuntime {
                 device_id = %payload.device_id,
                 path = %source_path.display(),
                 file_size = file_size,
-                route = %route.as_str(),
                 "preparing outgoing file transfer"
             );
 
+            let envelope = BusinessEnvelope::from_payload(
+                FILE_OFFER_TYPE,
+                FileOfferPayload {
+                    session_id: file_id.clone(),
+                    file_name: file_name.clone(),
+                    file_size,
+                    total_chunks,
+                    chunk_size,
+                    checksum: checksum.clone(),
+                },
+            )?;
+            let route = self
+                .send_business_message(&payload.device_id, envelope)
+                .await?;
             let record = FileTransferRecord {
                 file_id: file_id.clone(),
                 device_id: payload.device_id.clone(),
@@ -95,25 +107,13 @@ impl AppRuntime {
                 total_chunks,
                 status: "offered".to_string(),
                 checksum: checksum.clone(),
-                route: route.as_str().to_string(),
+                route,
                 temp_path: None,
                 final_path: Some(source_path.to_string_lossy().to_string()),
                 error: None,
                 created_at,
                 updated_at: created_at,
             };
-            let envelope = BusinessEnvelope::from_payload(
-                FILE_OFFER_TYPE,
-                FileOfferPayload {
-                    session_id: file_id.clone(),
-                    file_name,
-                    file_size,
-                    total_chunks,
-                    chunk_size,
-                    checksum,
-                },
-            )?;
-            self.send_business_message_via(&payload.device_id, envelope, route)?;
             self.inner.database.save_transfer(&record)?;
             self.inner.state.lock_unpoisoned().outgoing_files.insert(
                 file_id,
@@ -177,7 +177,10 @@ impl AppRuntime {
                     reason: "user cancelled".to_string(),
                 },
             )?;
-            let _ = self.send_business_message(&device_id, envelope);
+            let runtime = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = runtime.send_business_message(&device_id, envelope).await;
+            });
         }
         let _ = self
             .inner
@@ -256,7 +259,7 @@ impl AppRuntime {
                     reason: "user rejected".to_string(),
                 },
             )?;
-            let _ = self.send_business_message(from, envelope)?;
+            let _ = self.send_business_message(from, envelope).await?;
             return Ok(());
         }
 
@@ -302,7 +305,7 @@ impl AppRuntime {
                 transfer_token,
             },
         )?;
-        let _ = self.send_business_message(from, envelope)?;
+        let _ = self.send_business_message(from, envelope).await?;
         info!(
             from,
             session_id = %record.file_id,
@@ -363,7 +366,7 @@ impl AppRuntime {
                             session_id: file_id.clone(),
                         },
                     )?;
-                    let _ = self.send_business_message(&record.device_id, ready)?;
+                    let _ = self.send_business_message(&record.device_id, ready).await?;
                     return self.send_file_data_lan(file_id, source_path, record).await;
                 }
                 Err(error) => {
@@ -376,7 +379,7 @@ impl AppRuntime {
                             reason: reason.clone(),
                         },
                     )?;
-                    let _ = self.send_business_message(&record.device_id, cancel);
+                    let _ = self.send_business_message(&record.device_id, cancel).await;
                     self.finish_outgoing_transfer(&file_id, "failed", Some(reason), None)?;
                     return Ok(());
                 }
@@ -453,7 +456,8 @@ impl AppRuntime {
                 return Ok(());
             }
 
-            self.send_transport_chunk(&file_id, &record, index, &buffer[..read], transport)?;
+            self.send_transport_chunk(&file_id, &record, index, &buffer[..read], transport)
+                .await?;
             index += 1;
         }
 
@@ -469,7 +473,7 @@ impl AppRuntime {
         Ok(())
     }
 
-    fn send_transport_chunk(
+    async fn send_transport_chunk(
         &self,
         file_id: &str,
         record: &FileTransferRecord,
@@ -487,7 +491,7 @@ impl AppRuntime {
                         data: STANDARD.encode(bytes),
                     },
                 )?;
-                let _ = self.send_business_message(&record.device_id, chunk)?;
+                let _ = self.send_business_message(&record.device_id, chunk).await?;
             }
             ChunkTransport::Lan => {
                 let index = u32::try_from(index)
@@ -620,7 +624,8 @@ impl AppRuntime {
                 received_chunks = received_chunks,
                 "ignoring duplicate file chunk"
             );
-            self.send_file_ack(&device_id, session_id, received_chunks)?;
+            self.send_file_ack(&device_id, session_id, received_chunks)
+                .await?;
             return Ok(());
         }
         if chunk_index > received_chunks {
@@ -630,7 +635,8 @@ impl AppRuntime {
                 received_chunks = received_chunks,
                 "missing file chunk detected"
             );
-            self.send_file_retransmit(&device_id, session_id, received_chunks)?;
+            self.send_file_retransmit(&device_id, session_id, received_chunks)
+                .await?;
             return Ok(());
         }
 
@@ -647,7 +653,8 @@ impl AppRuntime {
         }
         let next_expected_index = chunk_index + 1;
         if should_send_file_ack(next_expected_index, record.total_chunks) {
-            self.send_file_ack(&record.device_id, session_id, next_expected_index)?;
+            self.send_file_ack(&record.device_id, session_id, next_expected_index)
+                .await?;
         }
         if finish_when_complete && finished {
             self.finish_incoming_transfer(session_id).await?;
@@ -669,7 +676,8 @@ impl AppRuntime {
         .ok_or_else(|| AppError::message("receive state does not exist"))?;
 
         if received_chunks < total_chunks {
-            self.send_file_retransmit(&device_id, session_id, received_chunks)?;
+            self.send_file_retransmit(&device_id, session_id, received_chunks)
+                .await?;
             return Ok(());
         }
 
@@ -745,7 +753,7 @@ impl AppRuntime {
                     data: STANDARD.encode(&buffer[..read]),
                 },
             )?;
-            let _ = self.send_business_message(&record.device_id, chunk)?;
+            let _ = self.send_business_message(&record.device_id, chunk).await?;
         }
 
         Ok(())
@@ -817,7 +825,7 @@ impl AppRuntime {
                 },
             },
         )?;
-        let _ = self.send_business_message(&record.device_id, done)?;
+        let _ = self.send_business_message(&record.device_id, done).await?;
         self.inner.lan.unregister_transfer(file_id);
 
         if success {
@@ -947,8 +955,8 @@ impl AppRuntime {
     }
 
     fn lan_endpoint_for_device(&self, device_id: &str) -> Option<(String, u16)> {
-        if !self.inner.lan.has_peer(device_id) {
-            debug!(%device_id, "lan endpoint unavailable because peer is not connected");
+        if !self.inner.lan.is_available(device_id) {
+            debug!(%device_id, "lan endpoint unavailable because peer is not lan available");
             return None;
         }
         let endpoint = self.inner.lan.peer_endpoint(device_id);
@@ -1002,7 +1010,7 @@ impl AppRuntime {
             })
     }
 
-    fn send_file_ack(
+    async fn send_file_ack(
         &self,
         device_id: &str,
         file_id: &str,
@@ -1024,11 +1032,11 @@ impl AppRuntime {
                 next_expected_index,
             },
         )?;
-        let _ = self.send_business_message(device_id, ack)?;
+        let _ = self.send_business_message(device_id, ack).await?;
         Ok(())
     }
 
-    fn send_file_retransmit(
+    async fn send_file_retransmit(
         &self,
         device_id: &str,
         file_id: &str,
@@ -1050,7 +1058,7 @@ impl AppRuntime {
                 chunk_index,
             },
         )?;
-        let _ = self.send_business_message(device_id, retransmit)?;
+        let _ = self.send_business_message(device_id, retransmit).await?;
         Ok(())
     }
 
