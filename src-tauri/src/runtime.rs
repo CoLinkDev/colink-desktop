@@ -574,6 +574,14 @@ impl AppRuntime {
     }
 
     async fn broadcast_clipboard(&self, payload: ClipboardSyncPayload) -> AppResult<()> {
+        let settings =
+            self.inner.database.load_settings()?.ok_or_else(|| {
+                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
+            })?;
+        if !settings.clipboard_sync {
+            return Ok(());
+        }
+
         let hash = hash_clipboard_payload(&payload);
         {
             let mut state = self.inner.state.lock_unpoisoned();
@@ -600,8 +608,9 @@ impl AppRuntime {
             .filter(|item| item.online && item.device_id != my_device_id)
         {
             let _ = self
-                .send_business_message(&device.device_id, envelope.clone())
-                .await;
+                .inner
+                .transport
+                .send_cloud_only(&device.device_id, envelope.clone());
         }
         self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())

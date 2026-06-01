@@ -16,6 +16,7 @@ pub struct AppSettings {
     pub lan_discovery: bool,
     pub download_path: String,
     pub notifications: bool,
+    pub clipboard_sync: bool,
     pub language: String,
 }
 
@@ -28,6 +29,7 @@ impl AppSettings {
             lan_discovery: true,
             download_path,
             notifications: true,
+            clipboard_sync: true,
             language: crate::i18n::default_language_code(),
         }
     }

@@ -42,6 +42,33 @@ impl TransportManager {
         ))
     }
 
+    #[allow(dead_code)]
+    pub async fn send_lan_only(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+    ) -> AppResult<String> {
+        if self.lan.is_available(device_id) {
+            self.lan.send(device_id, message).await?;
+            return Ok("lan".to_string());
+        }
+
+        Err(AppError::message(
+            self.user_text(TextKey::DeviceNotConnected),
+        ))
+    }
+
+    pub fn send_cloud_only(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<String> {
+        if self.cloud.is_connected() {
+            self.cloud.send_relay(device_id, message)?;
+            return Ok("cloud".to_string());
+        }
+
+        Err(AppError::message(
+            self.user_text(TextKey::DeviceNotConnected),
+        ))
+    }
+
     fn user_text(&self, key: TextKey) -> String {
         let language = self
             .database

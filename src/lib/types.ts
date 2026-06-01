@@ -9,6 +9,7 @@ export interface AppSettings {
   lanDiscovery: boolean
   downloadPath: string
   notifications: boolean
+  clipboardSync: boolean
   language: string
 }
 
@@ -145,6 +146,7 @@ export const defaultSettings: AppSettings = {
   lanDiscovery: true,
   downloadPath: '',
   notifications: true,
+  clipboardSync: true,
   language: resolveLanguage(),
 }
 

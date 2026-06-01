@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -62,6 +62,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "add_lan_paired_to_trusted_peer_keys",
         run: migrate_7_add_lan_paired_to_trusted_peer_keys,
+    },
+    Migration {
+        version: 8,
+        name: "add_clipboard_sync_setting",
+        run: migrate_8_add_clipboard_sync_setting,
     },
 ];
 
@@ -816,7 +821,11 @@ fn migrate_1_baseline(transaction: &Transaction<'_>) -> AppResult<()> {
 }
 
 fn migrate_2_normalize_kv_records(transaction: &Transaction<'_>) -> AppResult<()> {
-    migrate_json_record(transaction, SETTINGS_KEY, normalize_settings_json)?;
+    migrate_json_record(
+        transaction,
+        SETTINGS_KEY,
+        normalize_settings_before_clipboard_json,
+    )?;
     migrate_json_record(transaction, SESSION_KEY, normalize_session_json)?;
     migrate_json_record(
         transaction,
@@ -914,6 +923,10 @@ fn migrate_7_add_lan_paired_to_trusted_peer_keys(transaction: &Transaction<'_>) 
     Ok(())
 }
 
+fn migrate_8_add_clipboard_sync_setting(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, SETTINGS_KEY, normalize_current_settings_json)
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -943,7 +956,22 @@ fn migrate_json_record(
     Ok(())
 }
 
-fn normalize_settings_json(value: Value) -> AppResult<Value> {
+fn normalize_settings_before_clipboard_json(value: Value) -> AppResult<Value> {
+    let object = normalize_settings_base_json(value)?;
+    serde_json::from_value::<AppSettingsBeforeClipboard>(Value::Object(object.clone()))?;
+    Ok(Value::Object(object))
+}
+
+fn normalize_current_settings_json(value: Value) -> AppResult<Value> {
+    let mut object = normalize_settings_base_json(value)?;
+    object
+        .entry("clipboardSync".to_string())
+        .or_insert(Value::Bool(true));
+    serde_json::from_value::<AppSettings>(Value::Object(object.clone()))?;
+    Ok(Value::Object(object))
+}
+
+fn normalize_settings_base_json(value: Value) -> AppResult<Map<String, Value>> {
     let mut object = into_object(value, SETTINGS_KEY)?;
     trim_string_field(&mut object, "serverUrl")?;
     if let Some(server_url) = object.get("serverUrl").and_then(Value::as_str) {
@@ -959,8 +987,20 @@ fn normalize_settings_json(value: Value) -> AppResult<Value> {
         None => crate::i18n::default_language_code(),
     };
     object.insert("language".to_string(), Value::String(language));
-    serde_json::from_value::<AppSettings>(Value::Object(object.clone()))?;
-    Ok(Value::Object(object))
+    Ok(object)
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettingsBeforeClipboard {
+    server_url: String,
+    auto_start: bool,
+    start_minimized: bool,
+    lan_discovery: bool,
+    download_path: String,
+    notifications: bool,
+    language: String,
 }
 
 fn normalize_session_json(value: Value) -> AppResult<Value> {
@@ -1210,6 +1250,7 @@ mod tests {
                 lan_discovery: true,
                 download_path: " D:/downloads ".to_string(),
                 notifications: true,
+                clipboard_sync: true,
                 language: "unknown".to_string(),
             })
             .expect("save settings");
@@ -1221,6 +1262,7 @@ mod tests {
 
         assert_eq!(settings.server_url, "http://127.0.0.1:8080");
         assert_eq!(settings.download_path, "D:/downloads");
+        assert!(settings.clipboard_sync);
         assert_eq!(settings.language, crate::i18n::default_language_code());
 
         let _ = fs::remove_file(path);
@@ -1271,6 +1313,7 @@ mod tests {
             .expect("settings");
         assert_eq!(settings.server_url, "http://127.0.0.1:8080");
         assert_eq!(settings.download_path, "D:/downloads");
+        assert!(settings.clipboard_sync);
         assert_eq!(settings.language, crate::i18n::default_language_code());
 
         let session = database
@@ -1301,7 +1344,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1314,7 +1357,7 @@ mod tests {
         database.initialize().expect("first init");
         database.initialize().expect("second init");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1347,7 +1390,12 @@ mod tests {
             .expect("load identity")
             .expect("identity");
         assert!(!identity.cloud_key_sync_pending);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        let settings = database
+            .load_settings()
+            .expect("load settings")
+            .expect("settings");
+        assert!(settings.clipboard_sync);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1362,7 +1410,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1395,7 +1443,7 @@ mod tests {
         let devices = database.load_cached_devices().expect("load devices");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].public_key_updated_at, None);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1461,7 +1509,7 @@ mod tests {
             )
             .expect("count legacy lan trust");
         assert_eq!(legacy_count, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1476,7 +1524,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1517,7 +1565,7 @@ mod tests {
             )
             .expect("check old table");
         assert_eq!(old_table_exists, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1531,7 +1579,10 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (6, 7)", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8)",
+                [],
+            )
             .expect("remove v6 marker");
         connection
             .execute(
@@ -1565,7 +1616,7 @@ mod tests {
             devices[0].device_sources,
             vec!["trusted_peer_key".to_string()]
         );
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
@@ -1623,7 +1674,93 @@ mod tests {
             .expect("cloud record");
         assert!(paired.lan_paired);
         assert!(!cloud.lan_paired);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_clipboard_sync_setting_from_v7() {
+        let path = temp_db_path();
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute_batch(super::BASELINE_SCHEMA_SQL)
+            .expect("create baseline schema");
+        connection
+            .execute_batch(super::TRUSTED_PEER_KEYS_SCHEMA_SQL)
+            .expect("create trusted peer schema");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at INTEGER NOT NULL
+                );
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES
+                    (1, 'baseline', 1),
+                    (2, 'normalize_kv_records', 1),
+                    (3, 'add_device_public_key_updated_at', 1),
+                    (4, 'move_trusted_peer_keys_to_table', 1),
+                    (5, 'migrate_lan_trusts_table_to_trusted_peer_keys', 1),
+                    (6, 'rename_lan_trust_device_source', 1),
+                    (7, 'add_lan_paired_to_trusted_peer_keys', 1);
+                ",
+            )
+            .expect("seed v7 migrations");
+        connection
+            .execute(
+                "
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (?1, ?2, 1)
+                ",
+                params![
+                    "settings",
+                    r#"{
+                        "serverUrl": "http://127.0.0.1:8080",
+                        "autoStart": true,
+                        "startMinimized": true,
+                        "lanDiscovery": true,
+                        "downloadPath": "D:/downloads",
+                        "notifications": true,
+                        "language": "en"
+                    }"#
+                ],
+            )
+            .expect("seed settings");
+        drop(connection);
+
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let settings = database
+            .load_settings()
+            .expect("load settings")
+            .expect("settings");
+        assert!(settings.clipboard_sync);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preserves_existing_clipboard_sync_setting() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let mut settings = AppSettings::new("D:/downloads".to_string()).normalize();
+        settings.clipboard_sync = false;
+        database.save_settings(&settings).expect("save settings");
+        database.initialize().expect("rerun db init");
+
+        let settings = database
+            .load_settings()
+            .expect("load settings")
+            .expect("settings");
+        assert!(!settings.clipboard_sync);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let _ = fs::remove_file(path);
     }
