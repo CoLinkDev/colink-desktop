@@ -56,8 +56,9 @@ const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 180;
 const PING_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const SWIM_PERIOD: Duration = Duration::from_millis(1_000);
-const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(500);
-const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(500);
+const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SWIM_SUSPECT_MISSES: u8 = 3;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 5_000;
 const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
@@ -96,6 +97,7 @@ struct MemberRecord {
     state: MemberState,
     incarnation: i64,
     updated_at: i64,
+    missed_probes: u8,
 }
 
 struct PeerConnection {
@@ -1264,7 +1266,30 @@ impl LanManager {
             return;
         }
         debug!(%device_id, "observed swim peer alive");
+        self.clear_probe_misses(generation, device_id);
         self.mark_member(generation, context, device_id, MemberState::Alive, None);
+    }
+
+    fn record_probe_miss(&self, generation: u64, device_id: &str) -> u8 {
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation != generation {
+            return 0;
+        }
+        let Some(member) = inner.members.get_mut(device_id) else {
+            return 0;
+        };
+        member.missed_probes = member.missed_probes.saturating_add(1);
+        member.missed_probes
+    }
+
+    fn clear_probe_misses(&self, generation: u64, device_id: &str) {
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation != generation {
+            return;
+        }
+        if let Some(member) = inner.members.get_mut(device_id) {
+            member.missed_probes = 0;
+        }
     }
 
     async fn send_swim_ping(&self, context: &LanContext, target: &str) -> AppResult<SwimEnvelope> {
@@ -1317,7 +1342,10 @@ impl LanManager {
             .send()
             .await?;
         if !response.status().is_success() {
-            return Err(AppError::message("SWIM request failed"));
+            return Err(AppError::message(format!(
+                "SWIM request failed: {}",
+                response.status()
+            )));
         }
         Ok(response.json::<SwimEnvelope>().await?)
     }
@@ -1340,18 +1368,33 @@ impl LanManager {
 
         let intermediaries = self.indirect_targets(&context.device.device_id, &target);
         for intermediary in intermediaries {
-            if let Ok(ack) = self
+            match self
                 .send_swim_ping_req(&context, &intermediary, &target)
                 .await
             {
-                self.process_swim_message(generation, &context, ack, None);
-                self.mark_member(generation, &context, &target, MemberState::Alive, None);
-                return;
+                Ok(ack) => {
+                    self.process_swim_message(generation, &context, ack, None);
+                    self.mark_member(generation, &context, &target, MemberState::Alive, None);
+                    return;
+                }
+                Err(error) => {
+                    debug!(%target, %intermediary, %error, "indirect swim probe failed");
+                }
             }
         }
 
+        let missed_probes = self.record_probe_miss(generation, &target);
+        if missed_probes < SWIM_SUSPECT_MISSES {
+            warn!(
+                %target,
+                missed_probes,
+                threshold = SWIM_SUSPECT_MISSES,
+                "swim probe missed; keeping member alive"
+            );
+            return;
+        }
         self.mark_member(generation, &context, &target, MemberState::Suspect, None);
-        warn!(%target, "swim member marked suspect");
+        warn!(%target, missed_probes, "swim member marked suspect");
     }
 
     fn next_probe_target(&self, local_device_id: &str) -> Option<String> {
@@ -1454,12 +1497,21 @@ impl LanManager {
                 explicit_incarnation,
             );
             if accept {
+                let missed_probes = if state == MemberState::Alive {
+                    0
+                } else {
+                    existing
+                        .as_ref()
+                        .map(|member| member.missed_probes)
+                        .unwrap_or(0)
+                };
                 inner.members.insert(
                     device_id.to_string(),
                     MemberRecord {
                         state,
                         incarnation: next_incarnation,
                         updated_at: now,
+                        missed_probes,
                     },
                 );
                 changed = true;
@@ -2519,6 +2571,7 @@ mod tests {
             state,
             incarnation,
             updated_at: 0,
+            missed_probes: 0,
         }
     }
 
