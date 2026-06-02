@@ -145,7 +145,6 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
           <SwitchRow label={t('settings.lanDiscovery')} checked={form.lanDiscovery} onChange={(v) => setForm((c) => ({ ...c, lanDiscovery: v }))} />
           <SwitchRow label={t('settings.notifications')} checked={form.notifications} onChange={(v) => setForm((c) => ({ ...c, notifications: v }))} />
-          <SwitchRow label={t('settings.clipboardSync')} checked={form.clipboardSync} onChange={(v) => setForm((c) => ({ ...c, clipboardSync: v }))} />
         </Section>
       </form>
 

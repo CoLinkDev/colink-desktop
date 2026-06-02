@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, LogIn, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
+import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -28,12 +28,13 @@ export function AppLayout({ children }: PropsWithChildren) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
+  const isSettingsRoute = location.pathname === '/settings'
 
   const blocker = useBlocker(
     ({ nextLocation }) =>
       settingsDirty &&
-      location.pathname === '/settings' &&
-      nextLocation.pathname !== '/settings'
+      isSettingsRoute &&
+      nextLocation.pathname !== location.pathname
   )
 
   useEffect(() => {
@@ -92,6 +93,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.logs')
       case '/settings':
         return t('nav.settings')
+      case '/clipboard':
+        return t('nav.clipboard')
       default:
         return 'CoLink Desktop'
     }
@@ -115,6 +118,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={MessagesSquare} label={t('nav.messages')} to="/messages" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
+          <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
@@ -208,10 +212,10 @@ export function AppLayout({ children }: PropsWithChildren) {
                 </Button>
               </div>
             )}
-            {location.pathname === '/settings' && (
+            {isSettingsRoute && (
               <Button
                 disabled={!settingsDirty}
-                form="settings-form"
+                form={location.pathname === '/clipboard' ? 'clipboard-form' : 'settings-form'}
                 type="submit"
                 size="sm"
                 className="gap-1.5"

@@ -8,6 +8,7 @@ import { DevicesPage } from './pages/devices-page'
 import { MessagesPage } from './pages/messages-page'
 import { TransfersPage } from './pages/transfers-page'
 import { SettingsPage } from './pages/settings-page'
+import { ClipboardPage } from './pages/clipboard-page'
 import { LogsPage } from './pages/logs-page'
 
 function RootRedirect() {
@@ -64,6 +65,10 @@ export const router = createHashRouter([
       {
         path: '/settings',
         element: <SettingsPage />,
+      },
+      {
+        path: '/clipboard',
+        element: <ClipboardPage />,
       },
     ],
   },

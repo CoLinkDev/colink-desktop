@@ -605,7 +605,7 @@ impl AppRuntime {
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
         for device in devices
             .into_iter()
-            .filter(|item| item.online && item.device_id != my_device_id)
+            .filter(|item| item.cloud_available && item.device_id != my_device_id)
         {
             let _ = self
                 .inner
