@@ -67,90 +67,23 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let identity = ensure_local_device_identity(state)?;
     state.runtime.activate()?;
 
-    let mut session_summary = None;
-    let mut device_summary = Some(identity.summary());
-    let mut devices = publish_offline_devices(state)?;
-
-    if let Some(session) = state.database.load_session()? {
-        let existing_session_summary = session.summary();
-        match auth::refresh_session_if_needed(&state.database, &state.http, &settings, session)
-            .await
-        {
-            Ok(refreshed_session) => {
-                let refreshed_session =
-                    match session_with_profile(state, &settings, &refreshed_session).await {
-                        Ok(session) => {
-                            state.database.save_session(&session)?;
-                            Some(session)
-                        }
-                        Err(error) if is_auth_error(&error) => {
-                            warn!(%error, "current user profile is unavailable during bootstrap");
-                            clear_auth_state(state)?;
-                            devices = publish_offline_devices(state)?;
-                            device_summary = Some(ensure_local_device_identity(state)?.summary());
-                            None
-                        }
-                        Err(error) => {
-                            warn!(%error, "failed to fetch current user profile during bootstrap");
-                            Some(refreshed_session)
-                        }
-                    };
-
-                if let Some(refreshed_session) = refreshed_session {
-                    match ensure_cloud_device_identity(state, &refreshed_session).await {
-                        Ok(identity) => {
-                            let fetched_devices = match fetch_devices(state, &refreshed_session)
-                                .await
-                            {
-                                Ok(devices) => {
-                                    state.runtime.replace_cached_devices(devices, true)?
-                                }
-                                Err(error) => {
-                                    warn!(%error, "failed to fetch cloud devices during bootstrap");
-                                    state.runtime.reconcile_device_routes()?
-                                }
-                            };
-                            state.cloud.start();
-                            let _ = shell::refresh_tray(&state.app);
-
-                            session_summary = Some(refreshed_session.summary());
-                            device_summary = Some(identity.summary());
-                            devices = fetched_devices;
-                        }
-                        Err(error) if is_auth_error(&error) => {
-                            warn!(%error, "cloud device identity is unavailable during bootstrap");
-                            clear_auth_state(state)?;
-                            devices = publish_offline_devices(state)?;
-                            device_summary = Some(ensure_local_device_identity(state)?.summary());
-                        }
-                        Err(error) => {
-                            warn!(%error, "cloud device identity is temporarily unavailable during bootstrap");
-                            state.cloud.start();
-                            session_summary = Some(refreshed_session.summary());
-                        }
-                    }
-                }
-            }
-            Err(error) if is_auth_error(&error) => {
-                warn!(%error, "session refresh failed during bootstrap");
-                clear_auth_state(state)?;
-                devices = publish_offline_devices(state)?;
-            }
-            Err(error) => {
-                warn!(%error, "session refresh unavailable during bootstrap");
-                state.cloud.start();
-                session_summary = Some(existing_session_summary);
-            }
-        }
+    let session_summary = state.database.load_session()?.map(|session| {
+        state.cloud.start();
+        let _ = shell::refresh_tray(&state.app);
+        session.summary()
+    });
+    let devices = if session_summary.is_some() {
+        state.runtime.reconcile_device_routes()?
     } else {
         state.cloud.stop_quiet();
-    }
+        publish_offline_devices(state)?
+    };
 
     Ok(BootstrapPayload {
         settings,
         session: session_summary,
         devices,
-        device: device_summary,
+        device: Some(identity.summary()),
         cloud: state.cloud.snapshot(),
         messages: state.database.load_messages(200)?,
         transfers: state.database.load_transfers(200)?,
