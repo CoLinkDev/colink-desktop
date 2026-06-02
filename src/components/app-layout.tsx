@@ -139,7 +139,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 )}
                 <span className={cn(
                   "relative inline-flex h-2 w-2 rounded-full transition-colors duration-300",
-                  cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--muted))]"
+                  cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
                 )} />
               </span>
             </div>

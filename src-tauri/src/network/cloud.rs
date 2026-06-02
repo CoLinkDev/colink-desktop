@@ -710,13 +710,9 @@ fn build_ws_url(base_url: &str, ticket: &str) -> Result<Url, url::ParseError> {
 }
 
 fn backoff_delay(attempt: u32) -> Duration {
-    match attempt {
-        0 | 1 => Duration::from_secs(1),
-        2 => Duration::from_secs(2),
-        3 => Duration::from_secs(4),
-        4 => Duration::from_secs(8),
-        _ => Duration::from_secs(30),
-    }
+    let exponent = attempt.saturating_sub(1).min(16);
+    let seconds = 2_u64.pow(exponent).min(300);
+    Duration::from_secs(seconds)
 }
 
 fn is_cancelled(cancel_rx: &watch::Receiver<bool>) -> bool {

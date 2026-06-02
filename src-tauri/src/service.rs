@@ -137,6 +137,10 @@ pub async fn logout(state: &AppState) -> AppResult<()> {
 }
 
 pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
+    if !state.cloud.is_connected() {
+        return reconcile_or_list_devices(state);
+    }
+
     let Some(session) = current_session_or_clear(state).await? else {
         return reconcile_or_list_devices(state);
     };
@@ -238,12 +242,14 @@ pub async fn rotate_device_key(
             identity.private_key = generated.private_key;
             identity.cloud_key_sync_pending = true;
             state.database.save_device_identity(&identity)?;
-            if let Some(session) = current_session_if_available(state).await? {
-                if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
-                    sync_cloud_device_key_if_pending(state, &session, &identity).await;
+            if state.cloud.is_connected() {
+                if let Some(session) = current_session_if_available(state).await? {
+                    if identity.user_id.as_deref() == Some(session.user_id.as_str()) {
+                        sync_cloud_device_key_if_pending(state, &session, &identity).await;
+                    }
                 }
             }
-            return list_devices(state).await;
+            return reconcile_or_list_devices(state);
         }
     }
 
