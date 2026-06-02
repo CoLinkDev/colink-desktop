@@ -147,11 +147,11 @@ export function DevicesPage() {
                 className="flex items-center justify-between rounded-lg border bg-[hsl(var(--panel))] px-4 py-3"
               >
                 <div className="min-w-0">
-                  <div className="truncate font-mono text-[12px] text-[hsl(var(--text))]">
-                    {candidate.deviceId}
+                  <div className="truncate text-[13px] font-medium text-[hsl(var(--text))]">
+                    {candidate.name || candidate.deviceId}
                   </div>
                   <div className="mt-1 text-[12px] text-[hsl(var(--muted))]">
-                    {candidate.ip}:{candidate.port} · {candidate.state}
+                    {candidate.ip}:{candidate.port} · {candidate.state} · {candidate.deviceId}
                   </div>
                 </div>
                 <Button

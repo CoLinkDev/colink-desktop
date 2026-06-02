@@ -147,6 +147,7 @@ pub struct TrustedPeerKeyRecord {
 #[serde(rename_all = "camelCase")]
 pub struct LanPairingCandidate {
     pub device_id: String,
+    pub name: String,
     pub ip: String,
     pub port: u16,
     pub state: String,
@@ -161,6 +162,21 @@ pub struct LanPairingRequest {
     pub code: String,
     pub reason: String,
     pub public_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPairingCompleted {
+    pub request_id: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPairingFailed {
+    pub request_id: String,
+    pub device_id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

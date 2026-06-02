@@ -42,6 +42,7 @@ export interface DeviceInfo {
 
 export interface LanPairingCandidate {
   deviceId: string
+  name: string
   ip: string
   port: number
   state: string
@@ -54,6 +55,17 @@ export interface LanPairingRequest {
   code: string
   reason: 'unknown_device' | string
   publicKey: string
+}
+
+export interface LanPairingCompleted {
+  requestId: string
+  deviceId: string
+}
+
+export interface LanPairingFailed {
+  requestId: string
+  deviceId: string
+  reason: string
 }
 
 export interface CloudStatus {

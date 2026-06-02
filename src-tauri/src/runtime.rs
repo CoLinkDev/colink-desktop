@@ -59,6 +59,8 @@ pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
 pub const TRANSFER_PREPARING_EVENT: &str = "transfer-preparing";
 pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
 pub const LAN_PAIRING_REQUESTED_EVENT: &str = "lan-pairing-requested";
+pub const LAN_PAIRING_COMPLETED_EVENT: &str = "lan-pairing-completed";
+pub const LAN_PAIRING_FAILED_EVENT: &str = "lan-pairing-failed";
 pub const LAN_PAIRING_CANDIDATES_UPDATED_EVENT: &str = "lan-pairing-candidates-updated";
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
@@ -459,6 +461,23 @@ impl AppRuntime {
                 let _ = self.inner.app.emit(LAN_PAIRING_REQUESTED_EVENT, request);
                 let _ = self.notify(TextKey::PairingRequestTitle, &[], &body);
                 let _ = crate::shell::show_main_window(&self.inner.app, None);
+            }
+            RuntimeEvent::LanPairingCompleted(payload) => {
+                debug!(
+                    device_id = %payload.device_id,
+                    request_id = %payload.request_id,
+                    "runtime received lan pairing completed"
+                );
+                let _ = self.inner.app.emit(LAN_PAIRING_COMPLETED_EVENT, payload);
+            }
+            RuntimeEvent::LanPairingFailed(payload) => {
+                debug!(
+                    device_id = %payload.device_id,
+                    request_id = %payload.request_id,
+                    reason = %payload.reason,
+                    "runtime received lan pairing failed"
+                );
+                let _ = self.inner.app.emit(LAN_PAIRING_FAILED_EVENT, payload);
             }
             RuntimeEvent::LanPairingCandidatesUpdated(candidates) => {
                 debug!(

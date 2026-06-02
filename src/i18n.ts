@@ -145,6 +145,8 @@ const resources = {
         keyChangedToast: '设备 {{name}} 的密钥已变更，需要重新配对才能使用 LAN。',
         code: '配对码',
         description: '接受前确认另一台设备显示相同配对码。',
+        waiting: '等待另一台设备确认...',
+        failed: '配对失败',
         accept: '接受',
       },
       messages: {
@@ -394,6 +396,8 @@ const resources = {
         keyChangedToast: 'Device {{name}} key changed. Pair again to use LAN.',
         code: 'Pairing code',
         description: 'Confirm the other device shows the same code before accepting.',
+        waiting: 'Waiting for the other device...',
+        failed: 'Pairing failed',
         accept: 'Accept',
       },
       messages: {
@@ -643,6 +647,8 @@ const resources = {
         keyChangedToast: '裝置 {{name}} 的金鑰已變更，需要重新配對才能使用 LAN。',
         code: '配對碼',
         description: '接受前請確認另一台設備顯示相同配對碼。',
+        waiting: '等待另一台設備確認...',
+        failed: '配對失敗',
         accept: '接受',
       },
       messages: {
@@ -892,6 +898,8 @@ const resources = {
         keyChangedToast: 'デバイス {{name}} のキーが変更されました。LAN を使うには再度ペアリングしてください。',
         code: 'ペアリングコード',
         description: '承認する前に、相手のデバイスにも同じコードが表示されていることを確認してください。',
+        waiting: '相手の確認を待っています...',
+        failed: 'ペアリングに失敗しました',
         accept: '承認',
       },
       messages: {
@@ -1141,6 +1149,8 @@ const resources = {
         keyChangedToast: '{{name}} 기기의 키가 변경되었습니다. LAN을 사용하려면 다시 페어링하세요.',
         code: '페어링 코드',
         description: '수락하기 전에 다른 디바이스에 같은 코드가 표시되는지 확인하세요.',
+        waiting: '다른 디바이스 확인 대기 중...',
+        failed: '페어링 실패',
         accept: '수락',
       },
       messages: {
@@ -1390,6 +1400,8 @@ const resources = {
         keyChangedToast: 'La clave del dispositivo {{name}} cambió. Vuelve a emparejar para usar LAN.',
         code: 'Código de emparejamiento',
         description: 'Confirme que el otro dispositivo muestra el mismo código antes de aceptar.',
+        waiting: 'Esperando al otro dispositivo...',
+        failed: 'Emparejamiento fallido',
         accept: 'Aceptar',
       },
       messages: {
@@ -1639,6 +1651,8 @@ const resources = {
         keyChangedToast: 'Der Schlüssel von Gerät {{name}} wurde geändert. Für LAN erneut koppeln.',
         code: 'Kopplungscode',
         description: 'Bestätigen Sie vor dem Akzeptieren, dass das andere Gerät denselben Code zeigt.',
+        waiting: 'Warten auf das andere Gerät...',
+        failed: 'Kopplung fehlgeschlagen',
         accept: 'Akzeptieren',
       },
       messages: {
@@ -1888,6 +1902,8 @@ const resources = {
         keyChangedToast: 'Ключ устройства {{name}} изменился. Выполните сопряжение заново для LAN.',
         code: 'Код сопряжения',
         description: 'Перед принятием проверьте, что на другом устройстве показан тот же код.',
+        waiting: 'Ожидание подтверждения на другом устройстве...',
+        failed: 'Сопряжение не удалось',
         accept: 'Принять',
       },
       messages: {

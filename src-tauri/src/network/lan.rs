@@ -34,8 +34,8 @@ use crate::{
     error::{AppError, AppResult},
     i18n::{self, TextKey},
     models::{
-        unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingRequest,
-        TrustedPeerKeyRecord, LAN_PORT,
+        unix_now_millis, DeviceIdentity, LanPairingCandidate, LanPairingCompleted,
+        LanPairingFailed, LanPairingRequest, TrustedPeerKeyRecord, LAN_PORT,
     },
     protocol::{
         BusinessEnvelope, BusinessNegotiatePayload, EncryptedBusinessPayload, FileDataFrame,
@@ -80,6 +80,7 @@ struct LanState {
     cancel: Option<watch::Sender<bool>>,
     peers: HashMap<String, PeerEntry>,
     peer_endpoints: HashMap<String, (String, u16)>,
+    peer_names: HashMap<String, String>,
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
     probe_cursor: usize,
@@ -181,6 +182,11 @@ struct PeerProof {
     nonce: String,
 }
 
+struct PairingDecision {
+    request_id: String,
+    accepted: bool,
+}
+
 impl LanManager {
     pub fn new(database: Database, event_tx: mpsc::UnboundedSender<RuntimeEvent>) -> Self {
         Self {
@@ -192,6 +198,7 @@ impl LanManager {
                 cancel: None,
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
+                peer_names: HashMap::new(),
                 members: HashMap::new(),
                 gossip: VecDeque::new(),
                 probe_cursor: 0,
@@ -246,6 +253,7 @@ impl LanManager {
             inner.cancel = Some(cancel_tx);
             inner.peers.clear();
             inner.peer_endpoints.clear();
+            inner.peer_names.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.transfer_tokens.clear();
@@ -281,6 +289,7 @@ impl LanManager {
             inner.generation += 1;
             inner.active_device = None;
             inner.peer_endpoints.clear();
+            inner.peer_names.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.pairing_candidates.clear();
@@ -446,6 +455,7 @@ impl LanManager {
     pub fn forget_trust(&self, device_id: &str) -> AppResult<()> {
         self.database.remove_trusted_peer_key(device_id)?;
         self.detach_peer(self.current_generation(), device_id);
+        self.refresh_pairing_candidate(device_id);
         Ok(())
     }
 
@@ -628,10 +638,14 @@ impl LanManager {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "colink-desktop".to_string());
         let instance_name = format!("colink-{}", &context.device.device_id[..8]);
-        let properties = [
+        let name = context.device.name.trim();
+        let mut properties = vec![
             ("deviceId", context.device.device_id.as_str()),
             ("version", "1"),
         ];
+        if !name.is_empty() && name.len() <= 200 {
+            properties.push(("name", name));
+        }
         let info = ServiceInfo::new(
             SERVICE_TYPE,
             &instance_name,
@@ -669,6 +683,11 @@ impl LanManager {
         if device_id == context.device.device_id {
             return;
         }
+        let name = service
+            .get_property_val_str("name")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
         let Some(ip) = service
             .get_addresses()
@@ -686,6 +705,9 @@ impl LanManager {
         let port = service.get_port();
         debug!(device_id = %device_id, %ip, port = port, "resolved mdns peer");
         self.remember_peer_endpoint(&device_id, ip, port);
+        if let Some(name) = name {
+            self.remember_peer_name(&device_id, name);
+        }
         let _ = self.event_tx.send(RuntimeEvent::LanDiscovered {
             device_id: device_id.clone(),
             ip: ip.to_string(),
@@ -1640,7 +1662,7 @@ impl LanManager {
         public_key: &str,
         code: &str,
         reason: &str,
-    ) -> AppResult<bool> {
+    ) -> AppResult<PairingDecision> {
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -1663,9 +1685,22 @@ impl LanManager {
             .lock_unpoisoned()
             .pending_pairings
             .remove(&request_id);
-        result
-            .map_err(|_| AppError::message("LAN pairing timed out"))?
-            .map_err(|_| AppError::message("LAN pairing was cancelled"))
+        match result {
+            Ok(Ok(accepted)) => Ok(PairingDecision {
+                request_id,
+                accepted,
+            }),
+            Ok(Err(_)) => {
+                let reason = "LAN pairing was cancelled";
+                self.emit_pairing_failed(&request_id, device_id, reason);
+                Err(AppError::message(reason))
+            }
+            Err(_) => {
+                let reason = "LAN pairing timed out";
+                self.emit_pairing_failed(&request_id, device_id, reason);
+                Err(AppError::message(reason))
+            }
+        }
     }
 
     fn revoke_lan_pairing_for_key_change(&self, proof: &PeerProof) -> AppResult<()> {
@@ -1690,6 +1725,25 @@ impl LanManager {
         })
     }
 
+    fn emit_pairing_completed(&self, request_id: &str, device_id: &str) {
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::LanPairingCompleted(LanPairingCompleted {
+                request_id: request_id.to_string(),
+                device_id: device_id.to_string(),
+            }));
+    }
+
+    fn emit_pairing_failed(&self, request_id: &str, device_id: &str, reason: impl Into<String>) {
+        let _ = self
+            .event_tx
+            .send(RuntimeEvent::LanPairingFailed(LanPairingFailed {
+                request_id: request_id.to_string(),
+                device_id: device_id.to_string(),
+                reason: reason.into(),
+            }));
+    }
+
     fn update_pairing_candidate(&self, device_id: &str, state: MemberState) {
         if state != MemberState::Alive {
             self.remove_pairing_candidate(device_id);
@@ -1699,19 +1753,51 @@ impl LanManager {
             self.remove_pairing_candidate(device_id);
             return;
         }
-        let Some((ip, port)) = self.peer_endpoint(device_id) else {
-            return;
+        let (ip, port, name) = {
+            let inner = self.inner.lock_unpoisoned();
+            let Some((ip, port)) = inner.peer_endpoints.get(device_id).cloned() else {
+                return;
+            };
+            let name = inner
+                .peer_names
+                .get(device_id)
+                .cloned()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| device_id.to_string());
+            (ip, port, name)
         };
         self.inner.lock_unpoisoned().pairing_candidates.insert(
             device_id.to_string(),
             LanPairingCandidate {
                 device_id: device_id.to_string(),
+                name,
                 ip,
                 port,
                 state: state.as_str().to_string(),
             },
         );
         self.emit_pairing_candidates();
+    }
+
+    fn refresh_pairing_candidate(&self, device_id: &str) {
+        let state = self
+            .inner
+            .lock_unpoisoned()
+            .members
+            .get(device_id)
+            .map(|member| member.state);
+        let Some(state) = state else {
+            return;
+        };
+        self.update_pairing_candidate(device_id, state);
+    }
+
+    fn remember_peer_name(&self, device_id: &str, name: String) {
+        self.inner
+            .lock_unpoisoned()
+            .peer_names
+            .insert(device_id.to_string(), name);
+        self.refresh_pairing_candidate(device_id);
     }
 
     fn remove_pairing_candidate(&self, device_id: &str) {
@@ -1740,6 +1826,7 @@ impl LanManager {
             .lock_unpoisoned()
             .peer_endpoints
             .insert(device_id.to_string(), (ip.to_string(), port));
+        self.refresh_pairing_candidate(device_id);
     }
 
     fn detach_peer(&self, generation: u64, device_id: &str) {
@@ -1962,6 +2049,7 @@ async fn perform_outbound_handshake(
         .await;
         return Err(AppError::message("LAN device key changed"));
     }
+    let mut pairing_request_id = None;
     if !matches!(trust, TrustState::Trusted) {
         if !allow_pairing {
             return Err(AppError::message("LAN device key is not trusted"));
@@ -1977,7 +2065,7 @@ async fn perform_outbound_handshake(
             &request_nonce,
             &proof.nonce,
         );
-        if !manager
+        let decision = manager
             .request_pairing(
                 &proof.device_id,
                 &proof.name,
@@ -1985,33 +2073,92 @@ async fn perform_outbound_handshake(
                 &code,
                 reason,
             )
-            .await?
-        {
+            .await?;
+        pairing_request_id = Some(decision.request_id);
+        if !decision.accepted {
             return Err(AppError::message("user cancelled LAN pairing"));
         }
     }
 
-    let final_message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
-        .await
-        .map_err(|_| AppError::message("LAN handshake timed out"))??;
+    let final_message = match timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream)).await {
+        Ok(Ok(message)) => message,
+        Ok(Err(error)) => {
+            if let Some(request_id) = pairing_request_id.as_deref() {
+                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            }
+            return Err(error);
+        }
+        Err(_) => {
+            let error = AppError::message("LAN handshake timed out");
+            if let Some(request_id) = pairing_request_id.as_deref() {
+                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            }
+            return Err(error);
+        }
+    };
     if final_message.message_type == "handshake.v1.reject" {
-        let payload: HandshakeRejectPayload = serde_json::from_value(final_message.payload)?;
+        let payload: HandshakeRejectPayload = match serde_json::from_value(final_message.payload) {
+            Ok(payload) => payload,
+            Err(error) => {
+                if let Some(request_id) = pairing_request_id.as_deref() {
+                    manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+                }
+                return Err(error.into());
+            }
+        };
+        if let Some(request_id) = pairing_request_id.as_deref() {
+            manager.emit_pairing_failed(request_id, &proof.device_id, payload.reason.clone());
+        }
         return Err(AppError::message(payload.reason));
     }
     if final_message.message_type != "handshake.v1.accept" {
+        if let Some(request_id) = pairing_request_id.as_deref() {
+            manager.emit_pairing_failed(
+                request_id,
+                &proof.device_id,
+                "invalid LAN handshake confirmation type",
+            );
+        }
         return Err(AppError::message("invalid LAN handshake confirmation type"));
     }
-    let accept: HandshakeAcceptPayload = serde_json::from_value(final_message.payload)?;
+    let accept: HandshakeAcceptPayload = match serde_json::from_value(final_message.payload) {
+        Ok(accept) => accept,
+        Err(error) => {
+            if let Some(request_id) = pairing_request_id.as_deref() {
+                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            }
+            return Err(error.into());
+        }
+    };
     if accept.device_id != proof.device_id {
+        if let Some(request_id) = pairing_request_id.as_deref() {
+            manager.emit_pairing_failed(
+                request_id,
+                &proof.device_id,
+                "LAN handshake confirmation device mismatch",
+            );
+        }
         return Err(AppError::message(
             "LAN handshake confirmation device mismatch",
         ));
     }
-    if !matches!(trust, TrustState::Trusted) {
-        manager.trust_peer(&proof)?;
-    }
 
-    let crypto = negotiate_business_crypto(&mut stream, context, &proof, true).await?;
+    let crypto = match negotiate_business_crypto(&mut stream, context, &proof, true).await {
+        Ok(crypto) => crypto,
+        Err(error) => {
+            if let Some(request_id) = pairing_request_id.as_deref() {
+                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            }
+            return Err(error);
+        }
+    };
+    if let Some(request_id) = pairing_request_id.as_deref() {
+        if let Err(error) = manager.trust_peer(&proof) {
+            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            return Err(error);
+        }
+        manager.emit_pairing_completed(request_id, &proof.device_id);
+    }
     Ok(HandshakeResult {
         stream,
         peer_device_id: proof.device_id,
@@ -2065,6 +2212,7 @@ async fn perform_inbound_handshake(
     let exchange = build_handshake_proof(&context.device, &exchange_nonce)?;
     write_peer_message(&mut stream, "handshake.v1.exchange", &exchange).await?;
 
+    let mut pairing_request_id = None;
     if !matches!(trust, TrustState::Trusted) {
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
@@ -2077,7 +2225,7 @@ async fn perform_inbound_handshake(
             &proof.nonce,
             &exchange_nonce,
         );
-        let accepted = manager
+        let decision = manager
             .request_pairing(
                 &proof.device_id,
                 &proof.name,
@@ -2086,7 +2234,8 @@ async fn perform_inbound_handshake(
                 reason,
             )
             .await?;
-        if !accepted {
+        pairing_request_id = Some(decision.request_id);
+        if !decision.accepted {
             write_peer_message(
                 &mut stream,
                 "handshake.v1.reject",
@@ -2097,19 +2246,39 @@ async fn perform_inbound_handshake(
             .await?;
             return Err(AppError::message("user rejected LAN pairing"));
         }
-        manager.trust_peer(&proof)?;
     }
 
-    write_peer_message(
+    if let Err(error) = write_peer_message(
         &mut stream,
         "handshake.v1.accept",
         &HandshakeAcceptPayload {
             device_id: context.device.device_id.clone(),
         },
     )
-    .await?;
+    .await
+    {
+        if let Some(request_id) = pairing_request_id.as_deref() {
+            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+        }
+        return Err(error);
+    }
 
-    let crypto = negotiate_business_crypto(&mut stream, context, &proof, false).await?;
+    let crypto = match negotiate_business_crypto(&mut stream, context, &proof, false).await {
+        Ok(crypto) => crypto,
+        Err(error) => {
+            if let Some(request_id) = pairing_request_id.as_deref() {
+                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            }
+            return Err(error);
+        }
+    };
+    if let Some(request_id) = pairing_request_id.as_deref() {
+        if let Err(error) = manager.trust_peer(&proof) {
+            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+            return Err(error);
+        }
+        manager.emit_pairing_completed(request_id, &proof.device_id);
+    }
     Ok(HandshakeResult {
         stream,
         peer_device_id: proof.device_id,

@@ -1,5 +1,7 @@
 use crate::{
-    models::{DeviceInfo, LanPairingCandidate, LanPairingRequest},
+    models::{
+        DeviceInfo, LanPairingCandidate, LanPairingCompleted, LanPairingFailed, LanPairingRequest,
+    },
     protocol::{BusinessEnvelope, ClipboardSyncPayload, DeviceOnlinePayload, FileDataFrame},
 };
 
@@ -60,6 +62,8 @@ pub enum RuntimeEvent {
         session_id: String,
     },
     LanPairingRequested(LanPairingRequest),
+    LanPairingCompleted(LanPairingCompleted),
+    LanPairingFailed(LanPairingFailed),
     LanPairingCandidatesUpdated(Vec<LanPairingCandidate>),
     ClipboardChanged(ClipboardSyncPayload),
     Log {
