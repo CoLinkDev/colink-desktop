@@ -586,6 +586,7 @@ fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
         public_key: identity.public_key.clone(),
         public_key_updated_at: None,
         lan_available: false,
+        lan_state: "unavailable".to_string(),
         active_route: None,
         device_sources: vec!["local".to_string()],
         security_state: "verified".to_string(),

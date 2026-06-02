@@ -243,7 +243,7 @@ impl AppRuntime {
         device_presence::replace_all(
             &self.inner.database,
             &self.inner.app,
-            &self.inner.lan.alive_trusted_ids(),
+            &self.inner.lan.trusted_member_states(),
             devices,
             cloud_snapshot,
         )
@@ -307,7 +307,7 @@ impl AppRuntime {
                 let _ = device_presence::mark_cloud_unavailable(
                     &self.inner.database,
                     &self.inner.app,
-                    &self.inner.lan.alive_trusted_ids(),
+                    &self.inner.lan.trusted_member_states(),
                 );
             }
             RuntimeEvent::CloudRelay { from, message } => {
@@ -323,7 +323,7 @@ impl AppRuntime {
                 let _ = device_presence::update_one(
                     &self.inner.database,
                     &self.inner.app,
-                    &self.inner.lan.alive_trusted_ids(),
+                    &self.inner.lan.trusted_member_states(),
                     &device_id,
                     online,
                     payload.clone(),
@@ -400,6 +400,10 @@ impl AppRuntime {
             }
             RuntimeEvent::LanDeviceUnreachable { device_id } => {
                 debug!(%device_id, "runtime received lan device unreachable");
+                let _ = self.reconcile_device_routes();
+            }
+            RuntimeEvent::LanDeviceStateChanged { device_id } => {
+                debug!(%device_id, "runtime received lan device state changed");
                 let _ = self.reconcile_device_routes();
             }
             RuntimeEvent::LanKeyChanged { device_id, name } => {
@@ -762,7 +766,7 @@ impl AppRuntime {
         let devices = device_presence::reconcile_routes(
             &self.inner.database,
             &self.inner.app,
-            &self.inner.lan.alive_trusted_ids(),
+            &self.inner.lan.trusted_member_states(),
         )?;
         Ok(devices)
     }

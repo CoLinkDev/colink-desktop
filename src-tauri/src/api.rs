@@ -50,6 +50,7 @@ impl From<CloudDeviceRecord> for DeviceInfo {
             public_key: record.public_key,
             public_key_updated_at: parse_timestamp_millis(record.public_key_updated_at),
             lan_available: false,
+            lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
             security_state: "unverified".to_string(),

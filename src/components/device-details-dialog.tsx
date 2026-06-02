@@ -39,7 +39,7 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.fetchSource'), value: describeSources(device, isLocalDevice, t) },
     { label: t('devices.detailsFields.localReachable'), value: formatBoolean(isLocalDevice, t) },
     { label: t('devices.detailsFields.cloudAvailable'), value: formatBoolean(device.cloudAvailable, t) },
-    { label: t('devices.detailsFields.lanAvailable'), value: formatBoolean(device.lanAvailable, t) },
+    { label: t('devices.detailsFields.lanAvailable'), value: formatLanState(device.lanState, t) },
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
     { label: t('devices.detailsFields.securityState'), value: formatSecurityState(device.securityState, t) },
     { label: t('devices.lastSeen'), value: formatLastSeen(device.lastSeen, t('devices.neverConnected')) },
@@ -145,6 +145,16 @@ function describeSources(device: DeviceInfo, isLocalDevice: boolean, t: (key: st
 
 function formatBoolean(value: boolean, t: (key: string) => string) {
   return value ? t('common.yes') : t('common.no')
+}
+
+function formatLanState(value: string, t: (key: string) => string) {
+  if (value === 'alive') {
+    return t('devices.lan')
+  }
+  if (value === 'suspect') {
+    return t('devices.lanSuspect')
+  }
+  return t('common.no')
 }
 
 function formatRoute(value: string | null, t: (key: string) => string) {

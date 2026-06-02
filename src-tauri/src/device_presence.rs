@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use tauri::{AppHandle, Emitter};
 
@@ -15,7 +15,7 @@ use crate::{
 pub fn replace_all(
     database: &Database,
     app: &AppHandle,
-    lan_peers: &HashSet<String>,
+    lan_peers: &HashMap<String, String>,
     devices: Vec<DeviceInfo>,
     cloud_snapshot: bool,
 ) -> AppResult<Vec<DeviceInfo>> {
@@ -42,7 +42,7 @@ pub fn replace_all(
 pub fn update_one(
     database: &Database,
     app: &AppHandle,
-    lan_peers: &HashSet<String>,
+    lan_peers: &HashMap<String, String>,
     device_id: &str,
     online: bool,
     payload: Option<DeviceOnlinePayload>,
@@ -77,7 +77,7 @@ pub fn update_one(
 pub fn reconcile_routes(
     database: &Database,
     app: &AppHandle,
-    lan_peers: &HashSet<String>,
+    lan_peers: &HashMap<String, String>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let devices = database.load_cached_devices()?;
     let local_device_id = database
@@ -97,7 +97,7 @@ pub fn reconcile_routes(
 pub fn mark_cloud_unavailable(
     database: &Database,
     app: &AppHandle,
-    lan_peers: &HashSet<String>,
+    lan_peers: &HashMap<String, String>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let mut devices = database.load_cached_devices()?;
     for device in &mut devices {
@@ -149,6 +149,7 @@ fn align_local_identity(database: &Database, devices: &mut Vec<DeviceInfo>) -> A
             public_key: identity.public_key,
             public_key_updated_at: None,
             lan_available: false,
+            lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: vec!["local".to_string()],
             security_state: "verified".to_string(),
@@ -161,6 +162,7 @@ fn align_local_identity(database: &Database, devices: &mut Vec<DeviceInfo>) -> A
     device.public_key = identity.public_key;
     device.online = true;
     device.lan_available = false;
+    device.lan_state = "unavailable".to_string();
     device.active_route = None;
     device.security_state = "verified".to_string();
     if !device.device_sources.iter().any(|source| source == "local") {

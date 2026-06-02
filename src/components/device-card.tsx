@@ -55,7 +55,9 @@ export function DeviceCard({
             <div
               className={cn(
                 'flex items-center gap-1.5 text-[12px]',
-                status.active ? 'text-[hsl(var(--success))]' : 'text-[hsl(var(--muted))]',
+                status.tone === 'success' && 'text-[hsl(var(--success))]',
+                status.tone === 'warning' && 'text-[hsl(var(--warning))]',
+                status.tone === 'muted' && 'text-[hsl(var(--muted))]',
               )}
               key={status.label}
             >
@@ -126,18 +128,22 @@ function getDeviceStatuses(device: DeviceInfo, isLocalDevice: boolean, t: TFunct
   const statuses = []
 
   if (isLocalDevice) {
-    statuses.push({ Icon: Computer, label: t('devices.localDevice'), active: true })
+    statuses.push({ Icon: Computer, label: t('devices.localDevice'), tone: 'success' })
   }
 
   if (device.cloudAvailable) {
-    statuses.push({ Icon: Cloud, label: t('devices.cloud'), active: true })
+    statuses.push({ Icon: Cloud, label: t('devices.cloud'), tone: 'success' })
   }
 
   if (device.lanAvailable) {
-    statuses.push({ Icon: Network, label: t('devices.lan'), active: true })
+    statuses.push({
+      Icon: Network,
+      label: device.lanState === 'suspect' ? t('devices.lanSuspect') : t('devices.lan'),
+      tone: device.lanState === 'suspect' ? 'warning' : 'success',
+    })
   }
 
   return statuses.length > 0
     ? statuses
-    : [{ Icon: WifiOff, label: t('devices.offline'), active: false }]
+    : [{ Icon: WifiOff, label: t('devices.offline'), tone: 'muted' }]
 }

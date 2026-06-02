@@ -34,6 +34,7 @@ export interface DeviceInfo {
   publicKey: string
   publicKeyUpdatedAt: number | null
   lanAvailable: boolean
+  lanState: 'alive' | 'suspect' | 'unavailable'
   activeRoute: string | null
   deviceSources: string[]
   securityState: string

@@ -16,6 +16,7 @@
     --accent-foreground: 0 0% 100%;
     --danger: 0 60% 54%;
     --success: 145 40% 46%;
+    --warning: 42 84% 49%;
     --ring: 220 14% 10%;
     --sidebar: 220 6% 98%;
   }
@@ -33,6 +34,7 @@
     --accent-foreground: 0 0% 100%;
     --danger: 0 55% 58%;
     --success: 145 35% 50%;
+    --warning: 42 72% 55%;
     --ring: 220 10% 93%;
     --sidebar: 220 10% 9%;
   }

@@ -68,6 +68,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_clipboard_sync_setting",
         run: migrate_8_add_clipboard_sync_setting,
     },
+    Migration {
+        version: 9,
+        name: "add_lan_state_to_device_cache",
+        run: migrate_9_add_lan_state_to_device_cache,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -927,6 +932,10 @@ fn migrate_8_add_clipboard_sync_setting(transaction: &Transaction<'_>) -> AppRes
     migrate_json_record(transaction, SETTINGS_KEY, normalize_current_settings_json)
 }
 
+fn migrate_9_add_lan_state_to_device_cache(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -1046,6 +1055,22 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
         object
             .entry("lanAvailable".to_string())
             .or_insert(Value::Bool(false));
+        if !object.contains_key("lanState") {
+            let lan_state = if object
+                .get("lanAvailable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "alive"
+            } else {
+                "unavailable"
+            };
+            object.insert(
+                "lanState".to_string(),
+                Value::String(lan_state.to_string()),
+            );
+        }
+        normalize_lan_state_json(&mut object)?;
         object
             .entry("activeRoute".to_string())
             .or_insert(Value::Null);
@@ -1064,6 +1089,24 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
 
     serde_json::from_value::<Vec<DeviceInfo>>(Value::Array(normalized.clone()))?;
     Ok(Value::Array(normalized))
+}
+
+fn normalize_lan_state_json(object: &mut Map<String, Value>) -> AppResult<()> {
+    let state = object
+        .get("lanState")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable")
+        .trim();
+    let normalized = match state {
+        "alive" | "suspect" => state,
+        "unavailable" | "" => "unavailable",
+        _ => return Err(AppError::message("lanState must be alive, suspect, or unavailable")),
+    };
+    object.insert(
+        "lanState".to_string(),
+        Value::String(normalized.to_string()),
+    );
+    Ok(())
 }
 
 fn normalize_device_sources_json(object: &mut Map<String, Value>) -> AppResult<()> {
@@ -1344,7 +1387,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1357,7 +1400,7 @@ mod tests {
         database.initialize().expect("first init");
         database.initialize().expect("second init");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1395,7 +1438,7 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1410,7 +1453,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1443,7 +1486,7 @@ mod tests {
         let devices = database.load_cached_devices().expect("load devices");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].public_key_updated_at, None);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1509,7 +1552,7 @@ mod tests {
             )
             .expect("count legacy lan trust");
         assert_eq!(legacy_count, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1524,7 +1567,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1565,7 +1608,7 @@ mod tests {
             )
             .expect("check old table");
         assert_eq!(old_table_exists, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1580,7 +1623,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1616,7 +1659,7 @@ mod tests {
             devices[0].device_sources,
             vec!["trusted_peer_key".to_string()]
         );
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1674,7 +1717,7 @@ mod tests {
             .expect("cloud record");
         assert!(paired.lan_paired);
         assert!(!cloud.lan_paired);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1739,7 +1782,7 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1760,7 +1803,55 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(!settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_lan_state_from_lan_available() {
+        let path = temp_db_path();
+        create_legacy_database(&path);
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute(
+                "DELETE FROM schema_migrations WHERE version = 9",
+                [],
+            )
+            .expect("remove v9 marker");
+        connection
+            .execute(
+                "UPDATE kv_store SET value = ?2 WHERE key = ?1",
+                params![
+                    "device_cache",
+                    r#"[{
+                        "deviceId": "device-2",
+                        "name": "Peer",
+                        "type": "windows",
+                        "online": true,
+                        "lastSeen": null,
+                        "publicKey": "peer-pk",
+                        "publicKeyUpdatedAt": null,
+                        "cloudAvailable": false,
+                        "lanAvailable": true,
+                        "activeRoute": "lan",
+                        "deviceSources": ["trusted_peer_key"],
+                        "securityState": "verified"
+                    }]"#
+                ],
+            )
+            .expect("seed v8 cache");
+        drop(connection);
+
+        let database = Database::new(path.clone());
+        database.initialize().expect("rerun db init");
+
+        let devices = database.load_cached_devices().expect("load devices");
+        assert_eq!(devices[0].lan_state, "alive");
+        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let _ = fs::remove_file(path);
     }
@@ -1869,6 +1960,7 @@ mod tests {
                     public_key: "cloud-old".to_string(),
                     public_key_updated_at: Some(1_000_000_000_000),
                     lan_available: false,
+                    lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
                     security_state: "unverified".to_string(),
@@ -1917,6 +2009,7 @@ mod tests {
                     public_key: "cloud-new".to_string(),
                     public_key_updated_at: Some(2_000_000_000_000),
                     lan_available: false,
+                    lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
                     security_state: "unverified".to_string(),
@@ -1965,6 +2058,7 @@ mod tests {
                     public_key: "cloud-unknown".to_string(),
                     public_key_updated_at: None,
                     lan_available: false,
+                    lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
                     security_state: "unverified".to_string(),

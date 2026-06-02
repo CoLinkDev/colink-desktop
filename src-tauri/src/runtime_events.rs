@@ -37,6 +37,9 @@ pub enum RuntimeEvent {
     LanDeviceUnreachable {
         device_id: String,
     },
+    LanDeviceStateChanged {
+        device_id: String,
+    },
     LanKeyChanged {
         device_id: String,
         name: String,

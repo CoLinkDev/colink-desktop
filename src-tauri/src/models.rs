@@ -126,6 +126,7 @@ pub struct DeviceInfo {
     pub public_key: String,
     pub public_key_updated_at: Option<i64>,
     pub lan_available: bool,
+    pub lan_state: String,
     pub active_route: Option<String>,
     pub device_sources: Vec<String>,
     pub security_state: String,

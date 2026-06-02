@@ -296,7 +296,7 @@ impl LanManager {
         info!("lan manager stopped");
     }
 
-    pub fn alive_trusted_ids(&self) -> HashSet<String> {
+    pub fn trusted_member_states(&self) -> HashMap<String, String> {
         let trusted = self
             .database
             .load_trusted_peer_keys()
@@ -309,12 +309,16 @@ impl LanManager {
             })
             .unwrap_or_default();
 
-        self.inner
-            .lock_unpoisoned()
+        let inner = self.inner.lock_unpoisoned();
+        inner
             .members
             .iter()
             .filter(|(_, record)| matches!(record.state, MemberState::Alive | MemberState::Suspect))
-            .filter_map(|(device_id, _)| trusted.contains(device_id).then(|| device_id.clone()))
+            .filter_map(|(device_id, record)| {
+                trusted
+                    .contains(device_id)
+                    .then(|| (device_id.clone(), record.state.as_str().to_string()))
+            })
             .collect()
     }
 
@@ -1493,6 +1497,11 @@ impl LanManager {
             }
             MemberState::Suspect => {
                 self.update_pairing_candidate(device_id, state);
+                if self.is_lan_trusted(device_id) {
+                    let _ = self.event_tx.send(RuntimeEvent::LanDeviceStateChanged {
+                        device_id: device_id.to_string(),
+                    });
+                }
             }
         }
     }

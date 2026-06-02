@@ -5,7 +5,7 @@ use crate::models::{DeviceInfo, TrustedPeerKeyRecord};
 pub fn reconcile_devices(
     mut incoming: Vec<DeviceInfo>,
     previous: &[DeviceInfo],
-    lan_peers: &HashSet<String>,
+    lan_peers: &HashMap<String, String>,
     trusted_devices: &[TrustedPeerKeyRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
@@ -38,6 +38,7 @@ pub fn reconcile_devices(
             if local_device_id == Some(device.device_id.as_str()) {
                 device.online = true;
                 device.lan_available = false;
+                device.lan_state = "unavailable".to_string();
                 device.active_route = None;
                 device.security_state = "verified".to_string();
                 device.device_sources = merge_sources(&device.device_sources, true, false);
@@ -54,8 +55,13 @@ pub fn reconcile_devices(
                 device.security_state = "unverified".to_string();
             }
 
-            let lan_available = lan_peers.contains(&device.device_id);
+            let lan_state = lan_peers
+                .get(&device.device_id)
+                .cloned()
+                .unwrap_or_else(|| "unavailable".to_string());
+            let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
             device.lan_available = lan_available;
+            device.lan_state = lan_state;
             device.online = device.cloud_available || lan_available;
             if lan_available {
                 device.security_state = "verified".to_string();
@@ -87,7 +93,11 @@ pub fn reconcile_devices(
             continue;
         }
 
-        let lan_available = lan_peers.contains(&record.device_id);
+        let lan_state = lan_peers
+            .get(&record.device_id)
+            .cloned()
+            .unwrap_or_else(|| "unavailable".to_string());
+        let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
         devices.push(DeviceInfo {
             device_id: record.device_id.clone(),
             name: record.name.clone(),
@@ -98,6 +108,7 @@ pub fn reconcile_devices(
             public_key: record.public_key.clone(),
             public_key_updated_at: Some(record.key_updated_at),
             lan_available,
+            lan_state,
             active_route: lan_available.then(|| "lan".to_string()),
             device_sources: merge_sources(&[], false, true),
             security_state: "verified".to_string(),
@@ -140,7 +151,7 @@ fn push_source(sources: &mut Vec<String>, source: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::HashMap;
 
     use crate::models::{DeviceInfo, TrustedPeerKeyRecord};
 
@@ -158,6 +169,7 @@ mod tests {
             public_key: "pk".to_string(),
             public_key_updated_at: None,
             lan_available: false,
+            lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
             security_state: "unverified".to_string(),
@@ -173,18 +185,55 @@ mod tests {
             public_key: "pk".to_string(),
             public_key_updated_at: None,
             lan_available: true,
+            lan_state: "alive".to_string(),
             active_route: Some("lan".to_string()),
             device_sources: vec!["cloud".to_string()],
             security_state: "verified".to_string(),
         }];
-        let lan_peers = HashSet::from(["d1".to_string()]);
+        let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
 
         let reconciled = reconcile_devices(incoming, &previous, &lan_peers, &[], None);
 
         assert_eq!(reconciled[0].active_route.as_deref(), Some("lan"));
         assert!(reconciled[0].lan_available);
+        assert_eq!(reconciled[0].lan_state, "alive");
         assert!(reconciled[0].cloud_available);
         assert_eq!(reconciled[0].security_state, "verified");
+    }
+
+    #[test]
+    fn keeps_suspect_lan_route_visible() {
+        let incoming = vec![DeviceInfo {
+            device_id: "d1".to_string(),
+            name: "peer".to_string(),
+            device_type: "windows".to_string(),
+            online: false,
+            cloud_available: false,
+            last_seen: None,
+            public_key: "pk".to_string(),
+            public_key_updated_at: None,
+            lan_available: false,
+            lan_state: "unavailable".to_string(),
+            active_route: None,
+            device_sources: Vec::new(),
+            security_state: "unverified".to_string(),
+        }];
+        let trusted = vec![TrustedPeerKeyRecord {
+            device_id: "d1".to_string(),
+            name: "peer".to_string(),
+            public_key: "pk".to_string(),
+            key_updated_at: 1,
+            trusted_at: Some(1),
+            lan_paired: true,
+        }];
+        let lan_peers = HashMap::from([("d1".to_string(), "suspect".to_string())]);
+
+        let reconciled = reconcile_devices(incoming, &[], &lan_peers, &trusted, None);
+
+        assert!(reconciled[0].online);
+        assert!(reconciled[0].lan_available);
+        assert_eq!(reconciled[0].lan_state, "suspect");
+        assert_eq!(reconciled[0].active_route.as_deref(), Some("lan"));
     }
 
     #[test]
@@ -199,13 +248,14 @@ mod tests {
             public_key: "pk".to_string(),
             public_key_updated_at: None,
             lan_available: false,
+            lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: vec!["local".to_string()],
             security_state: "verified".to_string(),
         }];
         mark_cloud_sources(&mut incoming);
 
-        let reconciled = reconcile_devices(incoming, &[], &HashSet::new(), &[], Some("local"));
+        let reconciled = reconcile_devices(incoming, &[], &HashMap::new(), &[], Some("local"));
 
         assert!(reconciled[0].online);
         assert!(reconciled[0].cloud_available);
@@ -224,6 +274,7 @@ mod tests {
             public_key: "pk".to_string(),
             public_key_updated_at: None,
             lan_available: false,
+            lan_state: "unavailable".to_string(),
             active_route: Some("lan".to_string()),
             device_sources: vec!["cloud".to_string()],
             security_state: "verified".to_string(),
@@ -238,7 +289,7 @@ mod tests {
         }];
 
         let reconciled =
-            reconcile_devices(devices.clone(), &devices, &HashSet::new(), &trusted, None);
+            reconcile_devices(devices.clone(), &devices, &HashMap::new(), &trusted, None);
 
         assert_eq!(reconciled[0].security_state, "unverified");
         assert_eq!(reconciled[0].active_route.as_deref(), Some("cloud"));
