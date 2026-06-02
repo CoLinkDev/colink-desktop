@@ -447,7 +447,18 @@ impl AppRuntime {
             }
             RuntimeEvent::LanPairingRequested(request) => {
                 debug!(device_id = %request.device_id, reason = %request.reason, "runtime received lan pairing request");
+                let device_name = if request.name.trim().is_empty() {
+                    request.device_id.clone()
+                } else {
+                    request.name.clone()
+                };
+                let body = self.user_message(
+                    TextKey::PairingRequestBody,
+                    &[("name", device_name), ("code", request.code.clone())],
+                );
                 let _ = self.inner.app.emit(LAN_PAIRING_REQUESTED_EVENT, request);
+                let _ = self.notify(TextKey::PairingRequestTitle, &[], &body);
+                let _ = crate::shell::show_main_window(&self.inner.app, None);
             }
             RuntimeEvent::LanPairingCandidatesUpdated(candidates) => {
                 debug!(
