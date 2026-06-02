@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "tauri:debug-build": "tauri build --debug --no-bundle",
     "tauri": "tauri"
   },
   "dependencies": {
