@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, RefreshCw, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
+import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -18,11 +18,9 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, refreshDevices, session, theme, setTheme, settingsDirty } = useAppState()
+  const { cloud, logout, session, theme, setTheme, settingsDirty } = useAppState()
   const { t } = useTranslation()
 
-  const [refreshing, setRefreshing] = useState(false)
-  const [refreshError, setRefreshError] = useState<string | null>(null)
   const [showThemeModal, setShowThemeModal] = useState(false)
   const [showAuthDialog, setShowAuthDialog] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
@@ -54,18 +52,6 @@ export function AppLayout({ children }: PropsWithChildren) {
       unlisten?.()
     }
   }, [navigate])
-
-  async function handleRefreshDevices() {
-    setRefreshing(true)
-    setRefreshError(null)
-    try {
-      await refreshDevices()
-    } catch (err) {
-      setRefreshError(readErrorMessage(err))
-    } finally {
-      setRefreshing(false)
-    }
-  }
 
   async function handleConfirmLogout() {
     setLoggingOut(true)
@@ -198,20 +184,6 @@ export function AppLayout({ children }: PropsWithChildren) {
           <h1 className="text-[20px] font-semibold tracking-tight text-[hsl(var(--text))]">{getTitle()}</h1>
 
           <div className="flex items-center gap-2">
-            {location.pathname === '/devices' && (
-              <div className="flex items-center gap-2">
-                {refreshError && <span className="text-xs text-[hsl(var(--danger))]">{refreshError}</span>}
-                <Button
-                  disabled={refreshing}
-                  onClick={handleRefreshDevices}
-                  size="sm"
-                  variant="secondary"
-                >
-                  <RefreshCw className={refreshing ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-                  {t('common.refresh')}
-                </Button>
-              </div>
-            )}
             {isSettingsRoute && (
               <Button
                 disabled={!settingsDirty}
