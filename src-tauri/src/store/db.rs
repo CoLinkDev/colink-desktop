@@ -73,6 +73,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_lan_state_to_device_cache",
         run: migrate_9_add_lan_state_to_device_cache,
     },
+    Migration {
+        version: 10,
+        name: "split_trusted_peer_key_sources",
+        run: migrate_10_split_trusted_peer_key_sources,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -130,8 +135,8 @@ CREATE TABLE IF NOT EXISTS trusted_peer_keys (
     name TEXT NOT NULL,
     public_key TEXT NOT NULL,
     key_updated_at INTEGER NOT NULL,
-    trusted_at INTEGER,
-    lan_paired INTEGER NOT NULL DEFAULT 0
+    trusted_by_lan INTEGER NOT NULL DEFAULT 0,
+    trusted_by_cloud INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -222,30 +227,23 @@ impl Database {
         upsert_trusted_peer_key_row(&connection, &record)
     }
 
-    pub fn remove_trusted_peer_key(&self, device_id: &str) -> AppResult<()> {
+    pub fn clear_lan_pairing(&self, device_id: &str) -> AppResult<()> {
         let connection = self.open()?;
         connection.execute(
-            "DELETE FROM trusted_peer_keys WHERE device_id = ?1",
+            "UPDATE trusted_peer_keys SET trusted_by_lan = 0 WHERE device_id = ?1",
             params![device_id],
         )?;
         Ok(())
     }
 
-    pub fn clear_lan_pairing(
-        &self,
-        device_id: &str,
-        name: &str,
-        public_key: &str,
-    ) -> AppResult<()> {
-        let record = TrustedPeerKeyRecord {
-            device_id: device_id.to_string(),
-            name: name.to_string(),
-            public_key: public_key.to_string(),
-            key_updated_at: unix_now_millis(),
-            trusted_at: None,
-            lan_paired: false,
-        };
-        self.upsert_trusted_peer_key(record)
+    pub fn clear_cloud_trust(&self) -> AppResult<()> {
+        let connection = self.open()?;
+        connection.execute("UPDATE trusted_peer_keys SET trusted_by_cloud = 0", [])?;
+        connection.execute(
+            "DELETE FROM trusted_peer_keys WHERE trusted_by_lan = 0 AND trusted_by_cloud = 0",
+            [],
+        )?;
+        Ok(())
     }
 
     pub fn ensure_trusted_peer_keys_for_devices(
@@ -256,6 +254,7 @@ impl Database {
         let mut records = self.load_trusted_peer_keys()?;
         let now = unix_now_millis();
         let mut changed = false;
+        let mut cloud_device_ids = Vec::new();
 
         for device in devices {
             if local_device_id == Some(device.device_id.as_str()) {
@@ -264,21 +263,40 @@ impl Database {
             if device.public_key.trim().is_empty() {
                 continue;
             }
+            cloud_device_ids.push(device.device_id.as_str());
 
             if let Some(record) = records
                 .iter_mut()
                 .find(|record| record.device_id == device.device_id)
             {
-                if record.public_key != device.public_key {
+                let key_differs = record.public_key != device.public_key;
+                let cloud_timestamp_newer = device
+                    .public_key_updated_at
+                    .is_some_and(|updated_at| updated_at > record.key_updated_at);
+                let accept_cloud_key = key_differs && cloud_timestamp_newer;
+
+                if accept_cloud_key {
+                    record.public_key = device.public_key.clone();
+                    record.key_updated_at = device
+                        .public_key_updated_at
+                        .unwrap_or(record.key_updated_at);
+                    record.trusted_by_lan = false;
+                    record.trusted_by_cloud = true;
+                    changed = true;
+                } else if !key_differs {
                     if let Some(updated_at) = device.public_key_updated_at {
                         if updated_at > record.key_updated_at {
-                            record.public_key = device.public_key.clone();
                             record.key_updated_at = updated_at;
-                            record.trusted_at = None;
-                            record.lan_paired = false;
                             changed = true;
                         }
                     }
+                    if !record.trusted_by_cloud {
+                        record.trusted_by_cloud = true;
+                        changed = true;
+                    }
+                } else if record.trusted_by_cloud {
+                    record.trusted_by_cloud = false;
+                    changed = true;
                 }
 
                 if record.name != device.name {
@@ -291,9 +309,19 @@ impl Database {
                     name: device.name.clone(),
                     public_key: device.public_key.clone(),
                     key_updated_at: device.public_key_updated_at.unwrap_or(now),
-                    trusted_at: None,
-                    lan_paired: false,
+                    trusted_by_lan: false,
+                    trusted_by_cloud: true,
                 });
+                changed = true;
+            }
+        }
+
+        for record in records.iter_mut() {
+            if local_device_id == Some(record.device_id.as_str()) {
+                continue;
+            }
+            if record.trusted_by_cloud && !cloud_device_ids.contains(&record.device_id.as_str()) {
+                record.trusted_by_cloud = false;
                 changed = true;
             }
         }
@@ -660,7 +688,7 @@ fn load_trusted_peer_keys_from_connection(
 ) -> AppResult<Vec<TrustedPeerKeyRecord>> {
     let mut statement = connection.prepare(
         "
-        SELECT device_id, name, public_key, key_updated_at, trusted_at, lan_paired
+        SELECT device_id, name, public_key, key_updated_at, trusted_by_lan, trusted_by_cloud
         FROM trusted_peer_keys
         ORDER BY name COLLATE NOCASE ASC, device_id ASC
         ",
@@ -674,7 +702,7 @@ fn load_trusted_peer_keys_from_transaction(
 ) -> AppResult<Vec<TrustedPeerKeyRecord>> {
     let mut statement = transaction.prepare(
         "
-        SELECT device_id, name, public_key, key_updated_at, trusted_at, lan_paired
+        SELECT device_id, name, public_key, key_updated_at, trusted_by_lan, trusted_by_cloud
         FROM trusted_peer_keys
         ORDER BY name COLLATE NOCASE ASC, device_id ASC
         ",
@@ -689,8 +717,8 @@ fn map_trusted_peer_key_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Trusted
         name: row.get(1)?,
         public_key: row.get(2)?,
         key_updated_at: row.get(3)?,
-        trusted_at: row.get(4)?,
-        lan_paired: row.get(5)?,
+        trusted_by_lan: row.get(4)?,
+        trusted_by_cloud: row.get(5)?,
     })
 }
 
@@ -700,22 +728,22 @@ fn upsert_trusted_peer_key_row(
 ) -> AppResult<()> {
     connection.execute(
         "
-        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at, lan_paired)
+        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_by_lan, trusted_by_cloud)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(device_id) DO UPDATE SET
             name = excluded.name,
             public_key = excluded.public_key,
             key_updated_at = excluded.key_updated_at,
-            trusted_at = excluded.trusted_at,
-            lan_paired = excluded.lan_paired
+            trusted_by_lan = excluded.trusted_by_lan,
+            trusted_by_cloud = excluded.trusted_by_cloud
         ",
         params![
             record.device_id.trim(),
             record.name.trim(),
             record.public_key.trim(),
             normalize_timestamp_millis(record.key_updated_at),
-            record.trusted_at.map(normalize_timestamp_millis),
-            record.lan_paired,
+            record.trusted_by_lan,
+            record.trusted_by_cloud,
         ],
     )?;
     Ok(())
@@ -727,22 +755,22 @@ fn upsert_trusted_peer_key_row_in_transaction(
 ) -> AppResult<()> {
     transaction.execute(
         "
-        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_at, lan_paired)
+        INSERT INTO trusted_peer_keys (device_id, name, public_key, key_updated_at, trusted_by_lan, trusted_by_cloud)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(device_id) DO UPDATE SET
             name = excluded.name,
             public_key = excluded.public_key,
             key_updated_at = excluded.key_updated_at,
-            trusted_at = excluded.trusted_at,
-            lan_paired = excluded.lan_paired
+            trusted_by_lan = excluded.trusted_by_lan,
+            trusted_by_cloud = excluded.trusted_by_cloud
         ",
         params![
             record.device_id.trim(),
             record.name.trim(),
             record.public_key.trim(),
             normalize_timestamp_millis(record.key_updated_at),
-            record.trusted_at.map(normalize_timestamp_millis),
-            record.lan_paired,
+            record.trusted_by_lan,
+            record.trusted_by_cloud,
         ],
     )?;
     Ok(())
@@ -894,8 +922,8 @@ fn migrate_5_migrate_lan_trusts_table_to_trusted_peer_keys(
                 name: row.get(1)?,
                 public_key: row.get(2)?,
                 key_updated_at: trusted_at,
-                trusted_at: Some(trusted_at),
-                lan_paired: true,
+                trusted_by_lan: true,
+                trusted_by_cloud: false,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -914,17 +942,19 @@ fn migrate_6_rename_lan_trust_device_source(transaction: &Transaction<'_>) -> Ap
 
 fn migrate_7_add_lan_paired_to_trusted_peer_keys(transaction: &Transaction<'_>) -> AppResult<()> {
     transaction.execute_batch(TRUSTED_PEER_KEYS_SCHEMA_SQL)?;
-    if !table_has_column(transaction, "trusted_peer_keys", "lan_paired")? {
+    let has_trusted_at = table_has_column(transaction, "trusted_peer_keys", "trusted_at")?;
+    if has_trusted_at && !table_has_column(transaction, "trusted_peer_keys", "lan_paired")? {
         transaction.execute(
             "ALTER TABLE trusted_peer_keys ADD COLUMN lan_paired INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
     }
-    transaction.execute(
-        "UPDATE trusted_peer_keys SET lan_paired = 1 WHERE trusted_at IS NOT NULL",
-        [],
-    )?;
-    let _ = load_trusted_peer_keys_from_transaction(transaction)?;
+    if has_trusted_at {
+        transaction.execute(
+            "UPDATE trusted_peer_keys SET lan_paired = 1 WHERE trusted_at IS NOT NULL",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -934,6 +964,62 @@ fn migrate_8_add_clipboard_sync_setting(transaction: &Transaction<'_>) -> AppRes
 
 fn migrate_9_add_lan_state_to_device_cache(transaction: &Transaction<'_>) -> AppResult<()> {
     migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
+fn migrate_10_split_trusted_peer_key_sources(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute_batch(TRUSTED_PEER_KEYS_SCHEMA_SQL)?;
+    let has_trusted_by_lan = table_has_column(transaction, "trusted_peer_keys", "trusted_by_lan")?;
+    let has_trusted_by_cloud =
+        table_has_column(transaction, "trusted_peer_keys", "trusted_by_cloud")?;
+    let has_lan_paired = table_has_column(transaction, "trusted_peer_keys", "lan_paired")?;
+    let has_trusted_at = table_has_column(transaction, "trusted_peer_keys", "trusted_at")?;
+
+    let trusted_by_lan_expr = if has_trusted_by_lan {
+        "trusted_by_lan"
+    } else if has_lan_paired {
+        "lan_paired"
+    } else if has_trusted_at {
+        "CASE WHEN trusted_at IS NOT NULL THEN 1 ELSE 0 END"
+    } else {
+        "0"
+    };
+    let trusted_by_cloud_expr = if has_trusted_by_cloud {
+        "trusted_by_cloud"
+    } else {
+        "0"
+    };
+
+    transaction.execute(
+        "ALTER TABLE trusted_peer_keys RENAME TO trusted_peer_keys_old",
+        [],
+    )?;
+    transaction.execute_batch(TRUSTED_PEER_KEYS_SCHEMA_SQL)?;
+    transaction.execute(
+        &format!(
+            "
+            INSERT INTO trusted_peer_keys (
+                device_id,
+                name,
+                public_key,
+                key_updated_at,
+                trusted_by_lan,
+                trusted_by_cloud
+            )
+            SELECT
+                device_id,
+                name,
+                public_key,
+                key_updated_at,
+                {trusted_by_lan_expr},
+                {trusted_by_cloud_expr}
+            FROM trusted_peer_keys_old
+            "
+        ),
+        [],
+    )?;
+    transaction.execute("DROP TABLE trusted_peer_keys_old", [])?;
+    let _ = load_trusted_peer_keys_from_transaction(transaction)?;
+    Ok(())
 }
 
 fn migrate_json_record(
@@ -1065,10 +1151,7 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
             } else {
                 "unavailable"
             };
-            object.insert(
-                "lanState".to_string(),
-                Value::String(lan_state.to_string()),
-            );
+            object.insert("lanState".to_string(), Value::String(lan_state.to_string()));
         }
         normalize_lan_state_json(&mut object)?;
         object
@@ -1100,7 +1183,11 @@ fn normalize_lan_state_json(object: &mut Map<String, Value>) -> AppResult<()> {
     let normalized = match state {
         "alive" | "suspect" => state,
         "unavailable" | "" => "unavailable",
-        _ => return Err(AppError::message("lanState must be alive, suspect, or unavailable")),
+        _ => {
+            return Err(AppError::message(
+                "lanState must be alive, suspect, or unavailable",
+            ))
+        }
     };
     object.insert(
         "lanState".to_string(),
@@ -1144,8 +1231,9 @@ fn normalize_legacy_lan_trust_json(value: Value) -> AppResult<Vec<TrustedPeerKey
             .ok_or_else(|| AppError::message("trustedAt must be an integer"))?;
         let timestamp = normalize_timestamp_millis(trusted_at);
         object.insert("keyUpdatedAt".to_string(), Value::Number(timestamp.into()));
-        object.insert("trustedAt".to_string(), Value::Number(timestamp.into()));
-        object.insert("lanPaired".to_string(), Value::Bool(true));
+        object.insert("trustedByLan".to_string(), Value::Bool(true));
+        object.insert("trustedByCloud".to_string(), Value::Bool(false));
+        object.remove("trustedAt");
         normalized.push(Value::Object(object));
     }
 
@@ -1387,7 +1475,10 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1400,7 +1491,10 @@ mod tests {
         database.initialize().expect("first init");
         database.initialize().expect("second init");
 
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1438,7 +1532,10 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1453,7 +1550,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1486,7 +1583,10 @@ mod tests {
         let devices = database.load_cached_devices().expect("load devices");
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].public_key_updated_at, None);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1533,15 +1633,15 @@ mod tests {
             .find(|record| record.device_id == "peer-ms")
             .expect("millis trust");
         assert_eq!(millis.key_updated_at, 1_780_077_510_545);
-        assert_eq!(millis.trusted_at, Some(1_780_077_510_545));
-        assert!(millis.lan_paired);
+        assert!(millis.trusted_by_lan);
+        assert!(!millis.trusted_by_cloud);
         let seconds = trusts
             .iter()
             .find(|record| record.device_id == "peer-sec")
             .expect("seconds trust");
         assert_eq!(seconds.key_updated_at, 1_780_045_153_000);
-        assert_eq!(seconds.trusted_at, Some(1_780_045_153_000));
-        assert!(seconds.lan_paired);
+        assert!(seconds.trusted_by_lan);
+        assert!(!seconds.trusted_by_cloud);
 
         let connection = Connection::open(&path).expect("open migrated db");
         let legacy_count: i64 = connection
@@ -1552,7 +1652,10 @@ mod tests {
             )
             .expect("count legacy lan trust");
         assert_eq!(legacy_count, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1567,7 +1670,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1596,8 +1699,8 @@ mod tests {
             .find(|record| record.device_id == "peer-old-table")
             .expect("migrated old table trust");
         assert_eq!(record.key_updated_at, 1_780_045_153_000);
-        assert_eq!(record.trusted_at, Some(1_780_045_153_000));
-        assert!(record.lan_paired);
+        assert!(record.trusted_by_lan);
+        assert!(!record.trusted_by_cloud);
 
         let connection = Connection::open(&path).expect("open migrated db");
         let old_table_exists: i64 = connection
@@ -1608,7 +1711,10 @@ mod tests {
             )
             .expect("check old table");
         assert_eq!(old_table_exists, 0);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1623,7 +1729,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1659,7 +1765,10 @@ mod tests {
             devices[0].device_sources,
             vec!["trusted_peer_key".to_string()]
         );
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1687,6 +1796,7 @@ mod tests {
                     (4, 'move_trusted_peer_keys_to_table', 1),
                     (5, 'migrate_lan_trusts_table_to_trusted_peer_keys', 1),
                     (6, 'rename_lan_trust_device_source', 1);
+                DROP TABLE IF EXISTS trusted_peer_keys;
                 CREATE TABLE trusted_peer_keys (
                     device_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -1715,9 +1825,14 @@ mod tests {
             .iter()
             .find(|record| record.device_id == "cloud")
             .expect("cloud record");
-        assert!(paired.lan_paired);
-        assert!(!cloud.lan_paired);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert!(paired.trusted_by_lan);
+        assert!(!paired.trusted_by_cloud);
+        assert!(!cloud.trusted_by_lan);
+        assert!(!cloud.trusted_by_cloud);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1782,7 +1897,10 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1803,7 +1921,10 @@ mod tests {
             .expect("load settings")
             .expect("settings");
         assert!(!settings.clipboard_sync);
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1817,10 +1938,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute(
-                "DELETE FROM schema_migrations WHERE version = 9",
-                [],
-            )
+            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10)", [])
             .expect("remove v9 marker");
         connection
             .execute(
@@ -1851,7 +1969,10 @@ mod tests {
 
         let devices = database.load_cached_devices().expect("load devices");
         assert_eq!(devices[0].lan_state, "alive");
-        assert_eq!(migration_versions(&path), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1943,8 +2064,8 @@ mod tests {
                 name: "old".to_string(),
                 public_key: "local-new".to_string(),
                 key_updated_at: 2_000_000_000_000,
-                trusted_at: Some(2_000_000_000_000),
-                lan_paired: true,
+                trusted_by_lan: true,
+                trusted_by_cloud: false,
             }])
             .expect("save trust");
 
@@ -1974,8 +2095,8 @@ mod tests {
         assert_eq!(trusts[0].name, "cloud-name");
         assert_eq!(trusts[0].public_key, "local-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
-        assert_eq!(trusts[0].trusted_at, Some(2_000_000_000_000));
-        assert!(trusts[0].lan_paired);
+        assert!(trusts[0].trusted_by_lan);
+        assert!(!trusts[0].trusted_by_cloud);
 
         let _ = fs::remove_file(path);
     }
@@ -1992,8 +2113,8 @@ mod tests {
                 name: "old".to_string(),
                 public_key: "local-old".to_string(),
                 key_updated_at: 1_000_000_000_000,
-                trusted_at: Some(1_000_000_000_000),
-                lan_paired: true,
+                trusted_by_lan: true,
+                trusted_by_cloud: false,
             }])
             .expect("save trust");
 
@@ -2023,8 +2144,8 @@ mod tests {
         assert_eq!(trusts[0].name, "cloud-name");
         assert_eq!(trusts[0].public_key, "cloud-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
-        assert_eq!(trusts[0].trusted_at, None);
-        assert!(!trusts[0].lan_paired);
+        assert!(!trusts[0].trusted_by_lan);
+        assert!(trusts[0].trusted_by_cloud);
 
         let _ = fs::remove_file(path);
     }
@@ -2041,8 +2162,8 @@ mod tests {
                 name: "old".to_string(),
                 public_key: "local-new".to_string(),
                 key_updated_at: 2_000_000_000_000,
-                trusted_at: Some(2_000_000_000_000),
-                lan_paired: true,
+                trusted_by_lan: true,
+                trusted_by_cloud: false,
             }])
             .expect("save trust");
 
@@ -2072,8 +2193,8 @@ mod tests {
         assert_eq!(trusts[0].name, "cloud-name");
         assert_eq!(trusts[0].public_key, "local-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
-        assert_eq!(trusts[0].trusted_at, Some(2_000_000_000_000));
-        assert!(trusts[0].lan_paired);
+        assert!(trusts[0].trusted_by_lan);
+        assert!(!trusts[0].trusted_by_cloud);
 
         let _ = fs::remove_file(path);
     }

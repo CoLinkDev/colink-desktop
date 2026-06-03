@@ -320,6 +320,7 @@ fn clear_auth_state(state: &AppState) -> AppResult<()> {
     state.cloud.stop_quiet();
     state.database.clear_session()?;
     state.database.clear_cached_devices()?;
+    state.database.clear_cloud_trust()?;
     let _ = publish_offline_devices(state);
     shell::refresh_tray(&state.app)?;
     Ok(())

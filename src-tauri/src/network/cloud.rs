@@ -623,6 +623,9 @@ impl CloudConnectionManager {
         if let Err(error) = self.database.clear_cached_devices() {
             error!(%error, "failed to clear device cache during auth invalidation");
         }
+        if let Err(error) = self.database.clear_cloud_trust() {
+            error!(%error, "failed to clear cloud trust during auth invalidation");
+        }
         warn!(%message, "invalidating cloud auth");
         let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());

@@ -318,7 +318,7 @@ impl LanManager {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| record.lan_paired)
+                    .filter(|record| is_trusted(record))
                     .map(|record| record.device_id)
                     .collect::<HashSet<_>>()
             })
@@ -344,7 +344,7 @@ impl LanManager {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| record.lan_paired)
+                    .filter(|record| is_trusted(record))
                     .map(|record| record.device_id)
                     .collect::<HashSet<_>>()
             })
@@ -490,7 +490,7 @@ impl LanManager {
     }
 
     pub fn forget_trust(&self, device_id: &str) -> AppResult<()> {
-        self.database.remove_trusted_peer_key(device_id)?;
+        self.database.clear_lan_pairing(device_id)?;
         self.detach_peer(self.current_generation(), device_id);
         self.refresh_pairing_candidate(device_id);
         Ok(())
@@ -1747,7 +1747,7 @@ impl LanManager {
             .map(|records| {
                 records
                     .iter()
-                    .any(|record| record.device_id == device_id && record.lan_paired)
+                    .any(|record| record.device_id == device_id && is_trusted(record))
             })
             .unwrap_or(false)
     }
@@ -1801,8 +1801,7 @@ impl LanManager {
     }
 
     fn revoke_lan_pairing_for_key_change(&self, proof: &PeerProof) -> AppResult<()> {
-        self.database
-            .clear_lan_pairing(&proof.device_id, &proof.name, &proof.public_key)?;
+        self.database.clear_lan_pairing(&proof.device_id)?;
         let _ = self.event_tx.send(RuntimeEvent::LanKeyChanged {
             device_id: proof.device_id.clone(),
             name: proof.name.clone(),
@@ -1812,13 +1811,23 @@ impl LanManager {
 
     fn trust_peer(&self, proof: &PeerProof) -> AppResult<()> {
         let now = unix_now_millis();
+        let existing = self
+            .database
+            .load_trusted_peer_keys()?
+            .into_iter()
+            .find(|record| record.device_id == proof.device_id);
+        let key_changed = existing
+            .as_ref()
+            .is_some_and(|record| record.public_key != proof.public_key);
         self.database.upsert_trusted_peer_key(TrustedPeerKeyRecord {
             device_id: proof.device_id.clone(),
             name: proof.name.clone(),
             public_key: proof.public_key.clone(),
             key_updated_at: now,
-            trusted_at: Some(now),
-            lan_paired: true,
+            trusted_by_lan: true,
+            trusted_by_cloud: existing
+                .as_ref()
+                .is_some_and(|record| record.trusted_by_cloud && !key_changed),
         })
     }
 
@@ -2482,7 +2491,7 @@ fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> 
     else {
         return Ok(TrustState::Unknown);
     };
-    if !record.lan_paired {
+    if !is_trusted(record) {
         return Ok(TrustState::Unknown);
     }
     if record.public_key == proof.public_key {
@@ -2490,6 +2499,10 @@ fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> 
     } else {
         Ok(TrustState::KeyChanged)
     }
+}
+
+fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
+    record.trusted_by_lan || record.trusted_by_cloud
 }
 
 async fn write_peer_message<S, T>(

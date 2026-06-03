@@ -28,11 +28,28 @@ pub fn reconcile_devices(
         .iter()
         .map(|device| (device.device_id.as_str(), device))
         .collect::<HashMap<_, _>>();
-    let lan_paired_ids = trusted_devices
+    let trusted_by_id = trusted_devices
         .iter()
-        .filter(|record| record.lan_paired)
-        .map(|record| record.device_id.as_str())
-        .collect::<HashSet<_>>();
+        .filter(|record| is_trusted(record))
+        .map(|record| (record.device_id.as_str(), record))
+        .collect::<HashMap<_, _>>();
+    incoming.retain(|device| {
+        if local_device_id == Some(device.device_id.as_str()) {
+            return true;
+        }
+        if trusted_by_id.contains_key(device.device_id.as_str()) {
+            return true;
+        }
+        let has_persistent_source = device
+            .device_sources
+            .iter()
+            .any(|source| matches!(source.as_str(), "local" | "cloud"));
+        has_persistent_source
+            || !device
+                .device_sources
+                .iter()
+                .any(|source| source == "trusted_peer_key")
+    });
     let mut devices = incoming
         .into_iter()
         .map(|mut device| {
@@ -46,15 +63,9 @@ pub fn reconcile_devices(
                 return device;
             }
 
-            let lan_paired = lan_paired_ids.contains(device.device_id.as_str());
-            if let Some(existing) = previous_by_id.get(device.device_id.as_str()) {
-                if lan_paired && device.security_state == "unverified" {
-                    device.security_state = existing.security_state.clone();
-                }
-            }
-            if !lan_paired && device.security_state == "verified" {
-                device.security_state = "unverified".to_string();
-            }
+            let trust = trusted_by_id.get(device.device_id.as_str()).copied();
+            let trusted = trust.is_some_and(is_trusted);
+            let lan_trusted = trust.is_some_and(|record| record.trusted_by_lan);
 
             let lan_state = lan_peers
                 .get(&device.device_id)
@@ -71,8 +82,10 @@ pub fn reconcile_devices(
             device.lan_available = lan_available;
             device.lan_state = lan_state;
             device.online = device.cloud_available || lan_available;
-            if lan_available {
+            if trusted || lan_available {
                 device.security_state = "verified".to_string();
+            } else if device.security_state == "verified" {
+                device.security_state = "unverified".to_string();
             }
             device.active_route = if lan_available {
                 Some("lan".to_string())
@@ -81,7 +94,7 @@ pub fn reconcile_devices(
             } else {
                 None
             };
-            device.device_sources = merge_sources(&device.device_sources, false, false);
+            device.device_sources = merge_sources(&device.device_sources, false, lan_trusted);
 
             device
         })
@@ -92,7 +105,7 @@ pub fn reconcile_devices(
         .map(|device| device.device_id.clone())
         .collect::<HashSet<_>>();
     for record in trusted_devices {
-        if !record.lan_paired {
+        if !is_trusted(record) {
             continue;
         }
         if local_device_id == Some(record.device_id.as_str())
@@ -126,7 +139,7 @@ pub fn reconcile_devices(
             lan_available,
             lan_state,
             active_route: lan_available.then(|| "lan".to_string()),
-            device_sources: merge_sources(&[], false, true),
+            device_sources: trusted_sources(record),
             security_state: "verified".to_string(),
         });
     }
@@ -149,7 +162,8 @@ fn merge_sources(current: &[String], local: bool, trusted_peer_key: bool) -> Vec
     }
     for source in current {
         match source.as_str() {
-            "local" | "cloud" | "trusted_peer_key" => push_source(&mut sources, source),
+            "local" | "cloud" => push_source(&mut sources, source),
+            "trusted_peer_key" if trusted_peer_key => push_source(&mut sources, source),
             _ => {}
         }
     }
@@ -157,6 +171,21 @@ fn merge_sources(current: &[String], local: bool, trusted_peer_key: bool) -> Vec
         push_source(&mut sources, "trusted_peer_key");
     }
     sources
+}
+
+fn trusted_sources(record: &TrustedPeerKeyRecord) -> Vec<String> {
+    let mut sources = Vec::new();
+    if record.trusted_by_cloud {
+        push_source(&mut sources, "cloud");
+    }
+    if record.trusted_by_lan {
+        push_source(&mut sources, "trusted_peer_key");
+    }
+    sources
+}
+
+fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
+    record.trusted_by_lan || record.trusted_by_cloud
 }
 
 fn push_source(sources: &mut Vec<String>, source: &str) {
@@ -270,8 +299,8 @@ mod tests {
             name: "peer".to_string(),
             public_key: "pk".to_string(),
             key_updated_at: 1,
-            trusted_at: Some(1),
-            lan_paired: true,
+            trusted_by_lan: true,
+            trusted_by_cloud: false,
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "suspect".to_string())]);
 
@@ -339,8 +368,8 @@ mod tests {
             name: "peer".to_string(),
             public_key: "pk".to_string(),
             key_updated_at: 1,
-            trusted_at: None,
-            lan_paired: false,
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
         }];
 
         let reconciled = reconcile_devices(
@@ -388,8 +417,8 @@ mod tests {
             name: "peer".to_string(),
             public_key: "pk".to_string(),
             key_updated_at: 1,
-            trusted_at: Some(1),
-            lan_paired: true,
+            trusted_by_lan: true,
+            trusted_by_cloud: false,
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
         let lan_peer_types = HashMap::from([("d1".to_string(), "android".to_string())]);
