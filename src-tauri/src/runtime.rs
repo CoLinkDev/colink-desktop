@@ -246,6 +246,7 @@ impl AppRuntime {
             &self.inner.database,
             &self.inner.app,
             &self.inner.lan.trusted_member_states(),
+            &self.inner.lan.trusted_member_types(),
             devices,
             cloud_snapshot,
         )
@@ -310,6 +311,7 @@ impl AppRuntime {
                     &self.inner.database,
                     &self.inner.app,
                     &self.inner.lan.trusted_member_states(),
+                    &self.inner.lan.trusted_member_types(),
                 );
             }
             RuntimeEvent::CloudRelay { from, message } => {
@@ -326,6 +328,7 @@ impl AppRuntime {
                     &self.inner.database,
                     &self.inner.app,
                     &self.inner.lan.trusted_member_states(),
+                    &self.inner.lan.trusted_member_types(),
                     &device_id,
                     online,
                     payload.clone(),
@@ -797,6 +800,7 @@ impl AppRuntime {
             &self.inner.database,
             &self.inner.app,
             &self.inner.lan.trusted_member_states(),
+            &self.inner.lan.trusted_member_types(),
         )?;
         Ok(devices)
     }

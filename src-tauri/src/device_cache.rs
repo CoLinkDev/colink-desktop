@@ -6,6 +6,7 @@ pub fn reconcile_devices(
     mut incoming: Vec<DeviceInfo>,
     previous: &[DeviceInfo],
     lan_peers: &HashMap<String, String>,
+    lan_peer_types: &HashMap<String, String>,
     trusted_devices: &[TrustedPeerKeyRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
@@ -59,6 +60,13 @@ pub fn reconcile_devices(
                 .get(&device.device_id)
                 .cloned()
                 .unwrap_or_else(|| "unavailable".to_string());
+            device.device_type = reconcile_device_type(
+                &device.device_type,
+                previous_by_id
+                    .get(device.device_id.as_str())
+                    .map(|existing| existing.device_type.as_str()),
+                lan_peer_types.get(&device.device_id).map(String::as_str),
+            );
             let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
             device.lan_available = lan_available;
             device.lan_state = lan_state;
@@ -98,10 +106,18 @@ pub fn reconcile_devices(
             .cloned()
             .unwrap_or_else(|| "unavailable".to_string());
         let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
+        let device_type = reconcile_device_type(
+            previous_by_id
+                .get(record.device_id.as_str())
+                .map(|device| device.device_type.as_str())
+                .unwrap_or("unknown"),
+            None,
+            lan_peer_types.get(&record.device_id).map(String::as_str),
+        );
         devices.push(DeviceInfo {
             device_id: record.device_id.clone(),
             name: record.name.clone(),
-            device_type: "unknown".to_string(),
+            device_type,
             online: lan_available,
             cloud_available: false,
             last_seen: None,
@@ -149,6 +165,36 @@ fn push_source(sources: &mut Vec<String>, source: &str) {
     }
 }
 
+fn reconcile_device_type(incoming: &str, previous: Option<&str>, lan_type: Option<&str>) -> String {
+    if !is_unknown_device_type(incoming) {
+        return incoming.trim().to_string();
+    }
+    if let Some(lan_type) = lan_type.and_then(normalized_device_type) {
+        return lan_type;
+    }
+    if let Some(previous) = previous.filter(|value| !is_unknown_device_type(value)) {
+        return previous.trim().to_string();
+    }
+    if incoming.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        incoming.trim().to_string()
+    }
+}
+
+fn normalized_device_type(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "windows" | "macos" | "linux" | "android" | "ios" => Some(value),
+        _ => None,
+    }
+}
+
+fn is_unknown_device_type(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value.eq_ignore_ascii_case("unknown")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -192,7 +238,8 @@ mod tests {
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
 
-        let reconciled = reconcile_devices(incoming, &previous, &lan_peers, &[], None);
+        let reconciled =
+            reconcile_devices(incoming, &previous, &lan_peers, &HashMap::new(), &[], None);
 
         assert_eq!(reconciled[0].active_route.as_deref(), Some("lan"));
         assert!(reconciled[0].lan_available);
@@ -228,7 +275,8 @@ mod tests {
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "suspect".to_string())]);
 
-        let reconciled = reconcile_devices(incoming, &[], &lan_peers, &trusted, None);
+        let reconciled =
+            reconcile_devices(incoming, &[], &lan_peers, &HashMap::new(), &trusted, None);
 
         assert!(reconciled[0].online);
         assert!(reconciled[0].lan_available);
@@ -255,7 +303,14 @@ mod tests {
         }];
         mark_cloud_sources(&mut incoming);
 
-        let reconciled = reconcile_devices(incoming, &[], &HashMap::new(), &[], Some("local"));
+        let reconciled = reconcile_devices(
+            incoming,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            Some("local"),
+        );
 
         assert!(reconciled[0].online);
         assert!(reconciled[0].cloud_available);
@@ -288,10 +343,60 @@ mod tests {
             lan_paired: false,
         }];
 
-        let reconciled =
-            reconcile_devices(devices.clone(), &devices, &HashMap::new(), &trusted, None);
+        let reconciled = reconcile_devices(
+            devices.clone(),
+            &devices,
+            &HashMap::new(),
+            &HashMap::new(),
+            &trusted,
+            None,
+        );
 
         assert_eq!(reconciled[0].security_state, "unverified");
         assert_eq!(reconciled[0].active_route.as_deref(), Some("cloud"));
+    }
+
+    #[test]
+    fn fills_unknown_device_type_from_lan_peer_type() {
+        let incoming = vec![DeviceInfo {
+            device_id: "d1".to_string(),
+            name: "peer".to_string(),
+            device_type: "unknown".to_string(),
+            online: false,
+            cloud_available: false,
+            last_seen: None,
+            public_key: "pk".to_string(),
+            public_key_updated_at: None,
+            lan_available: false,
+            lan_state: "unavailable".to_string(),
+            active_route: None,
+            device_sources: Vec::new(),
+            security_state: "unverified".to_string(),
+        }];
+        let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
+        let lan_peer_types = HashMap::from([("d1".to_string(), "android".to_string())]);
+
+        let reconciled = reconcile_devices(incoming, &[], &lan_peers, &lan_peer_types, &[], None);
+
+        assert_eq!(reconciled[0].device_type, "android");
+    }
+
+    #[test]
+    fn fills_trusted_lan_only_device_type_from_lan_peer_type() {
+        let trusted = vec![TrustedPeerKeyRecord {
+            device_id: "d1".to_string(),
+            name: "peer".to_string(),
+            public_key: "pk".to_string(),
+            key_updated_at: 1,
+            trusted_at: Some(1),
+            lan_paired: true,
+        }];
+        let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
+        let lan_peer_types = HashMap::from([("d1".to_string(), "android".to_string())]);
+
+        let reconciled =
+            reconcile_devices(Vec::new(), &[], &lan_peers, &lan_peer_types, &trusted, None);
+
+        assert_eq!(reconciled[0].device_type, "android");
     }
 }

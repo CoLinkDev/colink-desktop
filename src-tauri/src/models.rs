@@ -148,6 +148,8 @@ pub struct TrustedPeerKeyRecord {
 pub struct LanPairingCandidate {
     pub device_id: String,
     pub name: String,
+    #[serde(rename = "type")]
+    pub device_type: String,
     pub ip: String,
     pub port: u16,
     pub state: String,

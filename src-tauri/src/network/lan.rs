@@ -82,6 +82,7 @@ struct LanState {
     peers: HashMap<String, PeerEntry>,
     peer_endpoints: HashMap<String, (String, u16)>,
     peer_names: HashMap<String, String>,
+    peer_types: HashMap<String, String>,
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
     probe_cursor: usize,
@@ -201,6 +202,7 @@ impl LanManager {
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
                 peer_names: HashMap::new(),
+                peer_types: HashMap::new(),
                 members: HashMap::new(),
                 gossip: VecDeque::new(),
                 probe_cursor: 0,
@@ -256,6 +258,7 @@ impl LanManager {
             inner.peers.clear();
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
+            inner.peer_types.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.transfer_tokens.clear();
@@ -292,6 +295,7 @@ impl LanManager {
             inner.active_device = None;
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
+            inner.peer_types.clear();
             inner.members.clear();
             inner.gossip.clear();
             inner.pairing_candidates.clear();
@@ -329,6 +333,37 @@ impl LanManager {
                 trusted
                     .contains(device_id)
                     .then(|| (device_id.clone(), record.state.as_str().to_string()))
+            })
+            .collect()
+    }
+
+    pub fn trusted_member_types(&self) -> HashMap<String, String> {
+        let trusted = self
+            .database
+            .load_trusted_peer_keys()
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| record.lan_paired)
+                    .map(|record| record.device_id)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+
+        let inner = self.inner.lock_unpoisoned();
+        inner
+            .members
+            .iter()
+            .filter(|(_, record)| matches!(record.state, MemberState::Alive | MemberState::Suspect))
+            .filter_map(|(device_id, _)| {
+                if !trusted.contains(device_id) {
+                    return None;
+                }
+                inner
+                    .peer_types
+                    .get(device_id)
+                    .and_then(|value| normalized_peer_type(value))
+                    .map(|device_type| (device_id.clone(), device_type))
             })
             .collect()
     }
@@ -645,6 +680,10 @@ impl LanManager {
             ("deviceId", context.device.device_id.as_str()),
             ("version", "1"),
         ];
+        let device_type = context.device.device_type.trim();
+        if !device_type.is_empty() {
+            properties.push(("type", device_type));
+        }
         if !name.is_empty() && name.len() <= 200 {
             properties.push(("name", name));
         }
@@ -690,6 +729,9 @@ impl LanManager {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
+        let device_type = service
+            .get_property_val_str("type")
+            .and_then(normalized_peer_type);
 
         let Some(ip) = service
             .get_addresses()
@@ -709,6 +751,9 @@ impl LanManager {
         self.remember_peer_endpoint(&device_id, ip, port);
         if let Some(name) = name {
             self.remember_peer_name(&device_id, name);
+        }
+        if let Some(device_type) = device_type {
+            self.remember_peer_type(&device_id, device_type);
         }
         let _ = self.event_tx.send(RuntimeEvent::LanDiscovered {
             device_id: device_id.clone(),
@@ -1805,7 +1850,7 @@ impl LanManager {
             self.remove_pairing_candidate(device_id);
             return;
         }
-        let (ip, port, name) = {
+        let (ip, port, name, device_type) = {
             let inner = self.inner.lock_unpoisoned();
             let Some((ip, port)) = inner.peer_endpoints.get(device_id).cloned() else {
                 return;
@@ -1816,13 +1861,19 @@ impl LanManager {
                 .cloned()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| device_id.to_string());
-            (ip, port, name)
+            let device_type = inner
+                .peer_types
+                .get(device_id)
+                .and_then(|value| normalized_peer_type(value))
+                .unwrap_or_else(|| "unknown".to_string());
+            (ip, port, name, device_type)
         };
         self.inner.lock_unpoisoned().pairing_candidates.insert(
             device_id.to_string(),
             LanPairingCandidate {
                 device_id: device_id.to_string(),
                 name,
+                device_type,
                 ip,
                 port,
                 state: state.as_str().to_string(),
@@ -1850,6 +1901,27 @@ impl LanManager {
             .peer_names
             .insert(device_id.to_string(), name);
         self.refresh_pairing_candidate(device_id);
+    }
+
+    fn remember_peer_type(&self, device_id: &str, device_type: String) {
+        self.inner
+            .lock_unpoisoned()
+            .peer_types
+            .insert(device_id.to_string(), device_type);
+        self.refresh_pairing_candidate(device_id);
+        let reachable = self
+            .inner
+            .lock_unpoisoned()
+            .members
+            .get(device_id)
+            .is_some_and(|member| {
+                matches!(member.state, MemberState::Alive | MemberState::Suspect)
+            });
+        if reachable && self.is_lan_trusted(device_id) {
+            let _ = self.event_tx.send(RuntimeEvent::LanDeviceStateChanged {
+                device_id: device_id.to_string(),
+            });
+        }
     }
 
     fn remove_pairing_candidate(&self, device_id: &str) {
@@ -2556,6 +2628,14 @@ fn is_usable_lan_ipv4(ip: Ipv4Addr) -> bool {
         && !ip.is_multicast()
         && !ip.is_broadcast()
         && ip != Ipv4Addr::UNSPECIFIED
+}
+
+fn normalized_peer_type(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "windows" | "macos" | "linux" | "android" | "ios" => Some(value),
+        _ => None,
+    }
 }
 
 fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {

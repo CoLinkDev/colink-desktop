@@ -43,6 +43,7 @@ export interface DeviceInfo {
 export interface LanPairingCandidate {
   deviceId: string
   name: string
+  type: DevicePlatform
   ip: string
   port: number
   state: string

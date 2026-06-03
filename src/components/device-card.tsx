@@ -35,6 +35,7 @@ export function DeviceCard({
   const { t } = useTranslation()
   const Icon = iconByType[device.type]
   const statuses = getDeviceStatuses(device, isLocalDevice, t)
+  const canForgetTrust = device.deviceSources.includes('trusted_peer_key') && Boolean(onForgetTrust)
 
   return (
     <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--text)/0.2)]">
@@ -93,7 +94,7 @@ export function DeviceCard({
           </button>
         )}
 
-        {(isLocalDevice && onRotateKey || device.type === 'unknown' && onForgetTrust) && (
+        {(isLocalDevice && onRotateKey || canForgetTrust) && (
           <>
             {isLocalDevice && onRotateKey && (
               <button
@@ -106,9 +107,9 @@ export function DeviceCard({
                 {actingId === device.deviceId ? t('devices.rotating') : t('devices.rotateKey')}
               </button>
             )}
-            {device.type === 'unknown' && onForgetTrust && (
+            {canForgetTrust && (
               <button
-                onClick={() => onForgetTrust(device.deviceId)}
+                onClick={() => onForgetTrust?.(device.deviceId)}
                 disabled={actingId === device.deviceId}
                 className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--danger))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--danger)/0.08)] active:scale-[0.98] disabled:opacity-40"
                 type="button"

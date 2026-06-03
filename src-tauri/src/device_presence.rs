@@ -16,6 +16,7 @@ pub fn replace_all(
     database: &Database,
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
+    lan_peer_types: &HashMap<String, String>,
     devices: Vec<DeviceInfo>,
     cloud_snapshot: bool,
 ) -> AppResult<Vec<DeviceInfo>> {
@@ -33,6 +34,7 @@ pub fn replace_all(
         devices,
         &previous,
         lan_peers,
+        lan_peer_types,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -43,6 +45,7 @@ pub fn update_one(
     database: &Database,
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
+    lan_peer_types: &HashMap<String, String>,
     device_id: &str,
     online: bool,
     payload: Option<DeviceOnlinePayload>,
@@ -68,6 +71,7 @@ pub fn update_one(
         devices,
         &previous,
         lan_peers,
+        lan_peer_types,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -78,6 +82,7 @@ pub fn reconcile_routes(
     database: &Database,
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
+    lan_peer_types: &HashMap<String, String>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let devices = database.load_cached_devices()?;
     let local_device_id = database
@@ -88,6 +93,7 @@ pub fn reconcile_routes(
         devices.clone(),
         &devices,
         lan_peers,
+        lan_peer_types,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -98,6 +104,7 @@ pub fn mark_cloud_unavailable(
     database: &Database,
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
+    lan_peer_types: &HashMap<String, String>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let mut devices = database.load_cached_devices()?;
     for device in &mut devices {
@@ -112,6 +119,7 @@ pub fn mark_cloud_unavailable(
         devices,
         &previous,
         lan_peers,
+        lan_peer_types,
         &trusted,
         local_device_id.as_deref(),
     );
