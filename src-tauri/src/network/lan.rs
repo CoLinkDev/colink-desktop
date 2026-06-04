@@ -51,7 +51,6 @@ const SERVICE_TYPE: &str = "_colink._tcp.local.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const REPLAY_DRIFT_MILLIS: i64 = 30_000;
 const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 180;
 const PING_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
@@ -2522,7 +2521,6 @@ fn build_handshake_proof(device: &DeviceIdentity, nonce: &str) -> AppResult<Hand
 }
 
 fn verify_handshake_proof(payload: &HandshakeProofPayload) -> AppResult<()> {
-    ensure_timestamp(payload.timestamp)?;
     let proof = format!(
         "{}{}{}",
         payload.device_id, payload.timestamp, payload.nonce
@@ -2589,14 +2587,6 @@ where
         }
     }
     Err(AppError::message("LAN connection ended"))
-}
-
-fn ensure_timestamp(timestamp: i64) -> AppResult<()> {
-    let drift = (unix_now_millis() - timestamp).abs();
-    if drift > REPLAY_DRIFT_MILLIS {
-        return Err(AppError::message("timestamp drift too large"));
-    }
-    Ok(())
 }
 
 async fn read_http_body(stream: &mut TcpStream) -> AppResult<Vec<u8>> {
