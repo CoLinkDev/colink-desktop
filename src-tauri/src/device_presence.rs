@@ -126,6 +126,18 @@ pub fn mark_cloud_unavailable(
     save_and_publish(database, app, reconciled)
 }
 
+pub fn reset_cached_presence(database: &Database, app: &AppHandle) -> AppResult<Vec<DeviceInfo>> {
+    let mut devices = database.load_cached_devices()?;
+    for device in &mut devices {
+        device.online = false;
+        device.cloud_available = false;
+        device.lan_available = false;
+        device.lan_state = "unavailable".to_string();
+        device.active_route = None;
+    }
+    save_and_publish(database, app, devices)
+}
+
 fn save_and_publish(
     database: &Database,
     app: &AppHandle,
@@ -160,6 +172,8 @@ fn align_local_identity(database: &Database, devices: &mut Vec<DeviceInfo>) -> A
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: vec!["local".to_string()],
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "verified".to_string(),
         });
         return Ok(());

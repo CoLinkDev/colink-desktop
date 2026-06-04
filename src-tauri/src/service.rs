@@ -67,7 +67,11 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let identity = ensure_local_device_identity(state)?;
     state.runtime.activate()?;
 
-    let session_summary = state.database.load_session()?.map(|session| {
+    let session = state.database.load_session()?;
+    if session.is_some() {
+        state.runtime.reset_cached_device_presence()?;
+    }
+    let session_summary = session.map(|session| {
         state.cloud.start();
         let _ = shell::refresh_tray(&state.app);
         session.summary()
@@ -596,6 +600,8 @@ fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
         lan_state: "unavailable".to_string(),
         active_route: None,
         device_sources: vec!["local".to_string()],
+        trusted_by_lan: false,
+        trusted_by_cloud: false,
         security_state: "verified".to_string(),
     }
 }

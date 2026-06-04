@@ -37,6 +37,8 @@ export interface DeviceInfo {
   lanState: 'alive' | 'suspect' | 'unavailable'
   activeRoute: string | null
   deviceSources: string[]
+  trustedByLan: boolean
+  trustedByCloud: boolean
   securityState: string
 }
 

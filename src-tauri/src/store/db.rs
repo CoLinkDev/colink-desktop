@@ -78,6 +78,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "split_trusted_peer_key_sources",
         run: migrate_10_split_trusted_peer_key_sources,
     },
+    Migration {
+        version: 11,
+        name: "add_device_cache_trust_flags",
+        run: migrate_11_add_device_cache_trust_flags,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -1022,6 +1027,10 @@ fn migrate_10_split_trusted_peer_key_sources(transaction: &Transaction<'_>) -> A
     Ok(())
 }
 
+fn migrate_11_add_device_cache_trust_flags(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -1160,6 +1169,12 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
         object
             .entry("deviceSources".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
+        object
+            .entry("trustedByLan".to_string())
+            .or_insert(Value::Bool(false));
+        object
+            .entry("trustedByCloud".to_string())
+            .or_insert(Value::Bool(false));
         normalize_device_sources_json(&mut object)?;
         object
             .entry("securityState".to_string())
@@ -1477,7 +1492,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1493,7 +1508,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1534,7 +1549,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1550,7 +1565,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1585,7 +1600,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1654,7 +1669,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1670,7 +1685,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1713,7 +1728,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1729,7 +1744,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1767,7 +1782,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1831,7 +1846,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1899,7 +1914,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1923,7 +1938,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -1938,7 +1953,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10)", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10, 11)", [])
             .expect("remove v9 marker");
         connection
             .execute(
@@ -1971,7 +1986,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
 
         let _ = fs::remove_file(path);
@@ -2084,6 +2099,8 @@ mod tests {
                     lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
+                    trusted_by_lan: false,
+                    trusted_by_cloud: false,
                     security_state: "unverified".to_string(),
                 }],
                 None,
@@ -2133,6 +2150,8 @@ mod tests {
                     lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
+                    trusted_by_lan: false,
+                    trusted_by_cloud: false,
                     security_state: "unverified".to_string(),
                 }],
                 None,
@@ -2182,6 +2201,8 @@ mod tests {
                     lan_state: "unavailable".to_string(),
                     active_route: None,
                     device_sources: vec!["cloud".to_string()],
+                    trusted_by_lan: false,
+                    trusted_by_cloud: false,
                     security_state: "unverified".to_string(),
                 }],
                 None,

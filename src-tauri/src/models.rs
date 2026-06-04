@@ -129,6 +129,8 @@ pub struct DeviceInfo {
     pub lan_state: String,
     pub active_route: Option<String>,
     pub device_sources: Vec<String>,
+    pub trusted_by_lan: bool,
+    pub trusted_by_cloud: bool,
     pub security_state: String,
 }
 

@@ -59,6 +59,8 @@ pub fn reconcile_devices(
                 device.lan_state = "unavailable".to_string();
                 device.active_route = None;
                 device.security_state = "verified".to_string();
+                device.trusted_by_lan = false;
+                device.trusted_by_cloud = false;
                 device.device_sources = merge_sources(&device.device_sources, true, false);
                 return device;
             }
@@ -82,6 +84,8 @@ pub fn reconcile_devices(
             device.lan_available = lan_available;
             device.lan_state = lan_state;
             device.online = device.cloud_available || lan_available;
+            device.trusted_by_lan = lan_trusted;
+            device.trusted_by_cloud = trust.is_some_and(|record| record.trusted_by_cloud);
             if trusted || lan_available {
                 device.security_state = "verified".to_string();
             } else if device.security_state == "verified" {
@@ -140,6 +144,8 @@ pub fn reconcile_devices(
             lan_state,
             active_route: lan_available.then(|| "lan".to_string()),
             device_sources: trusted_sources(record),
+            trusted_by_lan: record.trusted_by_lan,
+            trusted_by_cloud: record.trusted_by_cloud,
             security_state: "verified".to_string(),
         });
     }
@@ -247,6 +253,8 @@ mod tests {
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "unverified".to_string(),
         }];
         mark_cloud_sources(&mut incoming);
@@ -263,6 +271,8 @@ mod tests {
             lan_state: "alive".to_string(),
             active_route: Some("lan".to_string()),
             device_sources: vec!["cloud".to_string()],
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "verified".to_string(),
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
@@ -292,6 +302,8 @@ mod tests {
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "unverified".to_string(),
         }];
         let trusted = vec![TrustedPeerKeyRecord {
@@ -361,6 +373,8 @@ mod tests {
             lan_state: "unavailable".to_string(),
             active_route: Some("lan".to_string()),
             device_sources: vec!["cloud".to_string()],
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "verified".to_string(),
         }];
         let trusted = vec![TrustedPeerKeyRecord {
@@ -400,6 +414,8 @@ mod tests {
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "unverified".to_string(),
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);

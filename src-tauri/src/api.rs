@@ -53,6 +53,8 @@ impl From<CloudDeviceRecord> for DeviceInfo {
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: Vec::new(),
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "unverified".to_string(),
         }
     }

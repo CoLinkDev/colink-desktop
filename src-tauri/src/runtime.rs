@@ -252,6 +252,10 @@ impl AppRuntime {
         )
     }
 
+    pub fn reset_cached_device_presence(&self) -> AppResult<Vec<DeviceInfo>> {
+        device_presence::reset_cached_presence(&self.inner.database, &self.inner.app)
+    }
+
     pub fn list_lan_pairing_candidates(&self) -> Vec<LanPairingCandidate> {
         self.inner.lan.list_pairing_candidates()
     }

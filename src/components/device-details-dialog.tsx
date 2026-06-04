@@ -39,10 +39,11 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.fetchSource'), value: describeSources(device, isLocalDevice, t) },
     { label: t('devices.detailsFields.localReachable'), value: formatBoolean(isLocalDevice, t) },
     { label: t('devices.detailsFields.cloudAvailable'), value: formatBoolean(device.cloudAvailable, t) },
-    { label: t('devices.detailsFields.lanAvailable'), value: formatLanState(device.lanState, t) },
+    { label: t('devices.detailsFields.lanAvailable'), value: formatBoolean(device.lanAvailable, t) },
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
-    { label: t('devices.detailsFields.securityState'), value: formatSecurityState(device.securityState, t) },
-    { label: t('devices.lastSeen'), value: formatLastSeen(device.lastSeen, t('devices.neverConnected')) },
+    { label: t('devices.detailsFields.trustedByLan'), value: formatBoolean(device.trustedByLan, t) },
+    { label: t('devices.detailsFields.trustedByCloud'), value: formatBoolean(device.trustedByCloud, t) },
+    { label: t('devices.detailsFields.lastAlive'), value: formatLastSeen(device.lastSeen, t('devices.neverConnected')) },
     {
       label: t('devices.detailsFields.publicKeyFingerprint'),
       value: device.publicKey ? fingerprint || t('common.calculating') : t('common.none'),
@@ -147,16 +148,6 @@ function formatBoolean(value: boolean, t: (key: string) => string) {
   return value ? t('common.yes') : t('common.no')
 }
 
-function formatLanState(value: string, t: (key: string) => string) {
-  if (value === 'alive') {
-    return t('devices.lan')
-  }
-  if (value === 'suspect') {
-    return t('devices.lanSuspect')
-  }
-  return t('common.no')
-}
-
 function formatRoute(value: string | null, t: (key: string) => string) {
   if (!value) {
     return t('common.none')
@@ -165,18 +156,6 @@ function formatRoute(value: string | null, t: (key: string) => string) {
   const labels: Record<string, string> = {
     lan: t('devices.routes.lan'),
     cloud: t('devices.routes.cloud'),
-  }
-
-  return labels[value] ?? value
-}
-
-function formatSecurityState(value: string, t: (key: string) => string) {
-  const labels: Record<string, string> = {
-    verified: t('devices.securityStates.verified'),
-    unverified: t('devices.securityStates.unverified'),
-    trusted: t('devices.securityStates.trusted'),
-    unknown: t('devices.securityStates.unknown'),
-    key_changed: t('devices.securityStates.keyChanged'),
   }
 
   return labels[value] ?? value
