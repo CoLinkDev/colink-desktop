@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
 import type { DeviceInfo } from '../lib/types'
-import { formatLastSeen, formatPlatformName } from '../lib/utils'
+import { formatPlatformName } from '../lib/utils'
 import { Button } from './ui/button'
 
 interface DeviceDetailsDialogProps {
@@ -43,7 +43,7 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
     { label: t('devices.detailsFields.trustedByLan'), value: formatBoolean(device.trustedByLan, t) },
     { label: t('devices.detailsFields.trustedByCloud'), value: formatBoolean(device.trustedByCloud, t) },
-    { label: t('devices.detailsFields.lastAlive'), value: formatLastSeen(device.lastSeen, t('devices.neverConnected')) },
+    { label: t('devices.detailsFields.lastAlive'), value: device.lastSeen || t('devices.neverConnected') },
     {
       label: t('devices.detailsFields.publicKeyFingerprint'),
       value: device.publicKey ? fingerprint || t('common.calculating') : t('common.none'),

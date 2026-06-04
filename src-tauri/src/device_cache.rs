@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, SecondsFormat, Utc};
+
 use crate::models::{DeviceInfo, TrustedPeerKeyRecord};
 
 pub fn reconcile_devices(
@@ -10,6 +12,8 @@ pub fn reconcile_devices(
     trusted_devices: &[TrustedPeerKeyRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
+    let alive_seen_at = current_rfc3339_millis();
+
     if let Some(local_device_id) = local_device_id {
         if !incoming
             .iter()
@@ -83,6 +87,14 @@ pub fn reconcile_devices(
             let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
             device.lan_available = lan_available;
             device.lan_state = lan_state;
+            if device.last_seen.is_none() {
+                device.last_seen = previous_by_id
+                    .get(device.device_id.as_str())
+                    .and_then(|existing| existing.last_seen.clone());
+            }
+            if device.lan_state == "alive" {
+                device.last_seen = Some(alive_seen_at.clone());
+            }
             device.online = device.cloud_available || lan_available;
             device.trusted_by_lan = lan_trusted;
             device.trusted_by_cloud = trust.is_some_and(|record| record.trusted_by_cloud);
@@ -123,6 +135,13 @@ pub fn reconcile_devices(
             .cloned()
             .unwrap_or_else(|| "unavailable".to_string());
         let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
+        let last_seen = if lan_state == "alive" {
+            Some(alive_seen_at.clone())
+        } else {
+            previous_by_id
+                .get(record.device_id.as_str())
+                .and_then(|device| device.last_seen.clone())
+        };
         let device_type = reconcile_device_type(
             previous_by_id
                 .get(record.device_id.as_str())
@@ -137,7 +156,7 @@ pub fn reconcile_devices(
             device_type,
             online: lan_available,
             cloud_available: false,
-            last_seen: None,
+            last_seen,
             public_key: record.public_key.clone(),
             public_key_updated_at: Some(record.key_updated_at),
             lan_available,
@@ -151,6 +170,11 @@ pub fn reconcile_devices(
     }
 
     devices
+}
+
+fn current_rfc3339_millis() -> String {
+    let now: DateTime<Utc> = std::time::SystemTime::now().into();
+    now.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 pub fn mark_cloud_sources(devices: &mut [DeviceInfo]) {
