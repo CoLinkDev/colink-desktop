@@ -33,6 +33,8 @@ export interface DeviceInfo {
   lastSeen: string | null
   publicKey: string
   publicKeyUpdatedAt: number | null
+  localIp: string | null
+  localPort: number | null
   lanAvailable: boolean
   lanState: 'alive' | 'suspect' | 'unavailable'
   activeRoute: string | null

@@ -469,6 +469,10 @@ impl LanManager {
             .cloned()
     }
 
+    pub fn peer_endpoints(&self) -> HashMap<String, (String, u16)> {
+        self.inner.lock_unpoisoned().peer_endpoints.clone()
+    }
+
     pub fn list_pairing_candidates(&self) -> Vec<LanPairingCandidate> {
         let mut candidates = self
             .inner

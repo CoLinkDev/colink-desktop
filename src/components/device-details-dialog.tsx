@@ -40,6 +40,7 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     { label: t('devices.detailsFields.localReachable'), value: formatBoolean(isLocalDevice, t) },
     { label: t('devices.detailsFields.cloudAvailable'), value: formatBoolean(device.cloudAvailable, t) },
     { label: t('devices.detailsFields.lanAvailable'), value: formatBoolean(device.lanAvailable, t) },
+    { label: t('devices.detailsFields.lanEndpoint'), value: formatLanEndpoint(device, t), mono: true },
     { label: t('devices.detailsFields.activeRoute'), value: formatRoute(device.activeRoute, t) },
     { label: t('devices.detailsFields.trustedByLan'), value: formatBoolean(device.trustedByLan, t) },
     { label: t('devices.detailsFields.trustedByCloud'), value: formatBoolean(device.trustedByCloud, t) },
@@ -159,6 +160,14 @@ function formatRoute(value: string | null, t: (key: string) => string) {
   }
 
   return labels[value] ?? value
+}
+
+function formatLanEndpoint(device: DeviceInfo, t: (key: string) => string) {
+  if (!device.localIp) {
+    return t('common.none')
+  }
+
+  return device.localPort ? `${device.localIp}:${device.localPort}` : device.localIp
 }
 
 async function publicKeyFingerprint(publicKey: string) {

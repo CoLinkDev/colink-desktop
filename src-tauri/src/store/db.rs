@@ -83,6 +83,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_device_cache_trust_flags",
         run: migrate_11_add_device_cache_trust_flags,
     },
+    Migration {
+        version: 12,
+        name: "add_device_cache_lan_endpoint",
+        run: migrate_12_add_device_cache_lan_endpoint,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -1031,6 +1036,10 @@ fn migrate_11_add_device_cache_trust_flags(transaction: &Transaction<'_>) -> App
     migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
 }
 
+fn migrate_12_add_device_cache_lan_endpoint(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -1182,6 +1191,8 @@ fn normalize_device_cache_json(value: Value) -> AppResult<Value> {
         object
             .entry("publicKeyUpdatedAt".to_string())
             .or_insert(Value::Null);
+        object.entry("localIp".to_string()).or_insert(Value::Null);
+        object.entry("localPort".to_string()).or_insert(Value::Null);
         normalized.push(Value::Object(object));
     }
 
@@ -1492,7 +1503,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1508,7 +1519,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1549,7 +1560,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1565,7 +1576,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1600,7 +1611,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1669,7 +1680,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1685,7 +1696,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1728,7 +1739,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1744,7 +1755,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1782,7 +1793,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1846,7 +1857,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1914,7 +1925,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1938,7 +1949,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -1953,7 +1964,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10, 11)", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12)", [])
             .expect("remove v9 marker");
         connection
             .execute(
@@ -1986,7 +1997,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let _ = fs::remove_file(path);
@@ -2095,6 +2106,8 @@ mod tests {
                     last_seen: None,
                     public_key: "cloud-old".to_string(),
                     public_key_updated_at: Some(1_000_000_000_000),
+                    local_ip: None,
+                    local_port: None,
                     lan_available: false,
                     lan_state: "unavailable".to_string(),
                     active_route: None,
@@ -2146,6 +2159,8 @@ mod tests {
                     last_seen: None,
                     public_key: "cloud-new".to_string(),
                     public_key_updated_at: Some(2_000_000_000_000),
+                    local_ip: None,
+                    local_port: None,
                     lan_available: false,
                     lan_state: "unavailable".to_string(),
                     active_route: None,
@@ -2197,6 +2212,8 @@ mod tests {
                     last_seen: None,
                     public_key: "cloud-unknown".to_string(),
                     public_key_updated_at: None,
+                    local_ip: None,
+                    local_port: None,
                     lan_available: false,
                     lan_state: "unavailable".to_string(),
                     active_route: None,

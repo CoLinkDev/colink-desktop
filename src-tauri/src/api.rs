@@ -49,6 +49,8 @@ impl From<CloudDeviceRecord> for DeviceInfo {
             last_seen: record.last_seen,
             public_key: record.public_key,
             public_key_updated_at: parse_timestamp_millis(record.public_key_updated_at),
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,

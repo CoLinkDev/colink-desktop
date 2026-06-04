@@ -596,6 +596,8 @@ fn local_device_info(identity: &DeviceIdentity) -> DeviceInfo {
         last_seen: None,
         public_key: identity.public_key.clone(),
         public_key_updated_at: None,
+        local_ip: None,
+        local_port: None,
         lan_available: false,
         lan_state: "unavailable".to_string(),
         active_route: None,

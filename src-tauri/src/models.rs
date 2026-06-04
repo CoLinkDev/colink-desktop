@@ -125,6 +125,8 @@ pub struct DeviceInfo {
     pub last_seen: Option<String>,
     pub public_key: String,
     pub public_key_updated_at: Option<i64>,
+    pub local_ip: Option<String>,
+    pub local_port: Option<u16>,
     pub lan_available: bool,
     pub lan_state: String,
     pub active_route: Option<String>,

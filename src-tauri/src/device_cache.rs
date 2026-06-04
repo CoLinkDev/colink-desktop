@@ -9,6 +9,7 @@ pub fn reconcile_devices(
     previous: &[DeviceInfo],
     lan_peers: &HashMap<String, String>,
     lan_peer_types: &HashMap<String, String>,
+    lan_peer_endpoints: &HashMap<String, (String, u16)>,
     trusted_devices: &[TrustedPeerKeyRecord],
     local_device_id: Option<&str>,
 ) -> Vec<DeviceInfo> {
@@ -61,6 +62,8 @@ pub fn reconcile_devices(
                 device.online = true;
                 device.lan_available = false;
                 device.lan_state = "unavailable".to_string();
+                device.local_ip = None;
+                device.local_port = None;
                 device.active_route = None;
                 device.security_state = "verified".to_string();
                 device.trusted_by_lan = false;
@@ -87,6 +90,15 @@ pub fn reconcile_devices(
             let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
             device.lan_available = lan_available;
             device.lan_state = lan_state;
+            if lan_available {
+                if let Some((ip, port)) = lan_peer_endpoints.get(&device.device_id) {
+                    device.local_ip = Some(ip.clone());
+                    device.local_port = Some(*port);
+                }
+            } else {
+                device.local_ip = None;
+                device.local_port = None;
+            }
             if device.last_seen.is_none() {
                 device.last_seen = previous_by_id
                     .get(device.device_id.as_str())
@@ -135,6 +147,7 @@ pub fn reconcile_devices(
             .cloned()
             .unwrap_or_else(|| "unavailable".to_string());
         let lan_available = matches!(lan_state.as_str(), "alive" | "suspect");
+        let endpoint = lan_peer_endpoints.get(&record.device_id);
         let last_seen = if lan_state == "alive" {
             Some(alive_seen_at.clone())
         } else {
@@ -159,6 +172,8 @@ pub fn reconcile_devices(
             last_seen,
             public_key: record.public_key.clone(),
             public_key_updated_at: Some(record.key_updated_at),
+            local_ip: endpoint.map(|(ip, _)| ip.clone()),
+            local_port: endpoint.map(|(_, port)| *port),
             lan_available,
             lan_state,
             active_route: lan_available.then(|| "lan".to_string()),
@@ -273,6 +288,8 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,
@@ -291,6 +308,8 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: true,
             lan_state: "alive".to_string(),
             active_route: Some("lan".to_string()),
@@ -301,8 +320,15 @@ mod tests {
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
 
-        let reconciled =
-            reconcile_devices(incoming, &previous, &lan_peers, &HashMap::new(), &[], None);
+        let reconciled = reconcile_devices(
+            incoming,
+            &previous,
+            &lan_peers,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            None,
+        );
 
         assert_eq!(reconciled[0].active_route.as_deref(), Some("lan"));
         assert!(reconciled[0].lan_available);
@@ -322,6 +348,8 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,
@@ -340,8 +368,15 @@ mod tests {
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "suspect".to_string())]);
 
-        let reconciled =
-            reconcile_devices(incoming, &[], &lan_peers, &HashMap::new(), &trusted, None);
+        let reconciled = reconcile_devices(
+            incoming,
+            &[],
+            &lan_peers,
+            &HashMap::new(),
+            &HashMap::new(),
+            &trusted,
+            None,
+        );
 
         assert!(reconciled[0].online);
         assert!(reconciled[0].lan_available);
@@ -360,10 +395,14 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,
             device_sources: vec!["local".to_string()],
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
             security_state: "verified".to_string(),
         }];
         mark_cloud_sources(&mut incoming);
@@ -371,6 +410,7 @@ mod tests {
         let reconciled = reconcile_devices(
             incoming,
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &[],
@@ -393,6 +433,8 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: Some("lan".to_string()),
@@ -415,6 +457,7 @@ mod tests {
             &devices,
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
             &trusted,
             None,
         );
@@ -434,6 +477,8 @@ mod tests {
             last_seen: None,
             public_key: "pk".to_string(),
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,
@@ -445,7 +490,15 @@ mod tests {
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
         let lan_peer_types = HashMap::from([("d1".to_string(), "android".to_string())]);
 
-        let reconciled = reconcile_devices(incoming, &[], &lan_peers, &lan_peer_types, &[], None);
+        let reconciled = reconcile_devices(
+            incoming,
+            &[],
+            &lan_peers,
+            &lan_peer_types,
+            &HashMap::new(),
+            &[],
+            None,
+        );
 
         assert_eq!(reconciled[0].device_type, "android");
     }
@@ -463,9 +516,54 @@ mod tests {
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
         let lan_peer_types = HashMap::from([("d1".to_string(), "android".to_string())]);
 
-        let reconciled =
-            reconcile_devices(Vec::new(), &[], &lan_peers, &lan_peer_types, &trusted, None);
+        let reconciled = reconcile_devices(
+            Vec::new(),
+            &[],
+            &lan_peers,
+            &lan_peer_types,
+            &HashMap::new(),
+            &trusted,
+            None,
+        );
 
         assert_eq!(reconciled[0].device_type, "android");
+    }
+
+    #[test]
+    fn fills_lan_endpoint_for_reachable_device() {
+        let incoming = vec![DeviceInfo {
+            device_id: "d1".to_string(),
+            name: "peer".to_string(),
+            device_type: "android".to_string(),
+            online: false,
+            cloud_available: false,
+            last_seen: None,
+            public_key: "pk".to_string(),
+            public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
+            lan_available: false,
+            lan_state: "unavailable".to_string(),
+            active_route: None,
+            device_sources: Vec::new(),
+            trusted_by_lan: false,
+            trusted_by_cloud: false,
+            security_state: "unverified".to_string(),
+        }];
+        let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
+        let lan_peer_endpoints = HashMap::from([("d1".to_string(), ("192.168.1.5".to_string(), 27777))]);
+
+        let reconciled = reconcile_devices(
+            incoming,
+            &[],
+            &lan_peers,
+            &HashMap::new(),
+            &lan_peer_endpoints,
+            &[],
+            None,
+        );
+
+        assert_eq!(reconciled[0].local_ip.as_deref(), Some("192.168.1.5"));
+        assert_eq!(reconciled[0].local_port, Some(27777));
     }
 }

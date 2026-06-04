@@ -17,6 +17,7 @@ pub fn replace_all(
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
     lan_peer_types: &HashMap<String, String>,
+    lan_peer_endpoints: &HashMap<String, (String, u16)>,
     devices: Vec<DeviceInfo>,
     cloud_snapshot: bool,
 ) -> AppResult<Vec<DeviceInfo>> {
@@ -35,6 +36,7 @@ pub fn replace_all(
         &previous,
         lan_peers,
         lan_peer_types,
+        lan_peer_endpoints,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -46,6 +48,7 @@ pub fn update_one(
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
     lan_peer_types: &HashMap<String, String>,
+    lan_peer_endpoints: &HashMap<String, (String, u16)>,
     device_id: &str,
     online: bool,
     payload: Option<DeviceOnlinePayload>,
@@ -72,6 +75,7 @@ pub fn update_one(
         &previous,
         lan_peers,
         lan_peer_types,
+        lan_peer_endpoints,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -83,6 +87,7 @@ pub fn reconcile_routes(
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
     lan_peer_types: &HashMap<String, String>,
+    lan_peer_endpoints: &HashMap<String, (String, u16)>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let devices = database.load_cached_devices()?;
     let local_device_id = database
@@ -94,6 +99,7 @@ pub fn reconcile_routes(
         &devices,
         lan_peers,
         lan_peer_types,
+        lan_peer_endpoints,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -105,6 +111,7 @@ pub fn mark_cloud_unavailable(
     app: &AppHandle,
     lan_peers: &HashMap<String, String>,
     lan_peer_types: &HashMap<String, String>,
+    lan_peer_endpoints: &HashMap<String, (String, u16)>,
 ) -> AppResult<Vec<DeviceInfo>> {
     let mut devices = database.load_cached_devices()?;
     for device in &mut devices {
@@ -120,6 +127,7 @@ pub fn mark_cloud_unavailable(
         &previous,
         lan_peers,
         lan_peer_types,
+        lan_peer_endpoints,
         &trusted,
         local_device_id.as_deref(),
     );
@@ -133,6 +141,8 @@ pub fn reset_cached_presence(database: &Database, app: &AppHandle) -> AppResult<
         device.cloud_available = false;
         device.lan_available = false;
         device.lan_state = "unavailable".to_string();
+        device.local_ip = None;
+        device.local_port = None;
         device.active_route = None;
     }
     save_and_publish(database, app, devices)
@@ -168,6 +178,8 @@ fn align_local_identity(database: &Database, devices: &mut Vec<DeviceInfo>) -> A
             last_seen: None,
             public_key: identity.public_key,
             public_key_updated_at: None,
+            local_ip: None,
+            local_port: None,
             lan_available: false,
             lan_state: "unavailable".to_string(),
             active_route: None,
