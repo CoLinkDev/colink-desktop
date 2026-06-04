@@ -34,7 +34,7 @@ pub fn initialize(app: &AppHandle) -> AppResult<TracingGuard> {
     let filter = std::env::var("COLINK_LOG")
         .ok()
         .and_then(|value| EnvFilter::try_new(value).ok())
-        .unwrap_or_else(|| EnvFilter::new("info"));
+        .unwrap_or_else(default_log_filter);
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -52,6 +52,14 @@ pub fn initialize(app: &AppHandle) -> AppResult<TracingGuard> {
     Ok(TracingGuard {
         _guard: Mutex::new(Some(guard)),
     })
+}
+
+fn default_log_filter() -> EnvFilter {
+    if cfg!(debug_assertions) {
+        EnvFilter::new("colink_desktop=debug")
+    } else {
+        EnvFilter::new("info")
+    }
 }
 
 fn prune_old_logs(log_dir: &Path) -> AppResult<()> {
