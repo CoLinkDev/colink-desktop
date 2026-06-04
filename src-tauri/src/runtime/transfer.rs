@@ -43,6 +43,10 @@ enum ChunkTransport {
     Lan,
 }
 
+const REASON_TRANSFER_USER_CANCELLED: &str = "colink:transfer.user_cancelled.v1";
+const REASON_TRANSFER_USER_REJECTED: &str = "colink:transfer.user_rejected.v1";
+const REASON_TRANSFER_CHECKSUM_MISMATCH: &str = "colink:transfer.checksum_mismatch.v1";
+
 impl AppRuntime {
     pub async fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
         if payload.paths.is_empty() {
@@ -174,7 +178,7 @@ impl AppRuntime {
                 FILE_CANCEL_TYPE,
                 FileCancelPayload {
                     session_id: file_id.to_string(),
-                    reason: "user cancelled".to_string(),
+                    reason: REASON_TRANSFER_USER_CANCELLED.to_string(),
                 },
             )?;
             let runtime = self.clone();
@@ -182,10 +186,10 @@ impl AppRuntime {
                 let _ = runtime.send_business_message(&device_id, envelope).await;
             });
         }
-        let _ = self
-            .inner
-            .lan
-            .send_transfer_frame(file_id, FileDataFrame::cancel("user cancelled"));
+        let _ = self.inner.lan.send_transfer_frame(
+            file_id,
+            FileDataFrame::cancel(REASON_TRANSFER_USER_CANCELLED),
+        );
         self.inner.lan.unregister_transfer(file_id);
 
         let mut record = match active_record {
@@ -256,7 +260,7 @@ impl AppRuntime {
                 FILE_REJECT_TYPE,
                 FileRejectPayload {
                     session_id: payload.session_id,
-                    reason: "user rejected".to_string(),
+                    reason: REASON_TRANSFER_USER_REJECTED.to_string(),
                 },
             )?;
             let _ = self.send_business_message(from, envelope).await?;
@@ -525,10 +529,10 @@ impl AppRuntime {
 
     fn cleanup_transport_after_cancel(&self, file_id: &str, transport: ChunkTransport) {
         if let ChunkTransport::Lan = transport {
-            let _ = self
-                .inner
-                .lan
-                .send_transfer_frame(file_id, FileDataFrame::cancel("user cancelled"));
+            let _ = self.inner.lan.send_transfer_frame(
+                file_id,
+                FileDataFrame::cancel(REASON_TRANSFER_USER_CANCELLED),
+            );
             self.inner.lan.unregister_transfer(file_id);
         }
     }
@@ -807,7 +811,7 @@ impl AppRuntime {
         record.error = if success {
             None
         } else {
-            Some("checksum mismatch".to_string())
+            Some(REASON_TRANSFER_CHECKSUM_MISMATCH.to_string())
         };
         record.updated_at = unix_now_millis();
         self.inner.database.save_transfer(&record)?;
@@ -821,7 +825,7 @@ impl AppRuntime {
                 reason: if success {
                     None
                 } else {
-                    Some("checksum mismatch".to_string())
+                    Some(REASON_TRANSFER_CHECKSUM_MISMATCH.to_string())
                 },
             },
         )?;

@@ -62,6 +62,9 @@ const SWIM_SUSPECT_MISSES: u8 = 2;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 5_000;
 const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
+const REASON_HANDSHAKE_USER_REJECTED: &str = "colink:handshake.user_rejected.v1";
+const REASON_HANDSHAKE_SIGNATURE_INVALID: &str = "colink:handshake.signature_invalid.v1";
+const REASON_HANDSHAKE_KEY_CHANGED: &str = "colink:handshake.key_changed.v1";
 
 enum TransferStreamEvent {
     Activity,
@@ -2189,7 +2192,17 @@ async fn perform_outbound_handshake(
     if peer_payload.device_id != expected_device_id {
         return Err(AppError::message("LAN handshake device mismatch"));
     }
-    verify_handshake_proof(&peer_payload)?;
+    if let Err(error) = verify_handshake_proof(&peer_payload) {
+        let _ = write_peer_message(
+            &mut stream,
+            "handshake.v1.reject",
+            &HandshakeRejectPayload {
+                reason: REASON_HANDSHAKE_SIGNATURE_INVALID.to_string(),
+            },
+        )
+        .await;
+        return Err(error);
+    }
     let proof = PeerProof {
         device_id: peer_payload.device_id,
         public_key: peer_payload.public_key,
@@ -2203,7 +2216,7 @@ async fn perform_outbound_handshake(
             &mut stream,
             "handshake.v1.reject",
             &HandshakeRejectPayload {
-                reason: "key_changed".to_string(),
+                reason: REASON_HANDSHAKE_KEY_CHANGED.to_string(),
             },
         )
         .await;
@@ -2217,7 +2230,7 @@ async fn perform_outbound_handshake(
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
             TrustState::Trusted => "trusted",
-            TrustState::KeyChanged => "key_changed",
+            TrustState::KeyChanged => REASON_HANDSHAKE_KEY_CHANGED,
         };
         let code = pairing_code(
             &context.device.public_key,
@@ -2347,7 +2360,17 @@ async fn perform_inbound_handshake(
         return Err(AppError::message("invalid LAN handshake request type"));
     }
     let peer_payload: HandshakeProofPayload = serde_json::from_value(request.payload)?;
-    verify_handshake_proof(&peer_payload)?;
+    if let Err(error) = verify_handshake_proof(&peer_payload) {
+        write_peer_message(
+            &mut stream,
+            "handshake.v1.reject",
+            &HandshakeRejectPayload {
+                reason: REASON_HANDSHAKE_SIGNATURE_INVALID.to_string(),
+            },
+        )
+        .await?;
+        return Err(error);
+    }
     let proof = PeerProof {
         device_id: peer_payload.device_id,
         public_key: peer_payload.public_key,
@@ -2361,7 +2384,7 @@ async fn perform_inbound_handshake(
             &mut stream,
             "handshake.v1.reject",
             &HandshakeRejectPayload {
-                reason: "key_changed".to_string(),
+                reason: REASON_HANDSHAKE_KEY_CHANGED.to_string(),
             },
         )
         .await?;
@@ -2377,7 +2400,7 @@ async fn perform_inbound_handshake(
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
             TrustState::Trusted => "trusted",
-            TrustState::KeyChanged => "key_changed",
+            TrustState::KeyChanged => REASON_HANDSHAKE_KEY_CHANGED,
         };
         let code = pairing_code(
             &proof.public_key,
@@ -2400,7 +2423,7 @@ async fn perform_inbound_handshake(
                 &mut stream,
                 "handshake.v1.reject",
                 &HandshakeRejectPayload {
-                    reason: "user_rejected".to_string(),
+                    reason: REASON_HANDSHAKE_USER_REJECTED.to_string(),
                 },
             )
             .await?;
