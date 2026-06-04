@@ -55,8 +55,8 @@ const REPLAY_DRIFT_MILLIS: i64 = 30_000;
 const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 180;
 const PING_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
-const SWIM_PERIOD: Duration = Duration::from_millis(1_000);
-const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SWIM_PERIOD: Duration = Duration::from_millis(2_000);
+const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(1_000);
 const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
 const SWIM_SUSPECT_MISSES: u8 = 2;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 5_000;
@@ -86,6 +86,7 @@ struct LanState {
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
     probe_cursor: usize,
+    probe_in_flight: HashSet<String>,
     seq: u64,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
@@ -206,6 +207,7 @@ impl LanManager {
                 members: HashMap::new(),
                 gossip: VecDeque::new(),
                 probe_cursor: 0,
+                probe_in_flight: HashSet::new(),
                 seq: 0,
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
@@ -261,6 +263,7 @@ impl LanManager {
             inner.peer_types.clear();
             inner.members.clear();
             inner.gossip.clear();
+            inner.probe_in_flight.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
             inner.pending_pairings.clear();
@@ -298,6 +301,7 @@ impl LanManager {
             inner.peer_types.clear();
             inner.members.clear();
             inner.gossip.clear();
+            inner.probe_in_flight.clear();
             inner.pairing_candidates.clear();
             inner.transfer_tokens.clear();
             (
@@ -639,7 +643,7 @@ impl LanManager {
                     }
                 }
                 _ = swim_interval.tick() => {
-                    self.probe_next_member(generation, context.clone()).await;
+                    self.schedule_probe_next_member(generation, context.clone());
                 }
                 _ = suspect_interval.tick() => {
                     self.promote_expired_suspects(generation);
@@ -1395,10 +1399,20 @@ impl LanManager {
         Ok(response.json::<SwimEnvelope>().await?)
     }
 
-    async fn probe_next_member(&self, generation: u64, context: LanContext) {
+    fn schedule_probe_next_member(&self, generation: u64, context: LanContext) {
         let Some(target) = self.next_probe_target(&context.device.device_id) else {
             return;
         };
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            manager
+                .probe_member(generation, context, target.clone())
+                .await;
+            manager.finish_probe(generation, &target);
+        });
+    }
+
+    async fn probe_member(&self, generation: u64, context: LanContext, target: String) {
         debug!(%target, "probing swim member");
         match self.send_swim_ping(&context, &target).await {
             Ok(ack) => {
@@ -1451,6 +1465,7 @@ impl LanManager {
                 device_id.as_str() != local_device_id
                     && matches!(member.state, MemberState::Alive | MemberState::Suspect)
                     && inner.peer_endpoints.contains_key(*device_id)
+                    && !inner.probe_in_flight.contains(*device_id)
             })
             .map(|(device_id, _)| device_id.clone())
             .collect::<Vec<_>>();
@@ -1462,7 +1477,15 @@ impl LanManager {
         }
         let target = candidates[inner.probe_cursor].clone();
         inner.probe_cursor = (inner.probe_cursor + 1) % candidates.len();
+        inner.probe_in_flight.insert(target.clone());
         Some(target)
+    }
+
+    fn finish_probe(&self, generation: u64, target: &str) {
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation == generation {
+            inner.probe_in_flight.remove(target);
+        }
     }
 
     fn indirect_targets(&self, local_device_id: &str, target: &str) -> Vec<String> {
