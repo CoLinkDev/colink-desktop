@@ -14,7 +14,6 @@ use tokio::{
 use tracing::{debug, info};
 
 use crate::{
-    error::AppResult,
     network::transport::TransportManager,
     protocol::{
         BusinessEnvelope, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
@@ -33,11 +32,16 @@ const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
 const NONE_APP_CLOSE_DELAY: Duration = Duration::from_secs(1);
+const FAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_secs(2);
+const NEAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_millis(200);
+const VERY_NEAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
+const NEAR_LYRIC_THRESHOLD_MS: i64 = 500;
+const VERY_NEAR_LYRIC_THRESHOLD_MS: i64 = 300;
 
 #[derive(Clone)]
 pub struct MusicService {
-    transport: TransportManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    send_tx: mpsc::UnboundedSender<MusicSendJob>,
     lyric_cache: Arc<Mutex<HashMap<String, MusicLyricPayload>>>,
     state: Arc<Mutex<MusicState>>,
 }
@@ -73,11 +77,26 @@ struct LyricFetchResult {
     payload: MusicLyricPayload,
 }
 
+#[derive(Clone)]
+struct LastProgressPush {
+    payload: MusicProgressPayload,
+    sent_at: Instant,
+}
+
+struct MusicSendJob {
+    device_id: String,
+    label: &'static str,
+    envelope: BusinessEnvelope,
+}
+
 impl MusicService {
     pub fn new(transport: TransportManager, event_tx: mpsc::UnboundedSender<RuntimeEvent>) -> Self {
+        let (send_tx, send_rx) = mpsc::unbounded_channel();
+        spawn_music_sender(transport.clone(), event_tx.clone(), send_rx);
+
         Self {
-            transport,
             event_tx,
+            send_tx,
             lyric_cache: Arc::new(Mutex::new(HashMap::new())),
             state: Arc::new(Mutex::new(MusicState {
                 running: false,
@@ -187,7 +206,8 @@ impl MusicService {
         let (lyric_tx, mut lyric_rx) = mpsc::unbounded_channel::<LyricFetchResult>();
         let mut prev_status = PlaybackStatus::None;
         let mut prev_track_key: Option<TrackKey> = None;
-        let mut prev_progress_ms: i64 = 0;
+        let mut prev_progress: Option<MusicProgressPayload> = None;
+        let mut last_progress_push: Option<LastProgressPush> = None;
         let mut none_since: Option<Instant> = None;
         let mut request_id = 0_u64;
 
@@ -227,7 +247,8 @@ impl MusicService {
                         &active_ids,
                         &mut prev_status,
                         &mut prev_track_key,
-                        &mut prev_progress_ms,
+                        &mut prev_progress,
+                        &mut last_progress_push,
                         &mut none_since,
                         &mut request_id,
                         &lyric_tx,
@@ -258,7 +279,8 @@ impl MusicService {
         _active_ids: &[String],
         prev_status: &mut PlaybackStatus,
         prev_track_key: &mut Option<TrackKey>,
-        prev_progress_ms: &mut i64,
+        prev_progress: &mut Option<MusicProgressPayload>,
+        last_progress_push: &mut Option<LastProgressPush>,
         none_since: &mut Option<Instant>,
         request_id: &mut u64,
         lyric_tx: &mpsc::UnboundedSender<LyricFetchResult>,
@@ -278,7 +300,8 @@ impl MusicService {
                         self.clear_playback_state().await;
                         *request_id += 1;
                         *prev_track_key = None;
-                        *prev_progress_ms = 0;
+                        *prev_progress = None;
+                        *last_progress_push = None;
                         *prev_status = PlaybackStatus::None;
                         *none_since = None;
                         return;
@@ -294,18 +317,46 @@ impl MusicService {
                 let progress_ms = state.progress_ms.unwrap_or(0);
 
                 if track_changed {
+                    let progress = build_progress_payload(&state, progress_ms);
                     *request_id += 1;
                     *prev_track_key = Some(track_key);
-                    *prev_progress_ms = progress_ms;
+                    *prev_progress = progress.clone();
                     *prev_status = PlaybackStatus::Active;
                     self.publish_track_change(&state, progress_ms).await;
+                    *last_progress_push = progress.map(|payload| LastProgressPush {
+                        payload,
+                        sent_at: Instant::now(),
+                    });
                     self.spawn_lyric_fetch(*request_id, state.track_id.clone(), lyric_tx.clone());
                     return;
                 }
 
-                if progress_ms != *prev_progress_ms {
-                    *prev_progress_ms = progress_ms;
-                    self.publish_progress(&state, progress_ms).await;
+                let progress = build_progress_payload(&state, progress_ms);
+                if progress_payload_changed(prev_progress.as_ref(), progress.as_ref()) {
+                    *prev_progress = progress.clone();
+                    match progress {
+                        Some(payload) => {
+                            let now = Instant::now();
+                            let lyric = self.current_lyric_for_track(&payload.track_id);
+                            let should_push = should_push_progress(
+                                &payload,
+                                last_progress_push.as_ref(),
+                                lyric.as_ref(),
+                                now,
+                            );
+                            self.update_progress(payload.clone(), should_push).await;
+                            if should_push {
+                                *last_progress_push = Some(LastProgressPush {
+                                    payload,
+                                    sent_at: now,
+                                });
+                            }
+                        }
+                        None => {
+                            self.clear_progress_snapshot();
+                            *last_progress_push = None;
+                        }
+                    }
                 }
                 *prev_status = PlaybackStatus::Active;
             }
@@ -372,19 +423,34 @@ impl MusicService {
         }
     }
 
-    async fn publish_progress(&self, state: &CdpPlayingState, progress_ms: i64) {
-        let Some(progress) = build_progress_payload(state, progress_ms) else {
-            return;
-        };
-
+    async fn update_progress(&self, progress: MusicProgressPayload, send: bool) {
         {
             let mut guard = self.state.lock_unpoisoned();
             guard.snapshot.progress = Some(progress.clone());
         }
 
+        if !send {
+            return;
+        }
+
         for device_id in self.prune_active_receivers() {
             self.send_progress_message(&device_id, &progress).await;
         }
+    }
+
+    fn clear_progress_snapshot(&self) {
+        let mut guard = self.state.lock_unpoisoned();
+        guard.snapshot.progress = None;
+    }
+
+    fn current_lyric_for_track(&self, track_id: &str) -> Option<MusicLyricPayload> {
+        let state = self.state.lock_unpoisoned();
+        state
+            .snapshot
+            .lyric
+            .as_ref()
+            .filter(|payload| payload.track_id == track_id)
+            .cloned()
     }
 
     fn spawn_lyric_fetch(
@@ -465,9 +531,7 @@ impl MusicService {
     }
 
     async fn send_track_message(&self, device_id: &str, payload: &MusicTrackPayload) {
-        if let Err(error) = self
-            .send_music_message(device_id, MUSIC_TRACK_TYPE, payload)
-            .await
+        if let Err(error) = self.queue_music_message(device_id, "track", MUSIC_TRACK_TYPE, payload)
         {
             self.log_warn(format!(
                 "failed to send music track to {device_id}: {error}"
@@ -476,9 +540,7 @@ impl MusicService {
     }
 
     async fn send_lyric_message(&self, device_id: &str, payload: &MusicLyricPayload) {
-        if let Err(error) = self
-            .send_music_message(device_id, MUSIC_LYRIC_TYPE, payload)
-            .await
+        if let Err(error) = self.queue_music_message(device_id, "lyric", MUSIC_LYRIC_TYPE, payload)
         {
             self.log_warn(format!(
                 "failed to send music lyric to {device_id}: {error}"
@@ -487,9 +549,8 @@ impl MusicService {
     }
 
     async fn send_progress_message(&self, device_id: &str, payload: &MusicProgressPayload) {
-        if let Err(error) = self
-            .send_music_message(device_id, MUSIC_PROGRESS_TYPE, payload)
-            .await
+        if let Err(error) =
+            self.queue_music_message(device_id, "progress", MUSIC_PROGRESS_TYPE, payload)
         {
             self.log_warn(format!(
                 "failed to send music progress to {device_id}: {error}"
@@ -497,17 +558,25 @@ impl MusicService {
         }
     }
 
-    async fn send_music_message<T>(
+    fn queue_music_message<T>(
         &self,
         device_id: &str,
+        label: &'static str,
         message_type: &str,
         payload: &T,
-    ) -> AppResult<()>
+    ) -> Result<(), String>
     where
         T: serde::Serialize,
     {
-        let envelope = BusinessEnvelope::from_payload(message_type, payload)?;
-        self.transport.send(device_id, envelope).await?;
+        let envelope = BusinessEnvelope::from_payload(message_type, payload)
+            .map_err(|error| error.to_string())?;
+        self.send_tx
+            .send(MusicSendJob {
+                device_id: device_id.to_string(),
+                label,
+                envelope,
+            })
+            .map_err(|_| "music send queue is closed".to_string())?;
         Ok(())
     }
 
@@ -526,6 +595,39 @@ impl MusicService {
             message: message.into(),
         });
     }
+}
+
+fn spawn_music_sender(
+    transport: TransportManager,
+    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    mut send_rx: mpsc::UnboundedReceiver<MusicSendJob>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(job) = send_rx.recv().await {
+            if let Err(error) = transport.send(&job.device_id, job.envelope).await {
+                emit_music_log(
+                    &event_tx,
+                    "warn",
+                    format!(
+                        "failed to send music {} to {}: {}",
+                        job.label, job.device_id, error
+                    ),
+                );
+            }
+        }
+    });
+}
+
+fn emit_music_log(
+    event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
+    level: &str,
+    message: impl Into<String>,
+) {
+    let _ = event_tx.send(RuntimeEvent::Log {
+        level: level.to_string(),
+        source: "music".to_string(),
+        message: message.into(),
+    });
 }
 
 fn build_track_payload(state: &CdpPlayingState) -> Option<MusicTrackPayload> {
@@ -572,6 +674,102 @@ fn build_progress_payload(
     })
 }
 
+fn progress_payload_changed(
+    previous: Option<&MusicProgressPayload>,
+    next: Option<&MusicProgressPayload>,
+) -> bool {
+    match (previous, next) {
+        (Some(previous), Some(next)) => {
+            previous.track_id != next.track_id
+                || previous.progress != next.progress
+                || previous.paused != next.paused
+        }
+        (None, None) => false,
+        _ => true,
+    }
+}
+
+fn should_push_progress(
+    payload: &MusicProgressPayload,
+    previous: Option<&LastProgressPush>,
+    lyric: Option<&MusicLyricPayload>,
+    now: Instant,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+
+    if previous.payload.track_id != payload.track_id || previous.payload.paused != payload.paused {
+        return true;
+    }
+
+    if previous.payload.progress == payload.progress {
+        return false;
+    }
+
+    if payload.progress < previous.payload.progress {
+        return true;
+    }
+
+    if crossed_lyric_line(previous.payload.progress, payload.progress, lyric) {
+        return true;
+    }
+
+    now.duration_since(previous.sent_at) >= progress_publish_interval(payload.progress, lyric)
+}
+
+fn progress_publish_interval(progress_ms: i64, lyric: Option<&MusicLyricPayload>) -> Duration {
+    let Some(remaining_ms) = next_lyric_remaining_ms(progress_ms, lyric) else {
+        return FAR_PROGRESS_PUBLISH_INTERVAL;
+    };
+
+    if remaining_ms <= VERY_NEAR_LYRIC_THRESHOLD_MS {
+        VERY_NEAR_PROGRESS_PUBLISH_INTERVAL
+    } else if remaining_ms <= NEAR_LYRIC_THRESHOLD_MS {
+        NEAR_PROGRESS_PUBLISH_INTERVAL
+    } else {
+        FAR_PROGRESS_PUBLISH_INTERVAL
+    }
+}
+
+fn next_lyric_remaining_ms(progress_ms: i64, lyric: Option<&MusicLyricPayload>) -> Option<i64> {
+    let lyric = lyric?;
+    let progress_ms = progress_ms.max(0);
+
+    lyric
+        .lines
+        .iter()
+        .flatten()
+        .chain(lyric.translated_lines.iter().flatten())
+        .filter_map(|line| {
+            let remaining = line.time - progress_ms;
+            (remaining > 0).then_some(remaining)
+        })
+        .min()
+}
+
+fn crossed_lyric_line(
+    previous_progress_ms: i64,
+    current_progress_ms: i64,
+    lyric: Option<&MusicLyricPayload>,
+) -> bool {
+    let Some(lyric) = lyric else {
+        return false;
+    };
+    let previous_progress_ms = previous_progress_ms.max(0);
+    let current_progress_ms = current_progress_ms.max(0);
+    if current_progress_ms <= previous_progress_ms {
+        return false;
+    }
+
+    lyric
+        .lines
+        .iter()
+        .flatten()
+        .chain(lyric.translated_lines.iter().flatten())
+        .any(|line| line.time > previous_progress_ms && line.time <= current_progress_ms)
+}
+
 fn track_key(state: &CdpPlayingState) -> TrackKey {
     TrackKey {
         track_id: state.track_id.clone(),
@@ -599,4 +797,121 @@ fn non_empty(value: &str) -> Option<String> {
 
 fn is_cancelled(cancel_rx: &watch::Receiver<bool>) -> bool {
     *cancel_rx.borrow()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::protocol::MusicLyricLinePayload;
+    use tokio::time::Instant;
+
+    use super::{
+        crossed_lyric_line, next_lyric_remaining_ms, progress_publish_interval,
+        should_push_progress, LastProgressPush, MusicLyricPayload, MusicProgressPayload,
+        FAR_PROGRESS_PUBLISH_INTERVAL, NEAR_PROGRESS_PUBLISH_INTERVAL,
+        VERY_NEAR_PROGRESS_PUBLISH_INTERVAL,
+    };
+
+    #[test]
+    fn chooses_progress_publish_interval_by_next_lyric_distance() {
+        let lyric = MusicLyricPayload {
+            track_id: "track".to_string(),
+            lines: Some(vec![
+                MusicLyricLinePayload {
+                    time: 1_000,
+                    text: "first".to_string(),
+                },
+                MusicLyricLinePayload {
+                    time: 5_000,
+                    text: "second".to_string(),
+                },
+            ]),
+            translated_lines: None,
+        };
+
+        assert_eq!(
+            progress_publish_interval(400, Some(&lyric)),
+            FAR_PROGRESS_PUBLISH_INTERVAL
+        );
+        assert_eq!(
+            progress_publish_interval(500, Some(&lyric)),
+            NEAR_PROGRESS_PUBLISH_INTERVAL
+        );
+        assert_eq!(
+            progress_publish_interval(700, Some(&lyric)),
+            VERY_NEAR_PROGRESS_PUBLISH_INTERVAL
+        );
+        assert_eq!(
+            progress_publish_interval(5_100, Some(&lyric)),
+            FAR_PROGRESS_PUBLISH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn reads_next_lyric_time_from_primary_or_translated_lines() {
+        let lyric = MusicLyricPayload {
+            track_id: "track".to_string(),
+            lines: None,
+            translated_lines: Some(vec![MusicLyricLinePayload {
+                time: 1_200,
+                text: "translated".to_string(),
+            }]),
+        };
+
+        assert_eq!(next_lyric_remaining_ms(1_000, Some(&lyric)), Some(200));
+        assert_eq!(next_lyric_remaining_ms(1_200, Some(&lyric)), None);
+    }
+
+    #[test]
+    fn pushes_progress_when_crossing_lyric_line() {
+        let lyric = MusicLyricPayload {
+            track_id: "track".to_string(),
+            lines: Some(vec![MusicLyricLinePayload {
+                time: 1_000,
+                text: "line".to_string(),
+            }]),
+            translated_lines: None,
+        };
+        let now = Instant::now();
+        let previous = LastProgressPush {
+            payload: MusicProgressPayload {
+                track_id: "track".to_string(),
+                progress: 900,
+                paused: false,
+            },
+            sent_at: now,
+        };
+        let current = MusicProgressPayload {
+            track_id: "track".to_string(),
+            progress: 1_000,
+            paused: false,
+        };
+
+        assert!(crossed_lyric_line(900, 1_000, Some(&lyric)));
+        assert!(should_push_progress(
+            &current,
+            Some(&previous),
+            Some(&lyric),
+            now
+        ));
+    }
+
+    #[test]
+    fn pushes_progress_when_playback_seeks_backwards() {
+        let now = Instant::now();
+        let previous = LastProgressPush {
+            payload: MusicProgressPayload {
+                track_id: "track".to_string(),
+                progress: 10_000,
+                paused: false,
+            },
+            sent_at: now,
+        };
+        let current = MusicProgressPayload {
+            track_id: "track".to_string(),
+            progress: 5_000,
+            paused: false,
+        };
+
+        assert!(should_push_progress(&current, Some(&previous), None, now));
+    }
 }
