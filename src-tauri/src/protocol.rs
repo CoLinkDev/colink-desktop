@@ -16,6 +16,7 @@ pub const MUSIC_TRACK_TYPE: &str = "music.v1.track";
 pub const MUSIC_LYRIC_TYPE: &str = "music.v1.lyric";
 pub const MUSIC_PROGRESS_TYPE: &str = "music.v1.progress";
 pub const MUSIC_ALIVE_TYPE: &str = "music.v1.alive";
+pub const MUSIC_REQUEST_TYPE: &str = "music.v1.request";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -165,6 +166,13 @@ pub struct MusicProgressPayload {
 pub struct MusicAlivePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicRequestPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,8 +386,9 @@ pub struct SwimGossip {
 mod tests {
     use super::{
         BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicAlivePayload,
-        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
-        MUSIC_ALIVE_TYPE, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicRequestPayload,
+        MusicTrackPayload, MUSIC_ALIVE_TYPE, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE,
+        MUSIC_REQUEST_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -418,8 +427,10 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_TRACK_TYPE, payload).unwrap())
-                .unwrap(),
+            serde_json::to_value(
+                BusinessEnvelope::from_payload(MUSIC_TRACK_TYPE, payload).unwrap()
+            )
+            .unwrap(),
             serde_json::json!({
                 "type": "music.v1.track",
                 "payload": {
@@ -450,8 +461,10 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_LYRIC_TYPE, payload).unwrap())
-                .unwrap(),
+            serde_json::to_value(
+                BusinessEnvelope::from_payload(MUSIC_LYRIC_TYPE, payload).unwrap()
+            )
+            .unwrap(),
             serde_json::json!({
                 "type": "music.v1.lyric",
                 "payload": {
@@ -472,8 +485,10 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_PROGRESS_TYPE, payload).unwrap())
-                .unwrap(),
+            serde_json::to_value(
+                BusinessEnvelope::from_payload(MUSIC_PROGRESS_TYPE, payload).unwrap()
+            )
+            .unwrap(),
             serde_json::json!({
                 "type": "music.v1.progress",
                 "payload": {
@@ -490,9 +505,24 @@ mod tests {
         let payload = MusicAlivePayload { heartbeat: None };
 
         assert_eq!(
-            serde_json::to_string(&BusinessEnvelope::from_payload(MUSIC_ALIVE_TYPE, payload).unwrap())
-                .unwrap(),
+            serde_json::to_string(
+                &BusinessEnvelope::from_payload(MUSIC_ALIVE_TYPE, payload).unwrap()
+            )
+            .unwrap(),
             r#"{"type":"music.v1.alive","payload":{}}"#,
+        );
+    }
+
+    #[test]
+    fn serializes_music_request_payload() {
+        let payload = MusicRequestPayload { requested: None };
+
+        assert_eq!(
+            serde_json::to_string(
+                &BusinessEnvelope::from_payload(MUSIC_REQUEST_TYPE, payload).unwrap()
+            )
+            .unwrap(),
+            r#"{"type":"music.v1.request","payload":{}}"#,
         );
     }
 }

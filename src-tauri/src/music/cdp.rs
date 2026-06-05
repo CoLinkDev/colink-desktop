@@ -9,9 +9,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 use tracing::{debug, warn};
 use url::Url;
 
-use crate::{
-    error::{AppError, AppResult},
-};
+use crate::error::{AppError, AppResult};
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 9223;
@@ -256,7 +254,11 @@ impl CdpDetector {
             return None;
         }
 
-        let target = match self.list_targets().await.and_then(|targets| choose_target(&targets)) {
+        let target = match self
+            .list_targets()
+            .await
+            .and_then(|targets| choose_target(&targets))
+        {
             Ok(target) => target,
             Err(error) => {
                 self.next_reconnect_at = now + RECONNECT_INTERVAL;
@@ -300,7 +302,8 @@ impl CdpDetector {
 
         let mut targets = Vec::new();
         for raw in raw_targets {
-            let Some(websocket_url) = raw.get("webSocketDebuggerUrl").and_then(Value::as_str) else {
+            let Some(websocket_url) = raw.get("webSocketDebuggerUrl").and_then(Value::as_str)
+            else {
                 continue;
             };
             targets.push(DevToolsTarget {

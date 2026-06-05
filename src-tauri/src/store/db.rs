@@ -1964,7 +1964,10 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12)", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12)",
+                [],
+            )
             .expect("remove v9 marker");
         connection
             .execute(

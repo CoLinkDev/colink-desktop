@@ -551,7 +551,8 @@ mod tests {
             security_state: "unverified".to_string(),
         }];
         let lan_peers = HashMap::from([("d1".to_string(), "alive".to_string())]);
-        let lan_peer_endpoints = HashMap::from([("d1".to_string(), ("192.168.1.5".to_string(), 27777))]);
+        let lan_peer_endpoints =
+            HashMap::from([("d1".to_string(), ("192.168.1.5".to_string(), 27777))]);
 
         let reconciled = reconcile_devices(
             incoming,

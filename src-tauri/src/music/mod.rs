@@ -74,10 +74,7 @@ struct LyricFetchResult {
 }
 
 impl MusicService {
-    pub fn new(
-        transport: TransportManager,
-        event_tx: mpsc::UnboundedSender<RuntimeEvent>,
-    ) -> Self {
+    pub fn new(transport: TransportManager, event_tx: mpsc::UnboundedSender<RuntimeEvent>) -> Self {
         Self {
             transport,
             event_tx,
@@ -97,7 +94,7 @@ impl MusicService {
             return;
         }
 
-        let (was_new, should_start, running, snapshot) = {
+        let (was_new, should_start) = {
             let mut state = self.state.lock_unpoisoned();
             prune_expired_receivers_locked(&mut state.active_receivers);
             let was_new = state
@@ -110,12 +107,7 @@ impl MusicService {
                 state.running = true;
                 true
             };
-            (
-                was_new,
-                should_start,
-                state.running,
-                state.snapshot.clone(),
-            )
+            (was_new, should_start)
         };
 
         if should_start {
@@ -124,10 +116,38 @@ impl MusicService {
             return;
         }
 
-        if was_new && running {
-            self.send_snapshot_to_device(device_id, &snapshot).await;
+        if was_new {
             self.log_info(format!("music receiver registered: {device_id}"));
         }
+    }
+
+    pub async fn handle_request(&self, from_device_id: &str) {
+        let device_id = from_device_id.trim();
+        if device_id.is_empty() {
+            return;
+        }
+
+        let (should_start, snapshot) = {
+            let mut state = self.state.lock_unpoisoned();
+            prune_expired_receivers_locked(&mut state.active_receivers);
+            state
+                .active_receivers
+                .insert(device_id.to_string(), Instant::now());
+            let should_start = if state.running {
+                false
+            } else {
+                state.running = true;
+                true
+            };
+            (should_start, state.snapshot.clone())
+        };
+
+        if should_start {
+            self.start_loop();
+            self.log_info(format!("music sync activated by request from {device_id}"));
+        }
+
+        self.send_snapshot_to_device(device_id, &snapshot).await;
     }
 
     pub fn stop(&self) {
@@ -184,13 +204,8 @@ impl MusicService {
             }
 
             while let Ok(result) = lyric_rx.try_recv() {
-                self.handle_lyric_result(
-                    result,
-                    request_id,
-                    prev_track_key.as_ref(),
-                    &active_ids,
-                )
-                .await;
+                self.handle_lyric_result(result, request_id, prev_track_key.as_ref(), &active_ids)
+                    .await;
             }
 
             let wait = if matches!(prev_status, PlaybackStatus::Active) {
@@ -413,15 +428,7 @@ impl MusicService {
         }
 
         let active_ids = self.prune_active_receivers();
-        let empty = MusicTrackPayload {
-            track_id: None,
-            title: None,
-            artists: None,
-            album: None,
-            cover_url: None,
-            cover_data: None,
-            duration: None,
-        };
+        let empty = empty_track_payload();
         for device_id in active_ids {
             self.send_track_message(&device_id, &empty).await;
         }
@@ -442,9 +449,13 @@ impl MusicService {
     }
 
     async fn send_snapshot_to_device(&self, device_id: &str, snapshot: &MusicSnapshot) {
-        if let Some(track) = &snapshot.track {
-            self.send_track_message(device_id, track).await;
-        }
+        let Some(track) = &snapshot.track else {
+            let empty = empty_track_payload();
+            self.send_track_message(device_id, &empty).await;
+            return;
+        };
+
+        self.send_track_message(device_id, track).await;
         if let Some(lyric) = &snapshot.lyric {
             self.send_lyric_message(device_id, lyric).await;
         }
@@ -454,21 +465,35 @@ impl MusicService {
     }
 
     async fn send_track_message(&self, device_id: &str, payload: &MusicTrackPayload) {
-        if let Err(error) = self.send_music_message(device_id, MUSIC_TRACK_TYPE, payload).await {
-            self.log_warn(format!("failed to send music track to {device_id}: {error}"));
+        if let Err(error) = self
+            .send_music_message(device_id, MUSIC_TRACK_TYPE, payload)
+            .await
+        {
+            self.log_warn(format!(
+                "failed to send music track to {device_id}: {error}"
+            ));
         }
     }
 
     async fn send_lyric_message(&self, device_id: &str, payload: &MusicLyricPayload) {
-        if let Err(error) = self.send_music_message(device_id, MUSIC_LYRIC_TYPE, payload).await {
-            self.log_warn(format!("failed to send music lyric to {device_id}: {error}"));
+        if let Err(error) = self
+            .send_music_message(device_id, MUSIC_LYRIC_TYPE, payload)
+            .await
+        {
+            self.log_warn(format!(
+                "failed to send music lyric to {device_id}: {error}"
+            ));
         }
     }
 
     async fn send_progress_message(&self, device_id: &str, payload: &MusicProgressPayload) {
-        if let Err(error) = self.send_music_message(device_id, MUSIC_PROGRESS_TYPE, payload).await
+        if let Err(error) = self
+            .send_music_message(device_id, MUSIC_PROGRESS_TYPE, payload)
+            .await
         {
-            self.log_warn(format!("failed to send music progress to {device_id}: {error}"));
+            self.log_warn(format!(
+                "failed to send music progress to {device_id}: {error}"
+            ));
         }
     }
 
@@ -521,6 +546,18 @@ fn build_track_payload(state: &CdpPlayingState) -> Option<MusicTrackPayload> {
         cover_data: None,
         duration: state.duration_ms,
     })
+}
+
+fn empty_track_payload() -> MusicTrackPayload {
+    MusicTrackPayload {
+        track_id: None,
+        title: None,
+        artists: None,
+        album: None,
+        cover_url: None,
+        cover_data: None,
+        duration: None,
+    }
 }
 
 fn build_progress_payload(

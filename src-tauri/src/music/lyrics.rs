@@ -128,8 +128,7 @@ async fn eapi_post(client: &Client, url: &str, mut data: Value) -> Result<Value,
     if !cookie.is_empty() {
         headers.insert(
             COOKIE,
-            HeaderValue::from_str(&cookie)
-                .unwrap_or_else(|_| HeaderValue::from_static("")),
+            HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
         );
     }
     headers.insert(
@@ -267,7 +266,7 @@ fn unix_now_millis() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_lrc_timestamp, parse_lrc};
+    use super::{parse_lrc, parse_lrc_timestamp};
 
     #[test]
     fn parses_lrc_timestamp() {
