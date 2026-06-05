@@ -12,6 +12,10 @@ pub const FILE_CHUNK_TYPE: &str = "file.v2.chunk";
 pub const FILE_ACK_TYPE: &str = "file.v2.ack";
 pub const FILE_RETRANSMIT_TYPE: &str = "file.v2.retransmit";
 pub const FILE_DONE_TYPE: &str = "file.v2.done";
+pub const MUSIC_TRACK_TYPE: &str = "music.v1.track";
+pub const MUSIC_LYRIC_TYPE: &str = "music.v1.lyric";
+pub const MUSIC_PROGRESS_TYPE: &str = "music.v1.progress";
+pub const MUSIC_ALIVE_TYPE: &str = "music.v1.alive";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -117,6 +121,50 @@ pub struct FileDonePayload {
     pub session_id: String,
     pub success: bool,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicTrackPayload {
+    pub track_id: Option<String>,
+    pub title: Option<String>,
+    pub artists: Option<Vec<String>>,
+    pub album: Option<String>,
+    pub cover_url: Option<String>,
+    pub cover_data: Option<String>,
+    pub duration: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricLinePayload {
+    pub time: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricPayload {
+    pub track_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<MusicLyricLinePayload>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_lines: Option<Vec<MusicLyricLinePayload>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicProgressPayload {
+    pub track_id: String,
+    pub progress: i64,
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicAlivePayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +376,11 @@ pub struct SwimGossip {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileDataFrame, FileDataFrameKind};
+    use super::{
+        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicAlivePayload,
+        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
+        MUSIC_ALIVE_TYPE, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+    };
 
     #[test]
     fn encodes_and_decodes_file_data_frame() {
@@ -351,5 +403,96 @@ mod tests {
         assert_eq!(FileDataFrame::ack(3).kind, FileDataFrameKind::Ack);
         assert_eq!(FileDataFrame::finish(4).index, 4);
         assert_eq!(FileDataFrame::cancel("stop").payload, b"stop");
+    }
+
+    #[test]
+    fn serializes_music_track_payload() {
+        let payload = MusicTrackPayload {
+            track_id: Some("abc123".into()),
+            title: Some("Song Title".into()),
+            artists: Some(vec!["Artist A".into(), "Artist B".into()]),
+            album: Some("Album".into()),
+            cover_url: Some("https://example.com/cover.jpg".into()),
+            cover_data: Some("iVBORw0KGgoAAAANSUhEUgAA".into()),
+            duration: Some(234500),
+        };
+
+        assert_eq!(
+            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_TRACK_TYPE, payload).unwrap())
+                .unwrap(),
+            serde_json::json!({
+                "type": "music.v1.track",
+                "payload": {
+                    "trackId": "abc123",
+                    "title": "Song Title",
+                    "artists": ["Artist A", "Artist B"],
+                    "album": "Album",
+                    "coverUrl": "https://example.com/cover.jpg",
+                    "coverData": "iVBORw0KGgoAAAANSUhEUgAA",
+                    "duration": 234500,
+                }
+            }),
+        );
+    }
+
+    #[test]
+    fn serializes_music_lyric_payload() {
+        let payload = MusicLyricPayload {
+            track_id: "abc123".into(),
+            lines: Some(vec![MusicLyricLinePayload {
+                time: 12_500,
+                text: "First line".into(),
+            }]),
+            translated_lines: Some(vec![MusicLyricLinePayload {
+                time: 12_500,
+                text: "第一行".into(),
+            }]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_LYRIC_TYPE, payload).unwrap())
+                .unwrap(),
+            serde_json::json!({
+                "type": "music.v1.lyric",
+                "payload": {
+                    "trackId": "abc123",
+                    "lines": [{"time": 12500, "text": "First line"}],
+                    "translatedLines": [{"time": 12500, "text": "第一行"}],
+                }
+            }),
+        );
+    }
+
+    #[test]
+    fn serializes_music_progress_payload() {
+        let payload = MusicProgressPayload {
+            track_id: "abc123".into(),
+            progress: 45_200,
+            paused: false,
+        };
+
+        assert_eq!(
+            serde_json::to_value(BusinessEnvelope::from_payload(MUSIC_PROGRESS_TYPE, payload).unwrap())
+                .unwrap(),
+            serde_json::json!({
+                "type": "music.v1.progress",
+                "payload": {
+                    "trackId": "abc123",
+                    "progress": 45200,
+                    "paused": false,
+                }
+            }),
+        );
+    }
+
+    #[test]
+    fn serializes_music_alive_payload() {
+        let payload = MusicAlivePayload { heartbeat: None };
+
+        assert_eq!(
+            serde_json::to_string(&BusinessEnvelope::from_payload(MUSIC_ALIVE_TYPE, payload).unwrap())
+                .unwrap(),
+            r#"{"type":"music.v1.alive","payload":{}}"#,
+        );
     }
 }

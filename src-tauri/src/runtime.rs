@@ -40,13 +40,14 @@ use crate::{
         cloud::CloudConnectionManager, http::HttpClient, lan::LanManager,
         transport::TransportManager,
     },
+    music::MusicService,
     protocol::{
         BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
         FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
         FileRejectPayload, FileRetransmitPayload, TextMessagePayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE,
-        TEXT_MESSAGE_TYPE,
+        MUSIC_ALIVE_TYPE, TEXT_MESSAGE_TYPE,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -78,6 +79,7 @@ struct RuntimeInner {
     cloud: CloudConnectionManager,
     lan: LanManager,
     transport: TransportManager,
+    music: MusicService,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Mutex<RuntimeState>,
 }
@@ -124,6 +126,7 @@ impl AppRuntime {
             event_tx.clone(),
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
+        let music = MusicService::new(transport.clone(), event_tx.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
@@ -131,6 +134,7 @@ impl AppRuntime {
                 cloud: cloud.clone(),
                 lan,
                 transport,
+                music,
                 event_tx: event_tx.clone(),
                 state: Mutex::new(RuntimeState {
                     watcher_shutdown: None,
@@ -156,6 +160,7 @@ impl AppRuntime {
 
     pub fn deactivate(&self) -> AppResult<()> {
         self.inner.lan.stop();
+        self.inner.music.stop();
         self.stop_clipboard_watcher();
         let mut state = self.inner.state.lock_unpoisoned();
         let notifiers = state
@@ -612,6 +617,13 @@ impl AppRuntime {
                 {
                     let _ = self.apply_remote_clipboard(from, payload);
                 }
+            }
+            MUSIC_ALIVE_TYPE => {
+                let music = self.inner.music.clone();
+                let from = from.to_string();
+                tauri::async_runtime::spawn(async move {
+                    music.handle_alive(&from).await;
+                });
             }
             _ => {}
         }

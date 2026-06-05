@@ -9,6 +9,7 @@ tauri-build = { version = "2.6.2", features = [] }
 [dependencies]
 base64 = "0.22.1"
 aes-gcm = "0.10.3"
+aes = "0.8.4"
 blake3 = "1.8.2"
 chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.42", default-features = false, features = ["std"] }
@@ -22,6 +23,7 @@ hostname = "0.4.1"
 if-addrs = "0.15.0"
 image = { version = "0.25.8", default-features = false, features = ["png"] }
 mdns-sd = "0.19.2"
+md5 = "0.8.0"
 rand = "0.8.5"
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls"] }
 rfd = "0.15.4"

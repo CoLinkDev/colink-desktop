@@ -9,6 +9,7 @@ mod device_cache;
 mod device_presence;
 mod error;
 mod i18n;
+mod music;
 mod models;
 mod network;
 mod protocol;
