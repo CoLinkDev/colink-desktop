@@ -161,20 +161,6 @@ pub struct MusicProgressPayload {
     pub paused: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicAlivePayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicRequestPayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested: Option<bool>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDataFrameKind {
     Chunk,
@@ -385,10 +371,9 @@ pub struct SwimGossip {
 #[cfg(test)]
 mod tests {
     use super::{
-        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicAlivePayload,
-        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicRequestPayload,
-        MusicTrackPayload, MUSIC_ALIVE_TYPE, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE,
-        MUSIC_REQUEST_TYPE, MUSIC_TRACK_TYPE,
+        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
+        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, MUSIC_LYRIC_TYPE,
+        MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -500,29 +485,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn serializes_music_alive_payload() {
-        let payload = MusicAlivePayload { heartbeat: None };
-
-        assert_eq!(
-            serde_json::to_string(
-                &BusinessEnvelope::from_payload(MUSIC_ALIVE_TYPE, payload).unwrap()
-            )
-            .unwrap(),
-            r#"{"type":"music.v1.alive","payload":{}}"#,
-        );
-    }
-
-    #[test]
-    fn serializes_music_request_payload() {
-        let payload = MusicRequestPayload { requested: None };
-
-        assert_eq!(
-            serde_json::to_string(
-                &BusinessEnvelope::from_payload(MUSIC_REQUEST_TYPE, payload).unwrap()
-            )
-            .unwrap(),
-            r#"{"type":"music.v1.request","payload":{}}"#,
-        );
-    }
 }
