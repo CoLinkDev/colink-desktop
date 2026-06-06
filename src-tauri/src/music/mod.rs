@@ -16,8 +16,8 @@ use tracing::{debug, info};
 use crate::{
     network::transport::TransportManager,
     protocol::{
-        BusinessEnvelope, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
-        MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        BusinessEnvelope, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
     },
     runtime_events::RuntimeEvent,
     sync::MutexExt,
@@ -28,15 +28,11 @@ use self::{
     lyrics::fetch_lyric,
 };
 
-const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
 const NONE_APP_CLOSE_DELAY: Duration = Duration::from_secs(1);
 const FAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_secs(2);
-const NEAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_millis(200);
-const VERY_NEAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
-const NEAR_LYRIC_THRESHOLD_MS: i64 = 500;
-const VERY_NEAR_LYRIC_THRESHOLD_MS: i64 = 300;
 
 #[derive(Clone)]
 pub struct MusicService {
@@ -715,37 +711,7 @@ fn should_push_progress(
         return true;
     }
 
-    now.duration_since(previous.sent_at) >= progress_publish_interval(payload.progress, lyric)
-}
-
-fn progress_publish_interval(progress_ms: i64, lyric: Option<&MusicLyricPayload>) -> Duration {
-    let Some(remaining_ms) = next_lyric_remaining_ms(progress_ms, lyric) else {
-        return FAR_PROGRESS_PUBLISH_INTERVAL;
-    };
-
-    if remaining_ms <= VERY_NEAR_LYRIC_THRESHOLD_MS {
-        VERY_NEAR_PROGRESS_PUBLISH_INTERVAL
-    } else if remaining_ms <= NEAR_LYRIC_THRESHOLD_MS {
-        NEAR_PROGRESS_PUBLISH_INTERVAL
-    } else {
-        FAR_PROGRESS_PUBLISH_INTERVAL
-    }
-}
-
-fn next_lyric_remaining_ms(progress_ms: i64, lyric: Option<&MusicLyricPayload>) -> Option<i64> {
-    let lyric = lyric?;
-    let progress_ms = progress_ms.max(0);
-
-    lyric
-        .lines
-        .iter()
-        .flatten()
-        .chain(lyric.translated_lines.iter().flatten())
-        .filter_map(|line| {
-            let remaining = line.time - progress_ms;
-            (remaining > 0).then_some(remaining)
-        })
-        .min()
+    now.duration_since(previous.sent_at) >= FAR_PROGRESS_PUBLISH_INTERVAL
 }
 
 fn crossed_lyric_line(
@@ -805,61 +771,9 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        crossed_lyric_line, next_lyric_remaining_ms, progress_publish_interval,
-        should_push_progress, LastProgressPush, MusicLyricPayload, MusicProgressPayload,
-        FAR_PROGRESS_PUBLISH_INTERVAL, NEAR_PROGRESS_PUBLISH_INTERVAL,
-        VERY_NEAR_PROGRESS_PUBLISH_INTERVAL,
+        LastProgressPush, MusicLyricPayload, MusicProgressPayload, crossed_lyric_line,
+        should_push_progress,
     };
-
-    #[test]
-    fn chooses_progress_publish_interval_by_next_lyric_distance() {
-        let lyric = MusicLyricPayload {
-            track_id: "track".to_string(),
-            lines: Some(vec![
-                MusicLyricLinePayload {
-                    time: 1_000,
-                    text: "first".to_string(),
-                },
-                MusicLyricLinePayload {
-                    time: 5_000,
-                    text: "second".to_string(),
-                },
-            ]),
-            translated_lines: None,
-        };
-
-        assert_eq!(
-            progress_publish_interval(400, Some(&lyric)),
-            FAR_PROGRESS_PUBLISH_INTERVAL
-        );
-        assert_eq!(
-            progress_publish_interval(500, Some(&lyric)),
-            NEAR_PROGRESS_PUBLISH_INTERVAL
-        );
-        assert_eq!(
-            progress_publish_interval(700, Some(&lyric)),
-            VERY_NEAR_PROGRESS_PUBLISH_INTERVAL
-        );
-        assert_eq!(
-            progress_publish_interval(5_100, Some(&lyric)),
-            FAR_PROGRESS_PUBLISH_INTERVAL
-        );
-    }
-
-    #[test]
-    fn reads_next_lyric_time_from_primary_or_translated_lines() {
-        let lyric = MusicLyricPayload {
-            track_id: "track".to_string(),
-            lines: None,
-            translated_lines: Some(vec![MusicLyricLinePayload {
-                time: 1_200,
-                text: "translated".to_string(),
-            }]),
-        };
-
-        assert_eq!(next_lyric_remaining_ms(1_000, Some(&lyric)), Some(200));
-        assert_eq!(next_lyric_remaining_ms(1_200, Some(&lyric)), None);
-    }
 
     #[test]
     fn pushes_progress_when_crossing_lyric_line() {
