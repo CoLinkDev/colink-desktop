@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "CoLink Desktop",
-        "width": 1240,
-        "height": 840,
-        "minWidth": 980,
-        "minHeight": 700
+        "width": 1280,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 540
       }
     ],
     "security": {
