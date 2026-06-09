@@ -236,14 +236,18 @@ impl AppRuntime {
             file_size: payload.file_size,
         };
         let session_id = payload.session_id.clone();
-        self.inner.state.lock_unpoisoned().pending_file_offers.insert(
-            session_id.clone(),
-            PendingFileOfferState {
-                from: from.to_string(),
-                route: route.to_string(),
-                payload,
-            },
-        );
+        self.inner
+            .state
+            .lock_unpoisoned()
+            .pending_file_offers
+            .insert(
+                session_id.clone(),
+                PendingFileOfferState {
+                    from: from.to_string(),
+                    route: route.to_string(),
+                    payload,
+                },
+            );
         self.expire_pending_file_offer(session_id);
         let _ = crate::shell::show_main_window(&self.inner.app, Some("/transfers"));
         let _ = self.inner.app.emit(FILE_OFFER_REQUESTED_EVENT, request);

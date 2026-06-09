@@ -131,6 +131,7 @@ pub struct MusicTrackPayload {
     pub title: Option<String>,
     pub artists: Option<Vec<String>>,
     pub album: Option<String>,
+    pub source: Option<String>,
     pub cover_url: Option<String>,
     pub cover_data: Option<String>,
     pub duration: Option<i64>,
@@ -406,6 +407,7 @@ mod tests {
             title: Some("Song Title".into()),
             artists: Some(vec!["Artist A".into(), "Artist B".into()]),
             album: Some("Album".into()),
+            source: Some("ncm".into()),
             cover_url: Some("https://example.com/cover.jpg".into()),
             cover_data: Some("iVBORw0KGgoAAAANSUhEUgAA".into()),
             duration: Some(234500),
@@ -423,6 +425,7 @@ mod tests {
                     "title": "Song Title",
                     "artists": ["Artist A", "Artist B"],
                     "album": "Album",
+                    "source": "ncm",
                     "coverUrl": "https://example.com/cover.jpg",
                     "coverData": "iVBORw0KGgoAAAANSUhEUgAA",
                     "duration": 234500,
@@ -484,5 +487,4 @@ mod tests {
             }),
         );
     }
-
 }

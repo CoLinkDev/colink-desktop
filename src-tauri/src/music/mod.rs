@@ -16,8 +16,8 @@ use tracing::{debug, info};
 use crate::{
     network::transport::TransportManager,
     protocol::{
-        BusinessEnvelope, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
-        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
+        BusinessEnvelope, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
+        MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     },
     runtime_events::RuntimeEvent,
     sync::MutexExt,
@@ -640,6 +640,7 @@ fn build_track_payload(state: &CdpPlayingState) -> Option<MusicTrackPayload> {
             Some(state.artists.clone())
         },
         album: state.album.clone(),
+        source: Some("ncm".to_string()),
         cover_url: state.cover_url.clone(),
         cover_data: None,
         duration: state.duration_ms,
@@ -652,6 +653,7 @@ fn empty_track_payload() -> MusicTrackPayload {
         title: None,
         artists: None,
         album: None,
+        source: None,
         cover_url: None,
         cover_data: None,
         duration: None,
@@ -771,8 +773,8 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        LastProgressPush, MusicLyricPayload, MusicProgressPayload, crossed_lyric_line,
-        should_push_progress,
+        crossed_lyric_line, should_push_progress, LastProgressPush, MusicLyricPayload,
+        MusicProgressPayload,
     };
 
     #[test]
