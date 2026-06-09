@@ -153,6 +153,11 @@ const resources = {
         failed: '配对失败',
         accept: '接受',
       },
+      updates: {
+        available: '发现新版本 {{version}}',
+        description: 'CoLink Desktop 有新版本可用。',
+        download: '下载',
+      },
       messages: {
         title: '消息',
         sidebarTitle: '设备',
@@ -408,6 +413,11 @@ const resources = {
         waiting: 'Waiting for the other device...',
         failed: 'Pairing failed',
         accept: 'Accept',
+      },
+      updates: {
+        available: 'Version {{version}} is available',
+        description: 'A new CoLink Desktop update is available.',
+        download: 'Download',
       },
       messages: {
         title: 'Messages',
@@ -665,6 +675,11 @@ const resources = {
         failed: '配對失敗',
         accept: '接受',
       },
+      updates: {
+        available: '發現新版本 {{version}}',
+        description: 'CoLink Desktop 有新版本可用。',
+        download: '下載',
+      },
       messages: {
         title: '訊息',
         sidebarTitle: '設備',
@@ -920,6 +935,11 @@ const resources = {
         waiting: '相手の確認を待っています...',
         failed: 'ペアリングに失敗しました',
         accept: '承認',
+      },
+      updates: {
+        available: 'バージョン {{version}} が利用できます',
+        description: 'CoLink Desktop の新しいバージョンがあります。',
+        download: 'ダウンロード',
       },
       messages: {
         title: 'メッセージ',
@@ -1177,6 +1197,11 @@ const resources = {
         failed: '페어링 실패',
         accept: '수락',
       },
+      updates: {
+        available: '버전 {{version}} 사용 가능',
+        description: 'CoLink Desktop 새 버전을 사용할 수 있습니다.',
+        download: '다운로드',
+      },
       messages: {
         title: '메시지',
         sidebarTitle: '디바이스',
@@ -1432,6 +1457,11 @@ const resources = {
         waiting: 'Esperando al otro dispositivo...',
         failed: 'Emparejamiento fallido',
         accept: 'Aceptar',
+      },
+      updates: {
+        available: 'Versión {{version}} disponible',
+        description: 'Hay una nueva versión de CoLink Desktop disponible.',
+        download: 'Descargar',
       },
       messages: {
         title: 'Mensajes',
@@ -1689,6 +1719,11 @@ const resources = {
         failed: 'Kopplung fehlgeschlagen',
         accept: 'Akzeptieren',
       },
+      updates: {
+        available: 'Version {{version}} ist verfügbar',
+        description: 'Ein neues CoLink Desktop-Update ist verfügbar.',
+        download: 'Herunterladen',
+      },
       messages: {
         title: 'Nachrichten',
         sidebarTitle: 'Geräte',
@@ -1944,6 +1979,11 @@ const resources = {
         waiting: 'Ожидание подтверждения на другом устройстве...',
         failed: 'Сопряжение не удалось',
         accept: 'Принять',
+      },
+      updates: {
+        available: 'Доступна версия {{version}}',
+        description: 'Доступна новая версия CoLink Desktop.',
+        download: 'Скачать',
       },
       messages: {
         title: 'Сообщения',

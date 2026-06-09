@@ -2,7 +2,7 @@ use hostname::get;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
-use url::Url;
+use url::{form_urlencoded, Url};
 
 use crate::{
     api::{DeviceListResponse, ACCESS_TOKEN_TTL_SECONDS, DEVICES_PATH},
@@ -11,9 +11,9 @@ use crate::{
     error::{AppError, AppResult},
     i18n::{self, TextKey},
     models::{
-        unix_now, AppSettings, BootstrapPayload, DeviceDeletePayload, DeviceIdentity, DeviceInfo,
-        DeviceNameUpdatePayload, LoginPayload, RegisterPayload, RotateDeviceKeyPayload,
-        SessionRecord,
+        unix_now, AppSettings, AppUpdateRelease, BootstrapPayload, DeviceDeletePayload,
+        DeviceIdentity, DeviceInfo, DeviceNameUpdatePayload, LoginPayload, RegisterPayload,
+        RotateDeviceKeyPayload, SessionRecord,
     },
     shell,
     state::AppState,
@@ -23,6 +23,7 @@ const AUTH_LOGIN_PATH: &str = "/api/v1/auth/login";
 const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
 const ME_PATH: &str = "/api/v1/me";
+const UPDATE_CHECK_PATH: &str = "/api/v1/update/check";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +61,13 @@ struct DeviceRegisterRequest<'a> {
     #[serde(rename = "type")]
     device_type: &'a str,
     public_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateCheckResponse {
+    has_update: bool,
+    latest: Option<AppUpdateRelease>,
 }
 
 pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
@@ -311,6 +319,36 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     Ok(normalized)
 }
 
+pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease>> {
+    let settings = load_settings(state)?;
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("platform", "windows")
+        .append_pair("version", env!("CARGO_PKG_VERSION"))
+        .finish();
+    let path = format!("{UPDATE_CHECK_PATH}?{query}");
+    let response: AppUpdateCheckResponse =
+        state.http.get(&settings.server_url, &path, None).await?;
+    if !response.has_update {
+        return Ok(None);
+    }
+
+    let mut release = response
+        .latest
+        .ok_or_else(|| AppError::message("update response missing latest release"))?;
+    for asset in &mut release.assets {
+        asset.download_url = absolute_url(&settings.server_url, &asset.download_url)?;
+    }
+    Ok(Some(release))
+}
+
+pub fn open_update_download_url(url: &str) -> AppResult<()> {
+    let parsed = Url::parse(url)?;
+    match parsed.scheme() {
+        "http" | "https" => shell::open_external_url(url),
+        _ => Err(AppError::message("unsupported update download url")),
+    }
+}
+
 fn load_settings(state: &AppState) -> AppResult<AppSettings> {
     state.database.load_settings()?.ok_or_else(|| {
         AppError::message(i18n::text(
@@ -318,6 +356,16 @@ fn load_settings(state: &AppState) -> AppResult<AppSettings> {
             TextKey::SettingsNotInitialized,
         ))
     })
+}
+
+fn absolute_url(base_url: &str, value: &str) -> AppResult<String> {
+    let parsed = Url::parse(value);
+    if let Ok(url) = parsed {
+        return Ok(url.to_string());
+    }
+
+    let base = Url::parse(base_url)?;
+    Ok(base.join(value)?.to_string())
 }
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {

@@ -22,10 +22,10 @@ mod store;
 mod sync;
 
 use commands::{
-    bootstrap_app, cancel_transfer, clear_transfers, delete_device, forget_lan_trust, get_settings,
-    list_devices, list_lan_pairing_candidates, login, logout, pick_download_directory, pick_files,
-    register_account, respond_lan_pairing, rotate_device_key, send_files, send_text,
-    start_lan_pairing, update_device_name, update_settings,
+    bootstrap_app, cancel_transfer, check_update, clear_transfers, delete_device, forget_lan_trust,
+    get_settings, list_devices, list_lan_pairing_candidates, login, logout, open_update_download,
+    pick_download_directory, pick_files, register_account, respond_lan_pairing, rotate_device_key,
+    send_files, send_text, start_lan_pairing, update_device_name, update_settings,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -80,6 +80,8 @@ fn main() {
             respond_lan_pairing,
             get_settings,
             update_settings,
+            check_update,
+            open_update_download,
             pick_download_directory,
             send_text,
             pick_files,

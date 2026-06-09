@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type {
   AppSettings,
+  AppUpdateRelease,
   FileTransferRecord,
   BootstrapPayload,
   DeviceInfo,
@@ -86,6 +87,14 @@ export function getSettings() {
 
 export function updateSettings(settings: AppSettings) {
   return invoke<AppSettings>('update_settings', { settings })
+}
+
+export function checkUpdate() {
+  return invoke<AppUpdateRelease | null>('check_update')
+}
+
+export function openUpdateDownload(url: string) {
+  return invoke<void>('open_update_download', { url })
 }
 
 export function pickDownloadDirectory() {

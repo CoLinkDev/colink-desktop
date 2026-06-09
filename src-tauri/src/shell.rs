@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use image::ImageReader;
 use tauri::{
@@ -148,6 +151,28 @@ pub fn apply_auto_start(enabled: bool) -> AppResult<()> {
 
     #[cfg(not(windows))]
     let _ = enabled;
+
+    Ok(())
+}
+
+pub fn open_external_url(url: &str) -> AppResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(url)
+            .spawn()?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(url).spawn()?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open").arg(url).spawn()?;
+    }
 
     Ok(())
 }

@@ -301,6 +301,23 @@ pub struct BootstrapPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppUpdateRelease {
+    pub version: String,
+    pub release_notes: String,
+    pub published_at: String,
+    pub assets: Vec<AppUpdateAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateAsset {
+    pub name: String,
+    pub size: i64,
+    pub download_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginPayload {
     pub identifier: String,
     pub password: String,

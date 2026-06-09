@@ -91,6 +91,19 @@ export interface BootstrapPayload {
   logs: AppLogEntry[]
 }
 
+export interface AppUpdateRelease {
+  version: string
+  releaseNotes: string
+  publishedAt: string
+  assets: AppUpdateAsset[]
+}
+
+export interface AppUpdateAsset {
+  name: string
+  size: number
+  downloadUrl: string
+}
+
 export interface LoginPayload {
   identifier: string
   password: string
