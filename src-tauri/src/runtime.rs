@@ -63,6 +63,8 @@ pub const LAN_PAIRING_REQUESTED_EVENT: &str = "lan-pairing-requested";
 pub const LAN_PAIRING_COMPLETED_EVENT: &str = "lan-pairing-completed";
 pub const LAN_PAIRING_FAILED_EVENT: &str = "lan-pairing-failed";
 pub const LAN_PAIRING_CANDIDATES_UPDATED_EVENT: &str = "lan-pairing-candidates-updated";
+pub const FILE_OFFER_REQUESTED_EVENT: &str = "file-offer-requested";
+pub const FILE_OFFER_ENDED_EVENT: &str = "file-offer-ended";
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
@@ -88,6 +90,7 @@ struct RuntimeState {
     watcher_shutdown: Option<WatcherShutdown>,
     outgoing_files: HashMap<String, OutgoingFileState>,
     incoming_files: HashMap<String, IncomingFileState>,
+    pending_file_offers: HashMap<String, PendingFileOfferState>,
     cancelled_files: HashSet<String>,
     clipboard_suppressed_hash: Option<String>,
     clipboard_last_sent_hash: Option<String>,
@@ -110,6 +113,13 @@ struct IncomingFileState {
     lan_finish_received: bool,
     last_reported_bytes: i64,
     last_progress_at: i64,
+}
+
+#[derive(Clone)]
+pub(super) struct PendingFileOfferState {
+    from: String,
+    route: String,
+    payload: FileOfferPayload,
 }
 
 impl AppRuntime {
@@ -141,6 +151,7 @@ impl AppRuntime {
                     watcher_shutdown: None,
                     outgoing_files: HashMap::new(),
                     incoming_files: HashMap::new(),
+                    pending_file_offers: HashMap::new(),
                     cancelled_files: HashSet::new(),
                     clipboard_suppressed_hash: None,
                     clipboard_last_sent_hash: None,
@@ -172,6 +183,7 @@ impl AppRuntime {
         state.cancelled_files.clear();
         state.outgoing_files.clear();
         state.incoming_files.clear();
+        state.pending_file_offers.clear();
         drop(state);
         for notify in notifiers {
             notify.notify_one();

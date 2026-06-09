@@ -142,6 +142,14 @@ export interface FileTransferRecord {
   updatedAt: number
 }
 
+export interface FileOfferRequest {
+  sessionId: string
+  deviceId: string
+  deviceName: string
+  fileName: string
+  fileSize: number
+}
+
 export interface TransferProgressPayload {
   record: FileTransferRecord
   bytesPerSecond: number

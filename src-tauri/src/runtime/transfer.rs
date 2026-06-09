@@ -1,20 +1,23 @@
 use std::{fs, io::SeekFrom, path::PathBuf, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use sanitize_filename::sanitize;
 use tauri::Emitter;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{Mutex as AsyncMutex, Notify},
+    time::{sleep, Duration},
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
-    i18n::{self, TextKey},
-    models::{unix_now_millis, FileTransferRecord, SendFilePayload, FILE_CHUNK_SIZE},
+    i18n::TextKey,
+    models::{
+        unix_now_millis, FileOfferDecisionPayload, FileOfferRequest, FileTransferRecord,
+        SendFilePayload, FILE_CHUNK_SIZE,
+    },
     protocol::{
         BusinessEnvelope, FileAcceptPayload, FileAckPayload, FileCancelPayload, FileChunkPayload,
         FileDataFrame, FileDataFrameKind, FileDonePayload, FileOfferPayload, FileReadyPayload,
@@ -32,7 +35,8 @@ use super::{
     },
     route::TransferRoute,
     utils::{build_file_checksum, unique_download_path, verify_file_checksum},
-    AppRuntime, IncomingFileState, OutgoingFileState, LAN_SEND_WINDOW_CHUNKS,
+    AppRuntime, IncomingFileState, OutgoingFileState, PendingFileOfferState,
+    FILE_OFFER_ENDED_EVENT, FILE_OFFER_REQUESTED_EVENT, LAN_SEND_WINDOW_CHUNKS,
     RELAY_SEND_WINDOW_CHUNKS, TRANSFER_PREPARING_EVENT, TRANSFER_PROGRESS_EVENT,
     TRANSFER_PROGRESS_INTERVAL_MS,
 };
@@ -46,6 +50,7 @@ enum ChunkTransport {
 const REASON_TRANSFER_USER_CANCELLED: &str = "colink:transfer.user_cancelled.v1";
 const REASON_TRANSFER_USER_REJECTED: &str = "colink:transfer.user_rejected.v1";
 const REASON_TRANSFER_CHECKSUM_MISMATCH: &str = "colink:transfer.checksum_mismatch.v1";
+const FILE_OFFER_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl AppRuntime {
     pub async fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
@@ -215,10 +220,6 @@ impl AppRuntime {
         route: &str,
         payload: FileOfferPayload,
     ) -> AppResult<()> {
-        let settings =
-            self.inner.database.load_settings()?.ok_or_else(|| {
-                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
-            })?;
         info!(
             from = %from,
             session_id = %payload.session_id,
@@ -227,50 +228,124 @@ impl AppRuntime {
             route = %route,
             "received file offer"
         );
+        let request = FileOfferRequest {
+            session_id: payload.session_id.clone(),
+            device_id: from.to_string(),
+            device_name: self.lookup_device_name(from),
+            file_name: payload.file_name.clone(),
+            file_size: payload.file_size,
+        };
+        let session_id = payload.session_id.clone();
+        self.inner.state.lock_unpoisoned().pending_file_offers.insert(
+            session_id.clone(),
+            PendingFileOfferState {
+                from: from.to_string(),
+                route: route.to_string(),
+                payload,
+            },
+        );
+        self.expire_pending_file_offer(session_id);
+        let _ = crate::shell::show_main_window(&self.inner.app, Some("/transfers"));
+        let _ = self.inner.app.emit(FILE_OFFER_REQUESTED_EVENT, request);
+        Ok(())
+    }
+
+    fn expire_pending_file_offer(&self, session_id: String) {
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            sleep(FILE_OFFER_TIMEOUT).await;
+            let expired = runtime
+                .inner
+                .state
+                .lock_unpoisoned()
+                .pending_file_offers
+                .remove(&session_id);
+            if let Some(pending) = expired {
+                let _ = runtime.inner.app.emit(FILE_OFFER_ENDED_EVENT, &session_id);
+                let _ = runtime
+                    .reject_file_offer(&pending.from, pending.payload.session_id)
+                    .await;
+            }
+        });
+    }
+
+    pub async fn respond_file_offer(&self, decision: FileOfferDecisionPayload) -> AppResult<()> {
+        let Some(pending) = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .pending_file_offers
+            .remove(&decision.session_id)
+        else {
+            return Ok(());
+        };
+        let _ = self
+            .inner
+            .app
+            .emit(FILE_OFFER_ENDED_EVENT, &decision.session_id);
+
+        if decision.accepted {
+            self.accept_file_offer(pending).await
+        } else {
+            self.reject_file_offer(&pending.from, pending.payload.session_id)
+                .await
+        }
+    }
+
+    pub fn pending_file_offers(&self) -> Vec<FileOfferRequest> {
+        let pending = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .pending_file_offers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        pending
+            .into_iter()
+            .map(|item| FileOfferRequest {
+                session_id: item.payload.session_id,
+                device_id: item.from.clone(),
+                device_name: self.lookup_device_name(&item.from),
+                file_name: item.payload.file_name,
+                file_size: item.payload.file_size,
+            })
+            .collect()
+    }
+
+    async fn reject_file_offer(&self, from: &str, session_id: String) -> AppResult<()> {
+        info!(from = %from, session_id = %session_id, "file offer rejected by user");
+        let envelope = BusinessEnvelope::from_payload(
+            FILE_REJECT_TYPE,
+            FileRejectPayload {
+                session_id,
+                reason: REASON_TRANSFER_USER_REJECTED.to_string(),
+            },
+        )?;
+        let _ = self.send_business_message(from, envelope).await?;
+        Ok(())
+    }
+
+    async fn accept_file_offer(&self, pending: PendingFileOfferState) -> AppResult<()> {
+        let PendingFileOfferState {
+            from,
+            route,
+            payload,
+        } = pending;
+        let settings =
+            self.inner.database.load_settings()?.ok_or_else(|| {
+                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
+            })?;
         let download_path = PathBuf::from(&settings.download_path);
         fs::create_dir_all(&download_path)?;
         let temp_name = format!("{}.part", sanitize(&payload.file_name));
         let temp_path = download_path.join(temp_name);
 
-        let sender_name = self.lookup_device_name(from);
-        let prompt = i18n::message(
-            &settings.language,
-            TextKey::ReceiveFilePrompt,
-            &[
-                ("sender", sender_name),
-                ("file", payload.file_name.clone()),
-                ("size", payload.file_size.to_string()),
-            ],
-        );
-        let title = i18n::text(&settings.language, TextKey::ReceiveFileTitle).to_string();
-        let accepted = tauri::async_runtime::spawn_blocking(move || {
-            MessageDialog::new()
-                .set_level(MessageLevel::Info)
-                .set_title(&title)
-                .set_description(&prompt)
-                .set_buttons(MessageButtons::YesNo)
-                .show()
-        })
-        .await
-        .unwrap_or(MessageDialogResult::No);
-
-        if accepted != MessageDialogResult::Yes {
-            info!(from = %from, session_id = %payload.session_id, "file offer rejected by user");
-            let envelope = BusinessEnvelope::from_payload(
-                FILE_REJECT_TYPE,
-                FileRejectPayload {
-                    session_id: payload.session_id,
-                    reason: REASON_TRANSFER_USER_REJECTED.to_string(),
-                },
-            )?;
-            let _ = self.send_business_message(from, envelope).await?;
-            return Ok(());
-        }
-
         let created_at = unix_now_millis();
         let record = FileTransferRecord {
             file_id: payload.session_id.clone(),
-            device_id: from.to_string(),
+            device_id: from.clone(),
             direction: "inbound".to_string(),
             file_name: payload.file_name.clone(),
             file_size: payload.file_size,
@@ -278,7 +353,7 @@ impl AppRuntime {
             total_chunks: payload.total_chunks,
             status: "receiving".to_string(),
             checksum: payload.checksum.clone(),
-            route: route.to_string(),
+            route: route.clone(),
             temp_path: Some(temp_path.to_string_lossy().to_string()),
             final_path: None,
             error: None,
@@ -310,9 +385,9 @@ impl AppRuntime {
                 transfer_token,
             },
         )?;
-        let _ = self.send_business_message(from, envelope).await?;
+        let _ = self.send_business_message(&from, envelope).await?;
         info!(
-            from,
+            from = %from,
             session_id = %record.file_id,
             route = %record.route,
             "file offer accepted"

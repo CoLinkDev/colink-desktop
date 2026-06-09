@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type {
   AppSettings,
   AppUpdateRelease,
+  FileOfferRequest,
   FileTransferRecord,
   BootstrapPayload,
   DeviceInfo,
@@ -119,4 +120,14 @@ export function cancelTransfer(fileId: string) {
 
 export function clearTransfers() {
   return invoke<void>('clear_transfers')
+}
+
+export function pendingFileOffers() {
+  return invoke<FileOfferRequest[]>('pending_file_offers')
+}
+
+export function respondFileOffer(sessionId: string, accepted: boolean) {
+  return invoke<void>('respond_file_offer', {
+    payload: { sessionId, accepted },
+  })
 }

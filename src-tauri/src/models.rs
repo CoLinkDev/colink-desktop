@@ -278,6 +278,23 @@ pub struct FileTransferRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileOfferRequest {
+    pub session_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub file_name: String,
+    pub file_size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileOfferDecisionPayload {
+    pub session_id: String,
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppLogEntry {
     pub id: String,
     pub level: String,

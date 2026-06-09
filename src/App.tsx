@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 
 import { AppStateProvider } from './hooks/use-app-state'
 import { useAppState } from './hooks/use-app-state'
+import { FileOfferDialog } from './components/file-offer-dialog'
 import { LanPairingDialog } from './components/lan-pairing-dialog'
 import { checkUpdate, openUpdateDownload } from './lib/api'
 import { router } from './router'
@@ -46,6 +47,7 @@ export default function App() {
     <AppStateProvider>
       <UpdateNotification />
       <RouterProvider router={router} />
+      <FileOfferDialog />
       <LanPairingDialog />
     </AppStateProvider>
   )

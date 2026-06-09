@@ -1,7 +1,10 @@
 use tauri::State;
 
 use crate::{
-    models::{FileTransferRecord, SendFilePayload, SendTextPayload, TextMessageRecord},
+    models::{
+        FileOfferDecisionPayload, FileOfferRequest, FileTransferRecord, SendFilePayload,
+        SendTextPayload, TextMessageRecord,
+    },
     state::AppState,
 };
 
@@ -51,4 +54,21 @@ pub fn clear_transfers(state: State<'_, AppState>) -> Result<(), String> {
         .runtime
         .clear_transfers()
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn respond_file_offer(
+    state: State<'_, AppState>,
+    payload: FileOfferDecisionPayload,
+) -> Result<(), String> {
+    state
+        .runtime
+        .respond_file_offer(payload)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn pending_file_offers(state: State<'_, AppState>) -> Vec<FileOfferRequest> {
+    state.runtime.pending_file_offers()
 }

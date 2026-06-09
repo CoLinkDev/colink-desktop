@@ -24,8 +24,9 @@ mod sync;
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_transfers, delete_device, forget_lan_trust,
     get_settings, list_devices, list_lan_pairing_candidates, login, logout, open_update_download,
-    pick_download_directory, pick_files, register_account, respond_lan_pairing, rotate_device_key,
-    send_files, send_text, start_lan_pairing, update_device_name, update_settings,
+    pending_file_offers, pick_download_directory, pick_files, register_account, respond_file_offer,
+    respond_lan_pairing, rotate_device_key, send_files, send_text, start_lan_pairing,
+    update_device_name, update_settings,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -87,6 +88,8 @@ fn main() {
             pick_files,
             send_files,
             cancel_transfer,
+            pending_file_offers,
+            respond_file_offer,
             clear_transfers
         ])
         .run(tauri::generate_context!())

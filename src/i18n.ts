@@ -170,6 +170,11 @@ const resources = {
         titleRecord: '消息记录',
         notSelected: '未选择',
       },
+      fileOffers: {
+        title: '接收文件',
+        description: '{{name}} 想发送这个文件。',
+        accept: '接收',
+      },
       transfers: {
         title: '文件传输',
         sidebarTitle: '选择传输目标',
@@ -430,6 +435,11 @@ const resources = {
         errorEmptyText: 'Message cannot be empty',
         titleRecord: 'Message History',
         notSelected: 'Not Selected',
+      },
+      fileOffers: {
+        title: 'Receive file',
+        description: '{{name}} wants to send this file.',
+        accept: 'Receive',
       },
       transfers: {
         title: 'Transfers',
@@ -692,6 +702,11 @@ const resources = {
         titleRecord: '訊息記錄',
         notSelected: '未選擇',
       },
+      fileOffers: {
+        title: '接收檔案',
+        description: '{{name}} 想傳送這個檔案。',
+        accept: '接收',
+      },
       transfers: {
         title: '檔案傳輸',
         sidebarTitle: '選擇傳輸目標',
@@ -952,6 +967,11 @@ const resources = {
         errorEmptyText: 'メッセージを入力してください',
         titleRecord: 'メッセージ履歴',
         notSelected: '未選択',
+      },
+      fileOffers: {
+        title: 'ファイルを受信',
+        description: '{{name}} がこのファイルを送信しようとしています。',
+        accept: '受信',
       },
       transfers: {
         title: 'ファイル転送',
@@ -1214,6 +1234,11 @@ const resources = {
         titleRecord: '메시지 기록',
         notSelected: '선택 안 됨',
       },
+      fileOffers: {
+        title: '파일 받기',
+        description: '{{name}} 님이 이 파일을 보내려고 합니다.',
+        accept: '받기',
+      },
       transfers: {
         title: '파일 전송',
         sidebarTitle: '전송 대상 선택',
@@ -1474,6 +1499,11 @@ const resources = {
         errorEmptyText: 'El mensaje no puede estar vacío',
         titleRecord: 'Historial de mensajes',
         notSelected: 'No seleccionado',
+      },
+      fileOffers: {
+        title: 'Recibir archivo',
+        description: '{{name}} quiere enviar este archivo.',
+        accept: 'Recibir',
       },
       transfers: {
         title: 'Transferencias',
@@ -1736,6 +1766,11 @@ const resources = {
         titleRecord: 'Nachrichtenverlauf',
         notSelected: 'Nicht ausgewählt',
       },
+      fileOffers: {
+        title: 'Datei empfangen',
+        description: '{{name}} möchte diese Datei senden.',
+        accept: 'Empfangen',
+      },
       transfers: {
         title: 'Übertragungen',
         sidebarTitle: 'Ziel auswählen',
@@ -1996,6 +2031,11 @@ const resources = {
         errorEmptyText: 'Сообщение не может быть пустым',
         titleRecord: 'История сообщений',
         notSelected: 'Не выбрано',
+      },
+      fileOffers: {
+        title: 'Получить файл',
+        description: '{{name}} хочет отправить этот файл.',
+        accept: 'Получить',
       },
       transfers: {
         title: 'Передачи',
