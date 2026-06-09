@@ -293,6 +293,7 @@ impl AppRuntime {
                 writer,
                 record: record.clone(),
                 received_chunks: 0,
+                lan_finish_received: false,
                 last_reported_bytes: 0,
                 last_progress_at: created_at,
             },
@@ -649,7 +650,7 @@ impl AppRuntime {
         drop(file);
 
         let updated_at = unix_now_millis();
-        let (record, bytes_per_second, finished) =
+        let (record, bytes_per_second, finished, lan_finish_received) =
             self.update_incoming_progress(session_id, bytes.len() as i64, updated_at)?;
         if let Some(bytes_per_second) = bytes_per_second {
             self.inner.database.save_transfer(&record)?;
@@ -663,13 +664,22 @@ impl AppRuntime {
         if finish_when_complete && finished {
             self.finish_incoming_transfer(session_id).await?;
         }
+        if !finish_when_complete && lan_finish_received {
+            if finished {
+                self.finish_incoming_transfer(session_id).await?;
+            } else {
+                self.send_file_retransmit(&record.device_id, session_id, next_expected_index)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
     async fn handle_lan_file_finish(&self, session_id: &str) -> AppResult<()> {
         let (received_chunks, total_chunks, device_id) = {
-            let state = self.inner.state.lock_unpoisoned();
-            state.incoming_files.get(session_id).map(|item| {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state.incoming_files.get_mut(session_id).map(|item| {
+                item.lan_finish_received = true;
                 (
                     item.received_chunks,
                     item.record.total_chunks,
@@ -1141,7 +1151,7 @@ impl AppRuntime {
         file_id: &str,
         delta_bytes: i64,
         updated_at: i64,
-    ) -> AppResult<(FileTransferRecord, Option<f64>, bool)> {
+    ) -> AppResult<(FileTransferRecord, Option<f64>, bool, bool)> {
         let mut state = self.inner.state.lock_unpoisoned();
         let incoming = state
             .incoming_files
@@ -1162,7 +1172,12 @@ impl AppRuntime {
         } else {
             None
         };
-        Ok((incoming.record.clone(), bytes_per_second, finished))
+        Ok((
+            incoming.record.clone(),
+            bytes_per_second,
+            finished,
+            incoming.lan_finish_received,
+        ))
     }
 
     fn emit_transfer_progress(&self, record: FileTransferRecord, bytes_per_second: f64) {

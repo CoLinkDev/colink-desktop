@@ -107,6 +107,7 @@ struct IncomingFileState {
     writer: Arc<AsyncMutex<tokio::fs::File>>,
     record: FileTransferRecord,
     received_chunks: i64,
+    lan_finish_received: bool,
     last_reported_bytes: i64,
     last_progress_at: i64,
 }
