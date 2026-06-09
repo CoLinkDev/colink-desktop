@@ -348,6 +348,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const logout = useCallback(async () => {
     await logoutRequest()
     setBootstrapError(null)
+    setCloud(defaultCloudStatus)
     await refreshBootstrap()
   }, [refreshBootstrap])
 

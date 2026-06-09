@@ -39,9 +39,8 @@ export function TransfersPage() {
       ? t('transfers.hashingProgress', {
         current: preparing.current,
         total: preparing.total,
-        defaultValue: `Calculating file hashes (${preparing.current}/${preparing.total})...`,
       })
-      : t('transfers.preparingSend', { defaultValue: 'Preparing to send...' })
+      : t('transfers.preparingSend')
     : t('transfers.selectBtn')
 
   useEffect(() => {
@@ -192,7 +191,7 @@ export function TransfersPage() {
               </div>
               <p className="text-[13px] font-semibold text-[hsl(var(--text))]">
                 {selectedDevice 
-                  ? t('transfers.dropToDevice', { name: selectedDevice.name, defaultValue: `Release to send files to ${selectedDevice.name}` })
+                  ? t('transfers.dropToDevice', { name: selectedDevice.name })
                   : t('transfers.errorSelectDevice')}
               </p>
             </div>
@@ -239,7 +238,7 @@ export function TransfersPage() {
                 className="h-6 px-2 text-[11px] font-medium text-[hsl(var(--muted))] hover:text-[hsl(var(--danger))] hover:bg-[hsl(var(--danger)/0.08)] transition-all flex items-center gap-1.5"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                {t('transfers.clearBtn', { defaultValue: 'Clear Completed' })}
+                {t('transfers.clearBtn')}
               </Button>
             )}
           </div>
@@ -261,9 +260,9 @@ export function TransfersPage() {
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
                   const speed = inFlight ? transferSpeeds[item.fileId] : null
                   const routeLabel = item.route === 'lan'
-                    ? t('transfers.routeLan', { defaultValue: 'Transferred via LAN' })
+                    ? t('transfers.routeLan')
                     : item.route === 'cloud'
-                      ? t('transfers.routeCloud', { defaultValue: 'Transferred via Cloud relay' })
+                      ? t('transfers.routeCloud')
                       : item.route || '-'
 
                   return (

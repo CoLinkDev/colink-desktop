@@ -219,8 +219,9 @@ impl CloudConnectionManager {
                     warn!(attempt = attempt + 1, %message, "cloud context load failed");
                     attempt += 1;
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
-                    let _ = self.update_status_if_current(generation, status.clone());
-                    self.emit_status(status);
+                    if self.update_status_if_current(generation, status.clone()) {
+                        self.emit_status(status);
+                    }
                     let _ = self.event_tx.send(RuntimeEvent::Log {
                         level: "warn".to_string(),
                         source: "cloud".to_string(),
@@ -239,8 +240,9 @@ impl CloudConnectionManager {
             } else {
                 CloudStatus::reconnecting(attempt, None)
             };
-            let _ = self.update_status_if_current(generation, phase.clone());
-            self.emit_status(phase);
+            if self.update_status_if_current(generation, phase.clone()) {
+                self.emit_status(phase);
+            }
             info!(attempt = attempt, "cloud connect attempt starting");
 
             match self.connect_once(generation, context, &mut cancel_rx).await {
@@ -264,8 +266,9 @@ impl CloudConnectionManager {
                         attempt.saturating_add(1).max(1)
                     };
                     let status = CloudStatus::reconnecting(attempt, reason.clone());
-                    let _ = self.update_status_if_current(generation, status.clone());
-                    self.emit_status(status);
+                    if self.update_status_if_current(generation, status.clone()) {
+                        self.emit_status(status);
+                    }
                     let _ = self.event_tx.send(RuntimeEvent::CloudDisconnected(reason));
                     let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
@@ -283,8 +286,9 @@ impl CloudConnectionManager {
                     self.clear_command_sender(generation);
                     attempt += 1;
                     let status = CloudStatus::reconnecting(attempt, Some(message.clone()));
-                    let _ = self.update_status_if_current(generation, status.clone());
-                    self.emit_status(status);
+                    if self.update_status_if_current(generation, status.clone()) {
+                        self.emit_status(status);
+                    }
                     let _ = self
                         .event_tx
                         .send(RuntimeEvent::CloudDisconnected(Some(message)));
@@ -378,8 +382,9 @@ impl CloudConnectionManager {
         self.install_command_sender(generation, command_tx);
 
         let connected = CloudStatus::connected();
-        let _ = self.update_status_if_current(generation, connected.clone());
-        self.emit_status(connected);
+        if self.update_status_if_current(generation, connected.clone()) {
+            self.emit_status(connected);
+        }
         info!("cloud websocket connected");
 
         let _ = self.sync_pending_device_key(&context).await;
@@ -617,6 +622,10 @@ impl CloudConnectionManager {
     }
 
     fn invalidate_auth(&self, message: String, generation: u64) {
+        if !self.update_status_if_current(generation, CloudStatus::disconnected()) {
+            return;
+        }
+
         if let Err(error) = self.database.clear_session() {
             error!(%error, "failed to clear session during auth invalidation");
         }
@@ -627,7 +636,6 @@ impl CloudConnectionManager {
             error!(%error, "failed to clear cloud trust during auth invalidation");
         }
         warn!(%message, "invalidating cloud auth");
-        let _ = self.update_status_if_current(generation, CloudStatus::disconnected());
         self.emit_devices(Vec::new());
         self.emit_status(CloudStatus::disconnected());
         let _ = self

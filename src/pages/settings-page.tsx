@@ -107,7 +107,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     <div className="max-w-2xl animate-fade-in space-y-6">
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
         <Section title={t('settings.general')}>
-          <Field label="Server URL" tip={t('settings.serverTip')}>
+          <Field label={t('settings.serverUrl')} tip={t('settings.serverTip')}>
             <Input onChange={(e) => setForm((c) => ({ ...c, serverUrl: e.target.value }))} value={form.serverUrl} />
           </Field>
           <Field label={t('settings.downloadPath')} tip={t('settings.downloadPathTip')}>
