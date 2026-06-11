@@ -54,7 +54,7 @@ const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 180;
 const PING_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
-const SWIM_PERIOD: Duration = Duration::from_millis(2_000);
+const SWIM_PERIOD: Duration = Duration::from_millis(3_000);
 const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(1_000);
 const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
 const SWIM_SUSPECT_MISSES: u8 = 2;
@@ -87,6 +87,7 @@ struct LanState {
     peer_types: HashMap<String, String>,
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
+    local_incarnation: i64,
     probe_cursor: usize,
     probe_in_flight: HashSet<String>,
     seq: u64,
@@ -208,6 +209,7 @@ impl LanManager {
                 peer_types: HashMap::new(),
                 members: HashMap::new(),
                 gossip: VecDeque::new(),
+                local_incarnation: 0,
                 probe_cursor: 0,
                 probe_in_flight: HashSet::new(),
                 seq: 0,
@@ -265,6 +267,7 @@ impl LanManager {
             inner.peer_types.clear();
             inner.members.clear();
             inner.gossip.clear();
+            inner.local_incarnation = context.incarnation;
             inner.probe_in_flight.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
@@ -1292,7 +1295,12 @@ impl LanManager {
         if let Some(ip) = source_ip {
             self.remember_peer_endpoint(&message.payload.from, ip, LAN_PORT);
         }
-        self.observe_swim_alive(generation, context, &message.payload.from);
+        self.observe_swim_alive(
+            generation,
+            context,
+            &message.payload.from,
+            message.payload.incarnation,
+        );
         for entry in message.payload.gossip {
             debug!(
                 origin = %message.payload.from,
@@ -1309,20 +1317,35 @@ impl LanManager {
                     incarnation = entry.incarnation,
                     "received swim suspicion for local device; gossiping self alive"
                 );
-                self.push_self_alive(context);
+                self.push_self_alive(context, entry.incarnation);
                 continue;
             }
             self.merge_member(generation, context, &message.payload.from, entry);
         }
     }
 
-    fn observe_swim_alive(&self, generation: u64, context: &LanContext, device_id: &str) {
+    fn observe_swim_alive(
+        &self,
+        generation: u64,
+        context: &LanContext,
+        device_id: &str,
+        incarnation: Option<i64>,
+    ) {
         if device_id == context.device.device_id {
+            return;
+        }
+        if incarnation.is_some_and(|value| value > unix_now_millis() + 5 * 60 * 1000) {
             return;
         }
         debug!(%device_id, "observed swim peer alive");
         self.clear_probe_misses(generation, device_id);
-        self.mark_member(generation, context, device_id, MemberState::Alive, None);
+        self.mark_member(
+            generation,
+            context,
+            device_id,
+            MemberState::Alive,
+            incarnation,
+        );
     }
 
     fn record_probe_miss(&self, generation: u64, device_id: &str) -> u8 {
@@ -1353,6 +1376,7 @@ impl LanManager {
             payload: SwimPayload {
                 seq: self.next_seq(),
                 from: context.device.device_id.clone(),
+                incarnation: Some(self.local_incarnation(context)),
                 target: None,
                 gossip: self.gossip_batch(),
             },
@@ -1371,6 +1395,7 @@ impl LanManager {
             payload: SwimPayload {
                 seq: self.next_seq(),
                 from: context.device.device_id.clone(),
+                incarnation: Some(self.local_incarnation(context)),
                 target: Some(target.to_string()),
                 gossip: self.gossip_batch(),
             },
@@ -1423,7 +1448,6 @@ impl LanManager {
         match self.send_swim_ping(&context, &target).await {
             Ok(ack) => {
                 self.process_swim_message(generation, &context, ack, None);
-                self.mark_member(generation, &context, &target, MemberState::Alive, None);
                 return;
             }
             Err(error) => {
@@ -1439,7 +1463,6 @@ impl LanManager {
             {
                 Ok(ack) => {
                     self.process_swim_message(generation, &context, ack, None);
-                    self.mark_member(generation, &context, &target, MemberState::Alive, None);
                     return;
                 }
                 Err(error) => {
@@ -1712,6 +1735,7 @@ impl LanManager {
             payload: SwimPayload {
                 seq,
                 from: context.device.device_id.clone(),
+                incarnation: Some(self.local_incarnation(context)),
                 target: None,
                 gossip: self.gossip_batch(),
             },
@@ -1719,10 +1743,18 @@ impl LanManager {
     }
 
     async fn broadcast_left(&self, context: &LanContext) {
+        let incarnation = [
+            unix_now_millis(),
+            self.local_incarnation(context) + 1,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_else(unix_now_millis);
+        self.set_local_incarnation(incarnation);
         let entry = SwimGossip {
             device_id: context.device.device_id.clone(),
             state: MemberState::Left.as_str().to_string(),
-            incarnation: unix_now_millis(),
+            incarnation,
         };
         self.push_gossip(entry);
         let targets = self
@@ -1737,12 +1769,33 @@ impl LanManager {
         }
     }
 
-    fn push_self_alive(&self, context: &LanContext) {
+    fn push_self_alive(&self, context: &LanContext, observed_suspicion_incarnation: i64) {
+        let incarnation = [
+            unix_now_millis(),
+            self.local_incarnation(context) + 1,
+            observed_suspicion_incarnation + 1,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_else(unix_now_millis);
+        self.set_local_incarnation(incarnation);
         self.push_gossip(SwimGossip {
             device_id: context.device.device_id.clone(),
             state: MemberState::Alive.as_str().to_string(),
-            incarnation: unix_now_millis(),
+            incarnation,
         });
+    }
+
+    fn local_incarnation(&self, context: &LanContext) -> i64 {
+        self.inner
+            .lock_unpoisoned()
+            .local_incarnation
+            .max(context.incarnation)
+    }
+
+    fn set_local_incarnation(&self, incarnation: i64) {
+        let mut inner = self.inner.lock_unpoisoned();
+        inner.local_incarnation = inner.local_incarnation.max(incarnation);
     }
 
     fn push_gossip(&self, entry: SwimGossip) {
@@ -2788,6 +2841,23 @@ mod tests {
             MemberState::Alive,
             100,
             false,
+        ));
+    }
+
+    #[test]
+    fn explicit_direct_observation_cannot_revive_same_incarnation_dead() {
+        let existing = member(MemberState::Dead, 100);
+        assert!(!LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            100,
+            true,
+        ));
+        assert!(LanManager::should_accept_member_update(
+            Some(&existing),
+            MemberState::Alive,
+            101,
+            true,
         ));
     }
 }

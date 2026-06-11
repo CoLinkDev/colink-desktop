@@ -58,9 +58,9 @@ impl TransportManager {
         ))
     }
 
-    pub fn send_cloud_only(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<String> {
+    pub fn broadcast_cloud(&self, message: BusinessEnvelope) -> AppResult<String> {
         if self.cloud.is_connected() {
-            self.cloud.send_relay(device_id, message)?;
+            self.cloud.send_broadcast(message)?;
             return Ok("cloud".to_string());
         }
 

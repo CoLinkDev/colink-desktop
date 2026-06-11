@@ -357,6 +357,8 @@ pub struct SwimPayload {
     pub seq: u64,
     pub from: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub incarnation: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub gossip: Vec<SwimGossip>,
 }

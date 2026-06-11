@@ -679,14 +679,20 @@ impl AppRuntime {
             .unwrap_or_default();
         let devices = self.inner.database.load_cached_devices()?;
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
-        for device in devices
-            .into_iter()
-            .filter(|item| item.cloud_available && item.device_id != my_device_id)
-        {
+        let cloud_sent = self.inner.cloud.is_connected()
+            && self
+                .inner
+                .transport
+                .broadcast_cloud(envelope.clone())
+                .is_ok();
+        for device in devices.into_iter().filter(|item| {
+            item.device_id != my_device_id && item.lan_available && (!cloud_sent || !item.cloud_available)
+        }) {
             let _ = self
                 .inner
                 .transport
-                .send_cloud_only(&device.device_id, envelope.clone());
+                .send_lan_only(&device.device_id, envelope.clone())
+                .await;
         }
         self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use reqwest::RequestBuilder;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use url::Url;
 
 use crate::error::{AppError, AppResult};
@@ -12,9 +13,9 @@ pub struct HttpClient {
 }
 
 #[derive(Debug, Deserialize)]
-struct ApiEnvelope<T> {
+struct ApiEnvelope {
     code: i32,
-    data: T,
+    data: Option<Value>,
     message: String,
 }
 
@@ -141,10 +142,10 @@ impl HttpClient {
         T: DeserializeOwned,
     {
         let (status, payload) = self.send_raw(request).await?;
-        let envelope: ApiEnvelope<T> = serde_json::from_str(&payload)?;
+        let envelope: ApiEnvelope = Self::parse_envelope(status, &payload)?;
 
         if envelope.code != 0 {
-            return Err(AppError::message(envelope.message));
+            return Err(AppError::protocol(envelope.code, envelope.message));
         }
 
         if !status.is_success() {
@@ -153,15 +154,18 @@ impl HttpClient {
             )));
         }
 
-        Ok(envelope.data)
+        let data = envelope
+            .data
+            .ok_or_else(|| AppError::message("response data is missing"))?;
+        Ok(serde_json::from_value(data)?)
     }
 
     async fn send_empty(&self, request: RequestBuilder) -> AppResult<()> {
         let (status, payload) = self.send_raw(request).await?;
-        let envelope: ApiStatusEnvelope = serde_json::from_str(&payload)?;
+        let envelope: ApiStatusEnvelope = Self::parse_envelope(status, &payload)?;
 
         if envelope.code != 0 {
-            return Err(AppError::message(envelope.message));
+            return Err(AppError::protocol(envelope.code, envelope.message));
         }
 
         if !status.is_success() {
@@ -178,5 +182,18 @@ impl HttpClient {
         let status = response.status();
         let payload = response.text().await?;
         Ok((status, payload))
+    }
+
+    fn parse_envelope<T>(status: reqwest::StatusCode, payload: &str) -> AppResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        match serde_json::from_str(payload) {
+            Ok(envelope) => Ok(envelope),
+            Err(_) if !status.is_success() => Err(AppError::message(format!(
+                "request failed with status {status}"
+            ))),
+            Err(error) => Err(error.into()),
+        }
     }
 }

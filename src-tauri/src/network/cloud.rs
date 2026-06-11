@@ -80,6 +80,9 @@ enum CloudCommand {
         to: String,
         message: BusinessEnvelope,
     },
+    Broadcast {
+        message: BusinessEnvelope,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -191,6 +194,11 @@ impl CloudConnectionManager {
             to: to.to_string(),
             message,
         })
+    }
+
+    pub fn send_broadcast(&self, message: BusinessEnvelope) -> AppResult<()> {
+        debug!(message_type = %message.message_type, "queueing cloud broadcast");
+        self.send_command(CloudCommand::Broadcast { message })
     }
 
     async fn run(&self, generation: u64, mut cancel_rx: watch::Receiver<bool>) {
@@ -433,6 +441,15 @@ impl CloudConnectionManager {
                                 payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
                             }
                         }
+                        CloudCommand::Broadcast { message } => {
+                            debug!(message_type = %message.message_type, "sending cloud broadcast");
+                            CloudClientEnvelope {
+                                id: Uuid::new_v4().to_string(),
+                                message_type: "broadcast".to_string(),
+                                to: None,
+                                payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
+                            }
+                        }
                     };
 
                     if write_client_message(&mut writer, outbound).await.is_err() {
@@ -520,10 +537,11 @@ impl CloudConnectionManager {
                     });
                 }
             }
-            "relay" => {
+            "relay" | "broadcast" => {
                 debug!(
                     from = message.from.as_deref().unwrap_or("unknown"),
-                    "cloud relay received"
+                    message_type = %message.message_type,
+                    "cloud business message received"
                 );
                 let Some(from) = message.from else {
                     return;
@@ -694,6 +712,7 @@ fn classify_connect_error(message: String) -> ConnectionFailure {
 fn is_auth_error(error: &AppError) -> bool {
     match error {
         AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::Protocol { code, .. } => AppError::is_auth_protocol_code(*code),
         AppError::Message(message) => {
             message.eq_ignore_ascii_case("unauthorized")
                 || message.eq_ignore_ascii_case("invalid refresh token")

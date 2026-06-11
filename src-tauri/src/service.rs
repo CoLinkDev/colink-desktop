@@ -673,6 +673,7 @@ async fn fetch_devices(state: &AppState, session: &SessionRecord) -> AppResult<V
 fn is_auth_error(error: &AppError) -> bool {
     match error {
         AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::Protocol { code, .. } => AppError::is_auth_protocol_code(*code),
         AppError::Message(message) => {
             message.eq_ignore_ascii_case("unauthorized")
                 || message.eq_ignore_ascii_case("invalid refresh token")
