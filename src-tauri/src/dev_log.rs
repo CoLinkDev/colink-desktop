@@ -59,7 +59,7 @@ pub fn initialize(app: &AppHandle) -> AppResult<TracingGuard> {
 
 fn default_log_filter() -> EnvFilter {
     if cfg!(debug_assertions) {
-        EnvFilter::new("colink_desktop=debug")
+        EnvFilter::new("debug")
     } else {
         EnvFilter::new("info")
     }
