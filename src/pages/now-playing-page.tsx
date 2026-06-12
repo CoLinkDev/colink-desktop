@@ -1,9 +1,10 @@
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Music2 } from 'lucide-react'
+import { GripVertical, Music2, X } from 'lucide-react'
 import { useBlocker } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +28,7 @@ export function NowPlayingPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [showNcmHelp, setShowNcmHelp] = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const dirty = useMemo(() => serializeItems(items) !== serializeItems(initialItems), [initialItems, items])
@@ -124,6 +126,15 @@ export function NowPlayingPage() {
               <p className="mt-1 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
                 {t('nowPlaying.description')}
               </p>
+              <div className="mt-2 text-[12px] text-[hsl(var(--muted))]">
+                <button
+                  className="underline underline-offset-2 hover:text-[hsl(var(--text))]"
+                  onClick={() => setShowNcmHelp(true)}
+                  type="button"
+                >
+                  {t('nowPlaying.ncmHelpTitle')}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -184,7 +195,41 @@ export function NowPlayingPage() {
         </div>
       )}
 
+      {showNcmHelp && <NcmHelpDialog onClose={() => setShowNcmHelp(false)} />}
     </div>
+  )
+}
+
+function NcmHelpDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation()
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+      <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[16px] font-semibold text-[hsl(var(--text))]">
+            {t('nowPlaying.ncmHelpTitle')}
+          </div>
+          <button
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+            onClick={onClose}
+            title={t('common.close')}
+            type="button"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <p className="mt-4 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+          {t('nowPlaying.ncmHelpMessage')}
+        </p>
+        <div className="mt-6 flex justify-end">
+          <Button onClick={onClose} variant="primary">
+            {t('common.confirm')}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 

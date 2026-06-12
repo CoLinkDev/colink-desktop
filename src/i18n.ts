@@ -230,6 +230,8 @@ const resources = {
       nowPlaying: {
         title: '音乐源',
         description: '配置桌面端读取正在播放信息时使用的音乐源顺序。',
+        ncmHelpTitle: '网易云音乐配置',
+        ncmHelpMessage: '网易云音乐需带 --remote-debugging-port=9223 命令行启动。',
         comingSoon: '即将推出',
         empty: '暂无可用音乐源',
         saveSuccess: '音乐源已保存',
@@ -504,6 +506,8 @@ const resources = {
       nowPlaying: {
         title: 'Music Providers',
         description: 'Configure the provider order used to read desktop now-playing information.',
+        ncmHelpTitle: 'NetEase Cloud Music setup',
+        ncmHelpMessage: 'NetEase Cloud Music must be started from the command line with --remote-debugging-port=9223.',
         comingSoon: 'Coming soon',
         empty: 'No music providers available',
         saveSuccess: 'Music providers saved',
@@ -778,6 +782,8 @@ const resources = {
       nowPlaying: {
         title: '音樂源',
         description: '設定桌面端讀取正在播放資訊時使用的音樂源順序。',
+        ncmHelpTitle: '網易雲音樂設定',
+        ncmHelpMessage: '網易雲音樂需帶 --remote-debugging-port=9223 命令列啟動。',
         comingSoon: '即將推出',
         empty: '暫無可用音樂源',
         saveSuccess: '音樂源已儲存',
@@ -1052,6 +1058,8 @@ const resources = {
       nowPlaying: {
         title: '音楽プロバイダー',
         description: 'デスクトップの再生中情報を読み取る音楽ソースの順序を設定します。',
+        ncmHelpTitle: 'NetEase Cloud Music の設定',
+        ncmHelpMessage: 'NetEase Cloud Music は --remote-debugging-port=9223 を付けてコマンドラインから起動する必要があります。',
         comingSoon: '近日対応',
         empty: '利用可能な音楽プロバイダーがありません',
         saveSuccess: '音楽プロバイダーを保存しました',
@@ -1326,6 +1334,8 @@ const resources = {
       nowPlaying: {
         title: '음악 제공자',
         description: '데스크톱 재생 정보를 읽을 때 사용할 음악 소스 순서를 설정합니다.',
+        ncmHelpTitle: 'NetEase Cloud Music 설정',
+        ncmHelpMessage: 'NetEase Cloud Music은 --remote-debugging-port=9223 옵션을 붙여 명령줄에서 시작해야 합니다.',
         comingSoon: '준비 중',
         empty: '사용 가능한 음악 제공자가 없습니다',
         saveSuccess: '음악 제공자가 저장되었습니다',
@@ -1600,6 +1610,8 @@ const resources = {
       nowPlaying: {
         title: 'Proveedores de música',
         description: 'Configura el orden de fuentes usado para leer la reproducción actual del escritorio.',
+        ncmHelpTitle: 'Configuración de NetEase Cloud Music',
+        ncmHelpMessage: 'NetEase Cloud Music debe iniciarse desde la línea de comandos con --remote-debugging-port=9223.',
         comingSoon: 'Próximamente',
         empty: 'No hay proveedores de música disponibles',
         saveSuccess: 'Proveedores de música guardados',
@@ -1874,6 +1886,8 @@ const resources = {
       nowPlaying: {
         title: 'Musikanbieter',
         description: 'Konfigurieren Sie die Reihenfolge der Quellen für Desktop-Wiedergabeinformationen.',
+        ncmHelpTitle: 'NetEase Cloud Music einrichten',
+        ncmHelpMessage: 'NetEase Cloud Music muss über die Befehlszeile mit --remote-debugging-port=9223 gestartet werden.',
         comingSoon: 'Demnächst',
         empty: 'Keine Musikanbieter verfügbar',
         saveSuccess: 'Musikanbieter gespeichert',
@@ -2148,6 +2162,8 @@ const resources = {
       nowPlaying: {
         title: 'Музыкальные провайдеры',
         description: 'Настройте порядок источников для чтения информации о текущем воспроизведении.',
+        ncmHelpTitle: 'Настройка NetEase Cloud Music',
+        ncmHelpMessage: 'NetEase Cloud Music нужно запускать из командной строки с --remote-debugging-port=9223.',
         comingSoon: 'Скоро',
         empty: 'Нет доступных музыкальных провайдеров',
         saveSuccess: 'Музыкальные провайдеры сохранены',
