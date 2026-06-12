@@ -9,6 +9,8 @@ import type {
   DeviceInfo,
   LanPairingCandidate,
   LoginPayload,
+  MusicProviderConfig,
+  MusicProviderMeta,
   RegisterPayload,
   SendFilePayload,
   SendTextPayload,
@@ -88,6 +90,18 @@ export function getSettings() {
 
 export function updateSettings(settings: AppSettings) {
   return invoke<AppSettings>('update_settings', { settings })
+}
+
+export function getMusicProviders() {
+  return invoke<MusicProviderConfig[]>('get_music_providers')
+}
+
+export function updateMusicProviders(providers: MusicProviderConfig[]) {
+  return invoke<void>('update_music_providers', { providers })
+}
+
+export function listAvailableMusicProviders() {
+  return invoke<MusicProviderMeta[]>('list_available_music_providers')
 }
 
 export function checkUpdate() {

@@ -12,9 +12,10 @@ use crate::{
     i18n::{self, TextKey},
     models::{
         unix_now, AppSettings, AppUpdateRelease, BootstrapPayload, DeviceDeletePayload,
-        DeviceIdentity, DeviceInfo, DeviceNameUpdatePayload, LoginPayload, RegisterPayload,
-        RotateDeviceKeyPayload, SessionRecord,
+        DeviceIdentity, DeviceInfo, DeviceNameUpdatePayload, LoginPayload, MusicProviderConfig,
+        MusicProviderMeta, RegisterPayload, RotateDeviceKeyPayload, SessionRecord,
     },
+    music::provider::KNOWN_PROVIDERS,
     shell,
     state::AppState,
 };
@@ -317,6 +318,30 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     shell::refresh_tray(&state.app)?;
 
     Ok(normalized)
+}
+
+pub fn get_music_providers(state: &AppState) -> AppResult<Vec<MusicProviderConfig>> {
+    state.database.load_music_providers()
+}
+
+pub fn update_music_providers(
+    state: &AppState,
+    providers: Vec<MusicProviderConfig>,
+) -> AppResult<()> {
+    state.database.save_music_providers(&providers)?;
+    state.runtime.reload_music_config();
+    Ok(())
+}
+
+pub fn list_available_music_providers() -> Vec<MusicProviderMeta> {
+    KNOWN_PROVIDERS
+        .iter()
+        .map(|provider| MusicProviderMeta {
+            id: provider.id.to_string(),
+            name: provider.name.to_string(),
+            implemented: provider.implemented,
+        })
+        .collect()
 }
 
 pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease>> {

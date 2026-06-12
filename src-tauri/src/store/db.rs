@@ -8,8 +8,10 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         unix_now, unix_now_millis, AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo,
-        FileTransferRecord, SessionRecord, TextMessageRecord, TrustedPeerKeyRecord,
+        FileTransferRecord, MusicProviderConfig, SessionRecord, TextMessageRecord,
+        TrustedPeerKeyRecord,
     },
+    music::provider::known_provider,
 };
 
 const SETTINGS_KEY: &str = "settings";
@@ -88,6 +90,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_device_cache_lan_endpoint",
         run: migrate_12_add_device_cache_lan_endpoint,
     },
+    Migration {
+        version: 13,
+        name: "add_music_providers",
+        run: migrate_13_add_music_providers,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -147,6 +154,14 @@ CREATE TABLE IF NOT EXISTS trusted_peer_keys (
     key_updated_at INTEGER NOT NULL,
     trusted_by_lan INTEGER NOT NULL DEFAULT 0,
     trusted_by_cloud INTEGER NOT NULL DEFAULT 0
+);
+";
+
+const MUSIC_PROVIDERS_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS music_providers (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -227,6 +242,43 @@ impl Database {
         transaction.execute("DELETE FROM trusted_peer_keys", [])?;
         for record in records {
             upsert_trusted_peer_key_row_in_transaction(&transaction, record)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn load_music_providers(&self) -> AppResult<Vec<MusicProviderConfig>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT id, enabled, priority
+            FROM music_providers
+            ORDER BY priority ASC, id ASC
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(MusicProviderConfig {
+                id: row.get(0)?,
+                enabled: row.get::<_, bool>(1)?,
+                priority: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn save_music_providers(&self, providers: &[MusicProviderConfig]) -> AppResult<()> {
+        let providers = canonicalize_music_providers(providers);
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM music_providers", [])?;
+        for provider in providers {
+            transaction.execute(
+                "
+                INSERT INTO music_providers (id, enabled, priority)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![provider.id, provider.enabled, provider.priority],
+            )?;
         }
         transaction.commit()?;
         Ok(())
@@ -1040,6 +1092,41 @@ fn migrate_12_add_device_cache_lan_endpoint(transaction: &Transaction<'_>) -> Ap
     migrate_json_record(transaction, DEVICE_CACHE_KEY, normalize_device_cache_json)
 }
 
+fn migrate_13_add_music_providers(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute_batch(MUSIC_PROVIDERS_SCHEMA_SQL)?;
+    transaction.execute(
+        "
+        INSERT INTO music_providers (id, enabled, priority)
+        VALUES ('qqmusic', 1, 0), ('ncm', 1, 1)
+        ON CONFLICT(id) DO NOTHING
+        ",
+        [],
+    )?;
+    Ok(())
+}
+
+fn canonicalize_music_providers(providers: &[MusicProviderConfig]) -> Vec<MusicProviderConfig> {
+    let mut normalized = Vec::new();
+    for provider in providers {
+        let id = provider.id.trim();
+        let Some(meta) = known_provider(id) else {
+            continue;
+        };
+        if normalized
+            .iter()
+            .any(|item: &MusicProviderConfig| item.id == meta.id)
+        {
+            continue;
+        }
+        normalized.push(MusicProviderConfig {
+            id: meta.id.to_string(),
+            enabled: provider.enabled && meta.implemented,
+            priority: normalized.len() as i32,
+        });
+    }
+    normalized
+}
+
 fn migrate_json_record(
     transaction: &Transaction<'_>,
     key: &str,
@@ -1326,7 +1413,7 @@ mod tests {
     use super::Database;
     use crate::models::{
         AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord,
-        TextMessageRecord, TrustedPeerKeyRecord,
+        MusicProviderConfig, TextMessageRecord, TrustedPeerKeyRecord,
     };
 
     #[test]
@@ -1426,6 +1513,51 @@ mod tests {
     }
 
     #[test]
+    fn save_music_providers_canonicalizes_at_storage_boundary() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_music_providers(&[
+                MusicProviderConfig {
+                    id: "unknown".to_string(),
+                    enabled: true,
+                    priority: 99,
+                },
+                MusicProviderConfig {
+                    id: " ncm ".to_string(),
+                    enabled: true,
+                    priority: 42,
+                },
+                MusicProviderConfig {
+                    id: "qqmusic".to_string(),
+                    enabled: false,
+                    priority: 7,
+                },
+                MusicProviderConfig {
+                    id: "ncm".to_string(),
+                    enabled: false,
+                    priority: 0,
+                },
+            ])
+            .expect("save music providers");
+
+        let providers = database
+            .load_music_providers()
+            .expect("load music providers");
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].id, "ncm");
+        assert!(providers[0].enabled);
+        assert_eq!(providers[0].priority, 0);
+        assert_eq!(providers[1].id, "qqmusic");
+        assert!(!providers[1].enabled);
+        assert_eq!(providers[1].priority, 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn persists_local_only_device_identity() {
         let path = std::env::temp_dir().join(format!("colink-db-{}.sqlite", Uuid::new_v4()));
         let database = Database::new(path.clone());
@@ -1501,9 +1633,20 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_id, "m1");
 
+        let music_providers = database
+            .load_music_providers()
+            .expect("load music providers");
+        assert_eq!(music_providers.len(), 2);
+        assert_eq!(music_providers[0].id, "qqmusic");
+        assert!(music_providers[0].enabled);
+        assert_eq!(music_providers[0].priority, 0);
+        assert_eq!(music_providers[1].id, "ncm");
+        assert!(music_providers[1].enabled);
+        assert_eq!(music_providers[1].priority, 1);
+
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1519,7 +1662,44 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn applies_music_provider_migration_after_v12() {
+        let path = temp_db_path();
+        create_legacy_database(&path);
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 13", [])
+            .expect("remove v13 marker");
+        connection
+            .execute("DROP TABLE music_providers", [])
+            .expect("drop music providers");
+        drop(connection);
+
+        let database = Database::new(path.clone());
+        database.initialize().expect("rerun db init");
+
+        let providers = database
+            .load_music_providers()
+            .expect("load music providers");
+        assert_eq!(
+            providers
+                .iter()
+                .map(|provider| (provider.id.as_str(), provider.enabled, provider.priority))
+                .collect::<Vec<_>>(),
+            vec![("qqmusic", true, 0), ("ncm", true, 1)]
+        );
+        assert_eq!(
+            migration_versions(&path),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1560,7 +1740,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1576,7 +1756,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1611,7 +1791,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1680,7 +1860,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1696,7 +1876,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1739,7 +1919,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1755,7 +1935,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1793,7 +1973,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1857,7 +2037,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1925,7 +2105,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1949,7 +2129,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);
@@ -1965,7 +2145,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12)",
+                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13)",
                 [],
             )
             .expect("remove v9 marker");
@@ -2000,7 +2180,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let _ = fs::remove_file(path);

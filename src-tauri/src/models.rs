@@ -149,6 +149,22 @@ pub struct TrustedPeerKeyRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MusicProviderConfig {
+    pub id: String,
+    pub enabled: bool,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicProviderMeta {
+    pub id: String,
+    pub name: String,
+    pub implemented: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LanPairingCandidate {
     pub device_id: String,
     pub name: String,

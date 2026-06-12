@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save } from 'lucide-react'
+import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, Music } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -27,6 +27,8 @@ export function AppLayout({ children }: PropsWithChildren) {
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
   const isSettingsRoute = location.pathname === '/settings'
+  const isNowPlayingRoute = location.pathname === '/now-playing'
+  const isFormRoute = isSettingsRoute || isNowPlayingRoute
 
   const blocker = useBlocker(
     ({ nextLocation }) =>
@@ -81,6 +83,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.settings')
       case '/clipboard':
         return t('nav.clipboard')
+      case '/now-playing':
+        return t('nav.nowPlaying')
       default:
         return 'CoLink Desktop'
     }
@@ -105,6 +109,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
           <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
+          <SidebarLink icon={Music} label={t('nav.nowPlaying')} to="/now-playing" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
@@ -184,10 +189,10 @@ export function AppLayout({ children }: PropsWithChildren) {
           <h1 className="text-[20px] font-semibold tracking-tight text-[hsl(var(--text))]">{getTitle()}</h1>
 
           <div className="flex items-center gap-2">
-            {isSettingsRoute && (
+            {isFormRoute && (
               <Button
-                disabled={!settingsDirty}
-                form={location.pathname === '/clipboard' ? 'clipboard-form' : 'settings-form'}
+                disabled={isSettingsRoute && !settingsDirty}
+                form={isNowPlayingRoute ? 'now-playing-form' : 'settings-form'}
                 type="submit"
                 size="sm"
                 className="gap-1.5"

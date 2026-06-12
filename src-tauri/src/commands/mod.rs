@@ -2,6 +2,7 @@ mod app;
 mod auth;
 mod device;
 mod message;
+mod music;
 mod settings;
 mod update;
 
@@ -15,5 +16,6 @@ pub use message::{
     cancel_transfer, clear_transfers, pending_file_offers, pick_files, respond_file_offer,
     send_files, send_text,
 };
+pub use music::{get_music_providers, list_available_music_providers, update_music_providers};
 pub use settings::{get_settings, pick_download_directory, update_settings};
 pub use update::{check_update, open_update_download};

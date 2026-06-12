@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use tauri::{AppHandle, Manager};
 
@@ -20,7 +23,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn initialize(app: &AppHandle) -> AppResult<Self> {
-        let app_dir = app.path().app_data_dir()?;
+        let app_dir = app_data_dir(app)?;
         fs::create_dir_all(&app_dir)?;
 
         let database = Database::new(app_dir.join("colink.db"));
@@ -49,4 +52,17 @@ fn resolve_download_path(app_dir: &Path) -> AppResult<String> {
     }
 
     Ok(path.to_string_lossy().to_string())
+}
+
+pub fn app_data_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    let mut app_dir = app.path().app_data_dir()?;
+
+    if cfg!(debug_assertions) {
+        let file_name = app_dir
+            .file_name()
+            .ok_or_else(|| crate::error::AppError::message("invalid app data directory"))?;
+        app_dir.set_file_name(format!("{}.debug", file_name.to_string_lossy()));
+    }
+
+    Ok(app_dir)
 }

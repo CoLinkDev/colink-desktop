@@ -1,8 +1,10 @@
-mod cdp;
-mod lyrics;
+mod ncm;
+pub mod provider;
+mod qqmusic;
+mod spotify;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,25 +22,24 @@ use crate::{
         MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     },
     runtime_events::RuntimeEvent,
+    store::db::Database,
     sync::MutexExt,
 };
 
-use self::{
-    cdp::{CdpDetector, CdpPlayingState, PlaybackStatus},
-    lyrics::fetch_lyric,
-};
+use self::provider::{create_provider, ActiveTrack, LyricFuture, MusicProvider, TrackState};
 
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(15);
-const NONE_APP_CLOSE_DELAY: Duration = Duration::from_secs(1);
+const GRACE_PERIOD: Duration = Duration::from_secs(5);
 const FAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct MusicService {
+    database: Database,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     send_tx: mpsc::UnboundedSender<MusicSendJob>,
-    lyric_cache: Arc<Mutex<HashMap<String, MusicLyricPayload>>>,
+    config_tx: watch::Sender<()>,
     state: Arc<Mutex<MusicState>>,
 }
 
@@ -62,6 +63,7 @@ struct TrackKey {
     title: String,
     artists: Vec<String>,
     album: Option<String>,
+    source: String,
     cover_url: Option<String>,
     duration_ms: Option<i64>,
 }
@@ -79,21 +81,82 @@ struct LastProgressPush {
     sent_at: Instant,
 }
 
+struct LyricFetchRequest {
+    request_id: u64,
+    track_id: String,
+    provider_id: String,
+}
+
 struct MusicSendJob {
     device_id: String,
     label: &'static str,
     envelope: BusinessEnvelope,
 }
 
+enum ChainState {
+    Scanning { index: usize },
+    Active { index: usize },
+    Grace { index: usize, since: Instant },
+}
+
+struct ProviderChain {
+    provider_ids: Vec<String>,
+    instances: HashMap<String, Box<dyn MusicProvider>>,
+}
+
+struct ScannedTrack {
+    index: usize,
+    provider_id: String,
+    track: ActiveTrack,
+}
+
+impl ProviderChain {
+    fn new(provider_ids: Vec<String>) -> Self {
+        Self {
+            provider_ids,
+            instances: HashMap::new(),
+        }
+    }
+
+    fn reload(&mut self, provider_ids: Vec<String>) {
+        let active_ids = provider_ids.iter().cloned().collect::<HashSet<_>>();
+        self.instances.retain(|id, _| active_ids.contains(id));
+        self.provider_ids = provider_ids;
+    }
+
+    fn len(&self) -> usize {
+        self.provider_ids.len()
+    }
+
+    fn provider_id(&self, index: usize) -> Option<&str> {
+        self.provider_ids.get(index).map(String::as_str)
+    }
+
+    fn get_or_create(&mut self, index: usize) -> Option<&mut Box<dyn MusicProvider>> {
+        let id = self.provider_ids.get(index)?.clone();
+        if !self.instances.contains_key(&id) {
+            let provider = create_provider(&id)?;
+            self.instances.insert(id.clone(), provider);
+        }
+        self.instances.get_mut(&id)
+    }
+}
+
 impl MusicService {
-    pub fn new(transport: TransportManager, event_tx: mpsc::UnboundedSender<RuntimeEvent>) -> Self {
+    pub fn new(
+        database: Database,
+        transport: TransportManager,
+        event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) -> Self {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
+        let (config_tx, _) = watch::channel(());
         spawn_music_sender(transport.clone(), event_tx.clone(), send_rx);
 
         Self {
+            database,
             event_tx,
             send_tx,
-            lyric_cache: Arc::new(Mutex::new(HashMap::new())),
+            config_tx,
             state: Arc::new(Mutex::new(MusicState {
                 running: false,
                 cancel: None,
@@ -101,6 +164,10 @@ impl MusicService {
                 snapshot: MusicSnapshot::default(),
             })),
         }
+    }
+
+    pub fn notify_config_change(&self) {
+        let _ = self.config_tx.send(());
     }
 
     pub async fn handle_alive(&self, from_device_id: &str) {
@@ -182,6 +249,7 @@ impl MusicService {
 
     fn start_loop(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let config_rx = self.config_tx.subscribe();
         {
             let mut state = self.state.lock_unpoisoned();
             if state.running && state.cancel.is_some() {
@@ -193,21 +261,23 @@ impl MusicService {
 
         let service = self.clone();
         tauri::async_runtime::spawn(async move {
-            service.run(cancel_rx).await;
+            service.run(cancel_rx, config_rx).await;
         });
     }
 
-    async fn run(&self, mut cancel_rx: watch::Receiver<bool>) {
-        let mut detector = CdpDetector::new();
+    async fn run(&self, mut cancel_rx: watch::Receiver<bool>, mut config_rx: watch::Receiver<()>) {
+        let mut chain = ProviderChain::new(self.load_enabled_music_provider_ids());
+        let mut chain_state = ChainState::Scanning { index: 0 };
         let (lyric_tx, mut lyric_rx) = mpsc::unbounded_channel::<LyricFetchResult>();
-        let mut prev_status = PlaybackStatus::None;
         let mut prev_track_key: Option<TrackKey> = None;
         let mut prev_progress: Option<MusicProgressPayload> = None;
         let mut last_progress_push: Option<LastProgressPush> = None;
-        let mut none_since: Option<Instant> = None;
         let mut request_id = 0_u64;
 
-        info!("music sync loop started");
+        info!(
+            providers = chain.provider_ids.join(","),
+            "music sync loop started"
+        );
 
         loop {
             if is_cancelled(&cancel_rx) {
@@ -224,40 +294,130 @@ impl MusicService {
                     .await;
             }
 
-            let wait = if matches!(prev_status, PlaybackStatus::Active) {
-                ACTIVE_POLL_INTERVAL
-            } else {
-                IDLE_POLL_INTERVAL
+            let wait = match chain_state {
+                ChainState::Active { .. } | ChainState::Grace { .. } => ACTIVE_POLL_INTERVAL,
+                ChainState::Scanning { .. } => IDLE_POLL_INTERVAL,
             };
 
             tokio::select! {
+                changed = config_rx.changed() => {
+                    if changed.is_err() {
+                        continue;
+                    }
+                    chain.reload(self.load_enabled_music_provider_ids());
+                    request_id += 1;
+                    prev_track_key = None;
+                    prev_progress = None;
+                    last_progress_push = None;
+                    self.clear_playback_state().await;
+                    chain_state = ChainState::Scanning { index: 0 };
+                }
                 changed = cancel_rx.changed() => {
                     if changed.is_ok() && is_cancelled(&cancel_rx) {
                         break;
                     }
                 }
                 _ = tokio::time::sleep(wait) => {
-                    let state = detector.poll().await;
-                    self.handle_detector_state(
-                        state,
-                        &active_ids,
-                        &mut prev_status,
-                        &mut prev_track_key,
-                        &mut prev_progress,
-                        &mut last_progress_push,
-                        &mut none_since,
-                        &mut request_id,
-                        &lyric_tx,
-                    )
-                    .await;
+                    match chain_state {
+                        ChainState::Scanning { index } => {
+                            if let Some(scanned) = scan_for_active_track(&mut chain, index).await {
+                                chain_state = ChainState::Active { index: scanned.index };
+                                if let Some(request) = handle_scanned_track(
+                                    self,
+                                    scanned,
+                                    &mut prev_track_key,
+                                    &mut prev_progress,
+                                    &mut last_progress_push,
+                                    &mut request_id,
+                                )
+                                .await
+                                {
+                                    spawn_lyric_request(&chain, request, &lyric_tx);
+                                }
+                            } else {
+                                if prev_track_key.is_some() {
+                                    self.clear_playback_state().await;
+                                    request_id += 1;
+                                    prev_track_key = None;
+                                    prev_progress = None;
+                                    last_progress_push = None;
+                                }
+                                chain_state = ChainState::Scanning { index: 0 };
+                            }
+                        }
+                        ChainState::Active { index } => {
+                            match fetch_provider_track(&mut chain, index).await {
+                                Some(TrackState::Active(track)) => {
+                                    let provider_id = chain
+                                        .provider_id(index)
+                                        .map(str::to_string)
+                                        .unwrap_or_default();
+                                    if let Some(request) = handle_scanned_track(
+                                        self,
+                                        ScannedTrack {
+                                            index,
+                                            provider_id,
+                                            track,
+                                        },
+                                        &mut prev_track_key,
+                                        &mut prev_progress,
+                                        &mut last_progress_push,
+                                        &mut request_id,
+                                    )
+                                    .await
+                                    {
+                                        spawn_lyric_request(&chain, request, &lyric_tx);
+                                    }
+                                }
+                                _ => {
+                                    chain_state = ChainState::Grace {
+                                        index,
+                                        since: Instant::now(),
+                                    };
+                                }
+                            }
+                        }
+                        ChainState::Grace { index, since } => {
+                            match fetch_provider_track(&mut chain, index).await {
+                                Some(TrackState::Active(track)) => {
+                                    chain_state = ChainState::Active { index };
+                                    let provider_id = chain
+                                        .provider_id(index)
+                                        .map(str::to_string)
+                                        .unwrap_or_default();
+                                    if let Some(request) = handle_scanned_track(
+                                        self,
+                                        ScannedTrack {
+                                            index,
+                                            provider_id,
+                                            track,
+                                        },
+                                        &mut prev_track_key,
+                                        &mut prev_progress,
+                                        &mut last_progress_push,
+                                        &mut request_id,
+                                    )
+                                    .await
+                                    {
+                                        spawn_lyric_request(&chain, request, &lyric_tx);
+                                    }
+                                }
+                                _ if since.elapsed() < GRACE_PERIOD => {}
+                                _ => {
+                                    chain_state = ChainState::Scanning { index: 0 };
+                                }
+                            }
+                        }
+                    }
                 }
                 result = lyric_rx.recv() => {
                     if let Some(result) = result {
-                self.handle_lyric_result(
-                    result,
-                    request_id,
-                    prev_track_key.as_ref(),
-                    &active_ids,
+                        let active_ids = self.prune_active_receivers();
+                        self.handle_lyric_result(
+                            result,
+                            request_id,
+                            prev_track_key.as_ref(),
+                            &active_ids,
                         )
                         .await;
                     }
@@ -269,92 +429,16 @@ impl MusicService {
         info!("music sync loop stopped");
     }
 
-    async fn handle_detector_state(
-        &self,
-        state: CdpPlayingState,
-        _active_ids: &[String],
-        prev_status: &mut PlaybackStatus,
-        prev_track_key: &mut Option<TrackKey>,
-        prev_progress: &mut Option<MusicProgressPayload>,
-        last_progress_push: &mut Option<LastProgressPush>,
-        none_since: &mut Option<Instant>,
-        request_id: &mut u64,
-        lyric_tx: &mpsc::UnboundedSender<LyricFetchResult>,
-    ) {
-        match state.status {
-            PlaybackStatus::None => {
-                if !matches!(prev_status, PlaybackStatus::None) {
-                    *none_since = Some(Instant::now());
-                }
-
-                if prev_track_key.is_some() {
-                    let elapsed = none_since
-                        .as_ref()
-                        .map(Instant::elapsed)
-                        .unwrap_or_default();
-                    if elapsed >= NONE_APP_CLOSE_DELAY {
-                        self.clear_playback_state().await;
-                        *request_id += 1;
-                        *prev_track_key = None;
-                        *prev_progress = None;
-                        *last_progress_push = None;
-                        *prev_status = PlaybackStatus::None;
-                        *none_since = None;
-                        return;
-                    }
-                }
-
-                *prev_status = PlaybackStatus::None;
-            }
-            PlaybackStatus::Active => {
-                *none_since = None;
-                let track_key = track_key(&state);
-                let track_changed = prev_track_key.as_ref() != Some(&track_key);
-                let progress_ms = state.progress_ms.unwrap_or(0);
-
-                if track_changed {
-                    let progress = build_progress_payload(&state, progress_ms);
-                    *request_id += 1;
-                    *prev_track_key = Some(track_key);
-                    *prev_progress = progress.clone();
-                    *prev_status = PlaybackStatus::Active;
-                    self.publish_track_change(&state, progress_ms).await;
-                    *last_progress_push = progress.map(|payload| LastProgressPush {
-                        payload,
-                        sent_at: Instant::now(),
-                    });
-                    self.spawn_lyric_fetch(*request_id, state.track_id.clone(), lyric_tx.clone());
-                    return;
-                }
-
-                let progress = build_progress_payload(&state, progress_ms);
-                if progress_payload_changed(prev_progress.as_ref(), progress.as_ref()) {
-                    *prev_progress = progress.clone();
-                    match progress {
-                        Some(payload) => {
-                            let now = Instant::now();
-                            let lyric = self.current_lyric_for_track(&payload.track_id);
-                            let should_push = should_push_progress(
-                                &payload,
-                                last_progress_push.as_ref(),
-                                lyric.as_ref(),
-                                now,
-                            );
-                            self.update_progress(payload.clone(), should_push).await;
-                            if should_push {
-                                *last_progress_push = Some(LastProgressPush {
-                                    payload,
-                                    sent_at: now,
-                                });
-                            }
-                        }
-                        None => {
-                            self.clear_progress_snapshot();
-                            *last_progress_push = None;
-                        }
-                    }
-                }
-                *prev_status = PlaybackStatus::Active;
+    fn load_enabled_music_provider_ids(&self) -> Vec<String> {
+        match self.database.load_music_providers() {
+            Ok(providers) => providers
+                .into_iter()
+                .filter(|provider| provider.enabled)
+                .map(|provider| provider.id)
+                .collect(),
+            Err(error) => {
+                self.log_warn(format!("failed to load music providers: {error}"));
+                Vec::new()
             }
         }
     }
@@ -390,32 +474,28 @@ impl MusicService {
         }
     }
 
-    async fn publish_track_change(&self, state: &CdpPlayingState, progress_ms: i64) {
-        let Some(track) = build_track_payload(state) else {
-            self.clear_playback_state().await;
-            return;
-        };
-
-        let progress = build_progress_payload(state, progress_ms);
+    async fn publish_track_change(&self, track: &ActiveTrack) {
+        let track_payload = build_track_payload(track);
+        let progress = build_progress_payload(track);
         {
             let mut guard = self.state.lock_unpoisoned();
-            guard.snapshot.track = Some(track.clone());
+            guard.snapshot.track = Some(track_payload.clone());
             guard.snapshot.lyric = None;
             guard.snapshot.progress = progress.clone();
         }
 
         let active_ids = self.prune_active_receivers();
         for device_id in active_ids {
-            self.send_track_message(&device_id, &track).await;
+            self.send_track_message(&device_id, &track_payload).await;
             if let Some(progress) = &progress {
                 self.send_progress_message(&device_id, progress).await;
             }
         }
 
         if let Some(track_id) = track.track_id.as_deref() {
-            debug!(track_id = %track_id, "music track changed");
+            debug!(track_id = %track_id, source = track.source, "music track changed");
         } else {
-            debug!("music track changed");
+            debug!(source = track.source, "music track changed");
         }
     }
 
@@ -447,40 +527,6 @@ impl MusicService {
             .as_ref()
             .filter(|payload| payload.track_id == track_id)
             .cloned()
-    }
-
-    fn spawn_lyric_fetch(
-        &self,
-        request_id: u64,
-        track_id: Option<String>,
-        lyric_tx: mpsc::UnboundedSender<LyricFetchResult>,
-    ) {
-        let Some(track_id) = track_id.filter(|value| !value.trim().is_empty()) else {
-            return;
-        };
-        let cache = self.lyric_cache.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Some(cached) = cache.lock_unpoisoned().get(&track_id).cloned() {
-                let _ = lyric_tx.send(LyricFetchResult {
-                    request_id,
-                    track_id,
-                    payload: cached,
-                });
-                return;
-            }
-
-            let Some(payload) = fetch_lyric(&track_id).await else {
-                return;
-            };
-            cache
-                .lock_unpoisoned()
-                .insert(track_id.clone(), payload.clone());
-            let _ = lyric_tx.send(LyricFetchResult {
-                request_id,
-                track_id,
-                payload,
-            });
-        });
     }
 
     async fn clear_playback_state(&self) {
@@ -593,6 +639,150 @@ impl MusicService {
     }
 }
 
+async fn handle_active_track(
+    service: &MusicService,
+    track: ActiveTrack,
+    provider_id: String,
+    prev_track_key: &mut Option<TrackKey>,
+    prev_progress: &mut Option<MusicProgressPayload>,
+    last_progress_push: &mut Option<LastProgressPush>,
+    request_id: &mut u64,
+) -> Option<LyricFetchRequest> {
+    let key = track_key(&track);
+    let track_changed = prev_track_key.as_ref() != Some(&key);
+
+    if track_changed {
+        *request_id += 1;
+        *prev_track_key = Some(key);
+        let progress = build_progress_payload(&track);
+        *prev_progress = progress.clone();
+        *last_progress_push = progress.map(|payload| LastProgressPush {
+            payload,
+            sent_at: Instant::now(),
+        });
+
+        service.publish_track_change(&track).await;
+        return track
+            .track_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|track_id| LyricFetchRequest {
+                request_id: *request_id,
+                track_id: track_id.to_string(),
+                provider_id,
+            });
+    }
+
+    let progress = build_progress_payload(&track);
+    if progress_payload_changed(prev_progress.as_ref(), progress.as_ref()) {
+        *prev_progress = progress.clone();
+        match progress {
+            Some(payload) => {
+                let now = Instant::now();
+                let lyric = service.current_lyric_for_track(&payload.track_id);
+                let should_push = should_push_progress(
+                    &payload,
+                    last_progress_push.as_ref(),
+                    lyric.as_ref(),
+                    now,
+                );
+                service.update_progress(payload.clone(), should_push).await;
+                if should_push {
+                    *last_progress_push = Some(LastProgressPush {
+                        payload,
+                        sent_at: now,
+                    });
+                }
+            }
+            None => {
+                service.clear_progress_snapshot();
+                *last_progress_push = None;
+            }
+        }
+    }
+
+    None
+}
+
+async fn handle_scanned_track(
+    service: &MusicService,
+    scanned: ScannedTrack,
+    prev_track_key: &mut Option<TrackKey>,
+    prev_progress: &mut Option<MusicProgressPayload>,
+    last_progress_push: &mut Option<LastProgressPush>,
+    request_id: &mut u64,
+) -> Option<LyricFetchRequest> {
+    handle_active_track(
+        service,
+        scanned.track,
+        scanned.provider_id,
+        prev_track_key,
+        prev_progress,
+        last_progress_push,
+        request_id,
+    )
+    .await
+}
+
+fn spawn_lyric_request(
+    chain: &ProviderChain,
+    request: LyricFetchRequest,
+    lyric_tx: &mpsc::UnboundedSender<LyricFetchResult>,
+) {
+    if let Some(provider) = chain.instances.get(&request.provider_id) {
+        let future = provider.fetch_lyrics(&request.track_id);
+        spawn_lyric_fetch(
+            request.request_id,
+            request.track_id,
+            future,
+            lyric_tx.clone(),
+        );
+    }
+}
+
+async fn scan_for_active_track(
+    chain: &mut ProviderChain,
+    start_index: usize,
+) -> Option<ScannedTrack> {
+    for index in start_index..chain.len() {
+        let provider_id = chain.provider_id(index)?.to_string();
+        match fetch_provider_track(chain, index).await {
+            Some(TrackState::Active(track)) => {
+                return Some(ScannedTrack {
+                    index,
+                    provider_id,
+                    track,
+                });
+            }
+            Some(TrackState::None) | None => {}
+        }
+    }
+    None
+}
+
+async fn fetch_provider_track(chain: &mut ProviderChain, index: usize) -> Option<TrackState> {
+    let provider = chain.get_or_create(index)?;
+    Some(provider.fetch_track().await)
+}
+
+fn spawn_lyric_fetch(
+    request_id: u64,
+    track_id: String,
+    future: LyricFuture,
+    lyric_tx: mpsc::UnboundedSender<LyricFetchResult>,
+) {
+    tauri::async_runtime::spawn(async move {
+        if let Some(payload) = future.await {
+            let _ = lyric_tx.send(LyricFetchResult {
+                request_id,
+                track_id,
+                payload,
+            });
+        }
+    });
+}
+
 fn spawn_music_sender(
     transport: TransportManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
@@ -626,25 +816,21 @@ fn emit_music_log(
     });
 }
 
-fn build_track_payload(state: &CdpPlayingState) -> Option<MusicTrackPayload> {
-    if !matches!(state.status, PlaybackStatus::Active) {
-        return None;
-    }
-
-    Some(MusicTrackPayload {
-        track_id: state.track_id.clone(),
-        title: non_empty(state.title.as_str()),
-        artists: if state.artists.is_empty() {
+fn build_track_payload(track: &ActiveTrack) -> MusicTrackPayload {
+    MusicTrackPayload {
+        track_id: track.track_id.clone(),
+        title: non_empty(track.title.as_str()),
+        artists: if track.artists.is_empty() {
             None
         } else {
-            Some(state.artists.clone())
+            Some(track.artists.clone())
         },
-        album: state.album.clone(),
-        source: Some("ncm".to_string()),
-        cover_url: state.cover_url.clone(),
-        cover_data: None,
-        duration: state.duration_ms,
-    })
+        album: track.album.clone(),
+        source: Some(track.source.to_string()),
+        cover_url: track.cover_url.clone(),
+        cover_data: track.cover_data.clone(),
+        duration: track.duration_ms,
+    }
 }
 
 fn empty_track_payload() -> MusicTrackPayload {
@@ -660,15 +846,12 @@ fn empty_track_payload() -> MusicTrackPayload {
     }
 }
 
-fn build_progress_payload(
-    state: &CdpPlayingState,
-    progress_ms: i64,
-) -> Option<MusicProgressPayload> {
-    let track_id = state.track_id.clone()?;
+fn build_progress_payload(track: &ActiveTrack) -> Option<MusicProgressPayload> {
+    let track_id = track.track_id.clone()?;
     Some(MusicProgressPayload {
         track_id,
-        progress: progress_ms,
-        paused: state.playing_state != 2,
+        progress: track.progress_ms,
+        paused: track.paused,
     })
 }
 
@@ -738,14 +921,15 @@ fn crossed_lyric_line(
         .any(|line| line.time > previous_progress_ms && line.time <= current_progress_ms)
 }
 
-fn track_key(state: &CdpPlayingState) -> TrackKey {
+fn track_key(track: &ActiveTrack) -> TrackKey {
     TrackKey {
-        track_id: state.track_id.clone(),
-        title: state.title.clone(),
-        artists: state.artists.clone(),
-        album: state.album.clone(),
-        cover_url: state.cover_url.clone(),
-        duration_ms: state.duration_ms,
+        track_id: track.track_id.clone(),
+        title: track.title.clone(),
+        artists: track.artists.clone(),
+        album: track.album.clone(),
+        source: track.source.to_string(),
+        cover_url: track.cover_url.clone(),
+        duration_ms: track.duration_ms,
     }
 }
 

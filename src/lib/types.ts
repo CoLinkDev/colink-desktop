@@ -168,6 +168,18 @@ export interface AppLogEntry {
   createdAt: number
 }
 
+export interface MusicProviderConfig {
+  id: string
+  enabled: boolean
+  priority: number
+}
+
+export interface MusicProviderMeta {
+  id: string
+  name: string
+  implemented: boolean
+}
+
 export interface SendTextPayload {
   deviceId: string
   text: string

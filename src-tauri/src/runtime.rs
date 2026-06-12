@@ -137,7 +137,7 @@ impl AppRuntime {
             event_tx.clone(),
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
-        let music = MusicService::new(transport.clone(), event_tx.clone());
+        let music = MusicService::new(database.clone(), transport.clone(), event_tx.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
@@ -189,6 +189,10 @@ impl AppRuntime {
             notify.notify_one();
         }
         Ok(())
+    }
+
+    pub fn reload_music_config(&self) {
+        self.inner.music.notify_config_change();
     }
 
     pub async fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {
@@ -686,7 +690,9 @@ impl AppRuntime {
                 .broadcast_cloud(envelope.clone())
                 .is_ok();
         for device in devices.into_iter().filter(|item| {
-            item.device_id != my_device_id && item.lan_available && (!cloud_sent || !item.cloud_available)
+            item.device_id != my_device_id
+                && item.lan_available
+                && (!cloud_sent || !item.cloud_available)
         }) {
             let _ = self
                 .inner

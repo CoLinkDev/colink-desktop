@@ -5,14 +5,17 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
 };
 use tracing_subscriber::EnvFilter;
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    error::{AppError, AppResult},
+    state,
+};
 
 const LOG_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -21,7 +24,7 @@ pub struct TracingGuard {
 }
 
 pub fn initialize(app: &AppHandle) -> AppResult<TracingGuard> {
-    let log_dir = app.path().app_data_dir()?.join("logs");
+    let log_dir = state::app_data_dir(app)?.join("logs");
     fs::create_dir_all(&log_dir)?;
 
     let file_appender = RollingFileAppender::builder()

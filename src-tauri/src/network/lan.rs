@@ -1743,13 +1743,10 @@ impl LanManager {
     }
 
     async fn broadcast_left(&self, context: &LanContext) {
-        let incarnation = [
-            unix_now_millis(),
-            self.local_incarnation(context) + 1,
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or_else(unix_now_millis);
+        let incarnation = [unix_now_millis(), self.local_incarnation(context) + 1]
+            .into_iter()
+            .max()
+            .unwrap_or_else(unix_now_millis);
         self.set_local_incarnation(incarnation);
         let entry = SwimGossip {
             device_id: context.device.device_id.clone(),
