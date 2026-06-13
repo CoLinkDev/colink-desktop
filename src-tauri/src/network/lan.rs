@@ -5,8 +5,9 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
+use rand::seq::SliceRandom;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -88,7 +89,8 @@ struct LanState {
     members: HashMap<String, MemberRecord>,
     gossip: VecDeque<SwimGossip>,
     local_incarnation: i64,
-    probe_cursor: usize,
+    probe_queue: VecDeque<String>,
+    probe_round_candidates: Vec<String>,
     probe_in_flight: HashSet<String>,
     seq: u64,
     transfer_tokens: HashMap<String, String>,
@@ -210,7 +212,8 @@ impl LanManager {
                 members: HashMap::new(),
                 gossip: VecDeque::new(),
                 local_incarnation: 0,
-                probe_cursor: 0,
+                probe_queue: VecDeque::new(),
+                probe_round_candidates: Vec::new(),
                 probe_in_flight: HashSet::new(),
                 seq: 0,
                 transfer_tokens: HashMap::new(),
@@ -274,7 +277,8 @@ impl LanManager {
             inner.pending_pairings.clear();
             inner.pairing_candidates.clear();
             inner.seq = 0;
-            inner.probe_cursor = 0;
+            inner.probe_queue.clear();
+            inner.probe_round_candidates.clear();
             inner.generation
         };
 
@@ -1455,12 +1459,17 @@ impl LanManager {
             }
         }
 
-        let intermediaries = self.indirect_targets(&context.device.device_id, &target);
-        for intermediary in intermediaries {
-            match self
-                .send_swim_ping_req(&context, &intermediary, &target)
-                .await
-            {
+        let mut ping_reqs = FuturesUnordered::new();
+        for intermediary in self.indirect_targets(&context.device.device_id, &target) {
+            ping_reqs.push(async {
+                let result = self
+                    .send_swim_ping_req(&context, &intermediary, &target)
+                    .await;
+                (intermediary, result)
+            });
+        }
+        while let Some((intermediary, result)) = ping_reqs.next().await {
+            match result {
                 Ok(ack) => {
                     self.process_swim_message(generation, &context, ack, None);
                     return;
@@ -1487,27 +1496,39 @@ impl LanManager {
 
     fn next_probe_target(&self, local_device_id: &str) -> Option<String> {
         let mut inner = self.inner.lock_unpoisoned();
-        let candidates = inner
+        if !inner.probe_in_flight.is_empty() {
+            return None;
+        }
+
+        let mut candidates = inner
             .members
             .iter()
             .filter(|(device_id, member)| {
                 device_id.as_str() != local_device_id
                     && matches!(member.state, MemberState::Alive | MemberState::Suspect)
                     && inner.peer_endpoints.contains_key(*device_id)
-                    && !inner.probe_in_flight.contains(*device_id)
             })
             .map(|(device_id, _)| device_id.clone())
             .collect::<Vec<_>>();
+        candidates.sort();
         if candidates.is_empty() {
+            inner.probe_queue.clear();
+            inner.probe_round_candidates.clear();
             return None;
         }
-        if inner.probe_cursor >= candidates.len() {
-            inner.probe_cursor = 0;
+        let target_set = candidates.iter().cloned().collect::<HashSet<_>>();
+        if inner.probe_queue.is_empty() || inner.probe_round_candidates != candidates {
+            inner.probe_round_candidates = candidates.clone();
+            inner.probe_queue = shuffled_probe_queue(candidates);
         }
-        let target = candidates[inner.probe_cursor].clone();
-        inner.probe_cursor = (inner.probe_cursor + 1) % candidates.len();
-        inner.probe_in_flight.insert(target.clone());
-        Some(target)
+        while let Some(target) = inner.probe_queue.pop_front() {
+            if target_set.contains(&target) {
+                inner.probe_in_flight.insert(target.clone());
+                return Some(target);
+            }
+        }
+        inner.probe_round_candidates.clear();
+        None
     }
 
     fn finish_probe(&self, generation: u64, target: &str) {
@@ -2739,6 +2760,11 @@ fn normalized_peer_type(value: &str) -> Option<String> {
         "windows" | "macos" | "linux" | "android" | "ios" => Some(value),
         _ => None,
     }
+}
+
+fn shuffled_probe_queue(mut candidates: Vec<String>) -> VecDeque<String> {
+    candidates.shuffle(&mut rand::thread_rng());
+    candidates.into()
 }
 
 fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
