@@ -10,7 +10,7 @@ use windows::Media::Control::{
 };
 
 #[cfg(windows)]
-use windows::Storage::Streams::{DataReader, InputStreamOptions, IRandomAccessStreamReference};
+use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference, InputStreamOptions};
 
 #[cfg(windows)]
 const MAX_THUMBNAIL_BYTES: usize = 5 * 1024 * 1024;
@@ -94,9 +94,10 @@ fn read_session(session: &GlobalSystemMediaTransportControlsSession) -> Option<G
     let title = hstring_text(props.Title().ok());
     let artist = hstring_text(props.Artist().ok());
     let album = hstring_text(props.AlbumTitle().ok());
-    let cover_data = props.Thumbnail().ok().and_then(|thumbnail| {
-        read_thumbnail_base64(&thumbnail)
-    });
+    let cover_data = props
+        .Thumbnail()
+        .ok()
+        .and_then(|thumbnail| read_thumbnail_base64(&thumbnail));
     let duration_ms = timespan_ms(timeline.EndTime().ok());
     let progress_ms = timespan_ms(timeline.Position().ok());
     let artists = split_artists(artist.as_deref());

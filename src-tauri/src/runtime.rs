@@ -661,6 +661,9 @@ impl AppRuntime {
         if !settings.clipboard_sync {
             return Ok(());
         }
+        if !self.inner.cloud.is_connected() {
+            return Ok(());
+        }
 
         let hash = hash_clipboard_payload(&payload);
         {
@@ -675,31 +678,8 @@ impl AppRuntime {
             state.clipboard_last_sent_hash = Some(hash);
         }
 
-        let my_device_id = self
-            .inner
-            .database
-            .load_device_identity()?
-            .map(|item| item.device_id)
-            .unwrap_or_default();
-        let devices = self.inner.database.load_cached_devices()?;
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
-        let cloud_sent = self.inner.cloud.is_connected()
-            && self
-                .inner
-                .transport
-                .broadcast_cloud(envelope.clone())
-                .is_ok();
-        for device in devices.into_iter().filter(|item| {
-            item.device_id != my_device_id
-                && item.lan_available
-                && (!cloud_sent || !item.cloud_available)
-        }) {
-            let _ = self
-                .inner
-                .transport
-                .send_lan_only(&device.device_id, envelope.clone())
-                .await;
-        }
+        self.inner.transport.broadcast_cloud(envelope)?;
         self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())
     }
