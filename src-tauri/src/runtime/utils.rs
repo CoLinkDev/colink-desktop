@@ -144,7 +144,9 @@ fn split_checksum(checksum: &str) -> AppResult<(FileChecksumAlgorithm, &str)> {
         return Ok((FileChecksumAlgorithm::parse(algorithm)?, digest));
     }
 
-    Ok((FileChecksumAlgorithm::Sha256, checksum))
+    Err(AppError::message(
+        "checksum must include an algorithm prefix",
+    ))
 }
 
 fn hash_file_by_algorithm(path: &Path, algorithm: FileChecksumAlgorithm) -> AppResult<String> {
