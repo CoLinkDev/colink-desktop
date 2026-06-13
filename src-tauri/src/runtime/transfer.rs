@@ -34,7 +34,7 @@ use super::{
         TransferPreparingPayload, TransferProgressPayload,
     },
     route::TransferRoute,
-    utils::{build_file_checksum, unique_download_path, verify_file_checksum},
+    utils::{build_file_checksum, unique_download_path, FileChecksumVerifier},
     AppRuntime, IncomingFileState, OutgoingFileState, PendingFileOfferState,
     FILE_OFFER_ENDED_EVENT, FILE_OFFER_REQUESTED_EVENT, LAN_SEND_WINDOW_CHUNKS,
     RELAY_SEND_WINDOW_CHUNKS, TRANSFER_PREPARING_EVENT, TRANSFER_PROGRESS_EVENT,
@@ -343,6 +343,9 @@ impl AppRuntime {
             })?;
         let download_path = PathBuf::from(&settings.download_path);
         fs::create_dir_all(&download_path)?;
+        let verifier = Arc::new(AsyncMutex::new(FileChecksumVerifier::new(
+            &payload.checksum,
+        )?));
         let temp_name = format!("{}.part", sanitize(&payload.file_name));
         let temp_path = download_path.join(temp_name);
 
@@ -370,6 +373,7 @@ impl AppRuntime {
             payload.session_id.clone(),
             IncomingFileState {
                 writer,
+                verifier,
                 record: record.clone(),
                 received_chunks: 0,
                 lan_finish_received: false,
@@ -689,11 +693,12 @@ impl AppRuntime {
         bytes: &[u8],
         finish_when_complete: bool,
     ) -> AppResult<()> {
-        let (writer, received_chunks, device_id) = {
+        let (writer, verifier, received_chunks, device_id) = {
             let state = self.inner.state.lock_unpoisoned();
             state.incoming_files.get(session_id).map(|item| {
                 (
                     item.writer.clone(),
+                    item.verifier.clone(),
                     item.received_chunks,
                     item.record.device_id.clone(),
                 )
@@ -727,6 +732,10 @@ impl AppRuntime {
         let mut file = writer.lock().await;
         file.write_all(bytes).await?;
         drop(file);
+        {
+            let mut verifier = verifier.lock().await;
+            verifier.update(bytes);
+        }
 
         let updated_at = unix_now_millis();
         let (record, bytes_per_second, finished, lan_finish_received) =
@@ -871,14 +880,17 @@ impl AppRuntime {
             })?;
         let download_dir = PathBuf::from(settings.download_path);
         fs::create_dir_all(&download_dir)?;
-
         let temp_path = incoming
             .record
             .temp_path
             .as_deref()
             .map(PathBuf::from)
             .ok_or_else(|| AppError::message("temporary file path does not exist"))?;
-        let success = verify_file_checksum(&temp_path, &incoming.record.checksum)?;
+
+        let success = {
+            let verifier = incoming.verifier.lock().await;
+            verifier.verify()
+        };
 
         let final_path = if success {
             let path = unique_download_path(&download_dir, &incoming.record.file_name);

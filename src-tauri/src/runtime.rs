@@ -108,6 +108,7 @@ struct OutgoingFileState {
 
 struct IncomingFileState {
     writer: Arc<AsyncMutex<tokio::fs::File>>,
+    verifier: Arc<AsyncMutex<crate::runtime::utils::FileChecksumVerifier>>,
     record: FileTransferRecord,
     received_chunks: i64,
     lan_finish_received: bool,
