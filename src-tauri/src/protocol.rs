@@ -315,6 +315,12 @@ pub struct HandshakeProofPayload {
     pub timestamp: i64,
     pub nonce: String,
     pub signature: String,
+    #[serde(default = "default_has_trust")]
+    pub has_trust: bool,
+}
+
+fn default_has_trust() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,9 +380,9 @@ pub struct SwimGossip {
 #[cfg(test)]
 mod tests {
     use super::{
-        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
-        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, MUSIC_LYRIC_TYPE,
-        MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        BusinessEnvelope, FileDataFrame, FileDataFrameKind, HandshakeProofPayload,
+        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
+        MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -386,6 +392,21 @@ mod tests {
 
         assert_eq!(encoded[..8], [1, 1, 0, 0, 0, 0, 0, 7]);
         assert_eq!(FileDataFrame::decode(&encoded), Some(frame));
+    }
+
+    #[test]
+    fn handshake_proof_defaults_missing_has_trust_to_true() {
+        let payload: HandshakeProofPayload = serde_json::from_value(serde_json::json!({
+            "deviceId": "device-a",
+            "publicKey": "public-key",
+            "name": "Device A",
+            "timestamp": 1716451200000_i64,
+            "nonce": "nonce",
+            "signature": "signature"
+        }))
+        .expect("decode handshake proof");
+
+        assert!(payload.has_trust);
     }
 
     #[test]

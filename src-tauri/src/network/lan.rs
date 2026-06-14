@@ -2262,7 +2262,8 @@ async fn perform_outbound_handshake(
     allow_pairing: bool,
 ) -> AppResult<HandshakeResult<tokio_tungstenite::MaybeTlsStream<TcpStream>>> {
     let request_nonce = Uuid::new_v4().simple().to_string();
-    let request = build_handshake_proof(&context.device, &request_nonce)?;
+    let local_has_trust = has_lan_trusted_record(database, expected_device_id)?;
+    let request = build_handshake_proof(&context.device, &request_nonce, local_has_trust)?;
     write_peer_message(&mut stream, "handshake.v1.request", &request).await?;
 
     let exchange = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
@@ -2276,6 +2277,7 @@ async fn perform_outbound_handshake(
         return Err(AppError::message("invalid LAN handshake response type"));
     }
     let peer_payload: HandshakeProofPayload = serde_json::from_value(exchange.payload)?;
+    let peer_has_trust = peer_payload.has_trust;
     if peer_payload.device_id != expected_device_id {
         return Err(AppError::message("LAN handshake device mismatch"));
     }
@@ -2310,7 +2312,7 @@ async fn perform_outbound_handshake(
         return Err(AppError::message("LAN device key changed"));
     }
     let mut pairing_request_id = None;
-    if !matches!(trust, TrustState::Trusted) {
+    if !matches!(trust, TrustState::Trusted) || !local_has_trust || !peer_has_trust {
         if !allow_pairing {
             return Err(AppError::message("LAN device key is not trusted"));
         }
@@ -2447,6 +2449,7 @@ async fn perform_inbound_handshake(
         return Err(AppError::message("invalid LAN handshake request type"));
     }
     let peer_payload: HandshakeProofPayload = serde_json::from_value(request.payload)?;
+    let peer_has_trust = peer_payload.has_trust;
     if let Err(error) = verify_handshake_proof(&peer_payload) {
         write_peer_message(
             &mut stream,
@@ -2479,11 +2482,12 @@ async fn perform_inbound_handshake(
     }
 
     let exchange_nonce = Uuid::new_v4().simple().to_string();
-    let exchange = build_handshake_proof(&context.device, &exchange_nonce)?;
+    let local_has_trust = matches!(trust, TrustState::Trusted);
+    let exchange = build_handshake_proof(&context.device, &exchange_nonce, local_has_trust)?;
     write_peer_message(&mut stream, "handshake.v1.exchange", &exchange).await?;
 
     let mut pairing_request_id = None;
-    if !matches!(trust, TrustState::Trusted) {
+    if !matches!(trust, TrustState::Trusted) || !peer_has_trust {
         let reason = match trust {
             TrustState::Unknown => "unknown_device",
             TrustState::Trusted => "trusted",
@@ -2594,7 +2598,11 @@ where
     )
 }
 
-fn build_handshake_proof(device: &DeviceIdentity, nonce: &str) -> AppResult<HandshakeProofPayload> {
+fn build_handshake_proof(
+    device: &DeviceIdentity,
+    nonce: &str,
+    has_trust: bool,
+) -> AppResult<HandshakeProofPayload> {
     let timestamp = unix_now_millis();
     let proof = format!("{}{}{}", device.device_id, timestamp, nonce);
     let signature = sign_payload(&device.private_key, proof.as_bytes())?;
@@ -2605,6 +2613,7 @@ fn build_handshake_proof(device: &DeviceIdentity, nonce: &str) -> AppResult<Hand
         timestamp,
         nonce: nonce.to_string(),
         signature,
+        has_trust,
     })
 }
 
@@ -2630,11 +2639,21 @@ fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> 
     if !is_trusted(record) {
         return Ok(TrustState::Unknown);
     }
-    if record.public_key == proof.public_key {
+    if record.public_key != proof.public_key {
+        return Ok(TrustState::KeyChanged);
+    }
+    if record.trusted_by_lan {
         Ok(TrustState::Trusted)
     } else {
-        Ok(TrustState::KeyChanged)
+        Ok(TrustState::Unknown)
     }
+}
+
+fn has_lan_trusted_record(database: &Database, device_id: &str) -> AppResult<bool> {
+    Ok(database
+        .load_trusted_peer_keys()?
+        .iter()
+        .any(|record| record.device_id == device_id && record.trusted_by_lan))
 }
 
 fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
@@ -2796,7 +2815,15 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{LanManager, MemberRecord, MemberState};
+    use std::{env, fs};
+
+    use uuid::Uuid;
+
+    use super::{
+        has_lan_trusted_record, trust_state, LanManager, MemberRecord, MemberState, PeerProof,
+        TrustState,
+    };
+    use crate::{models::TrustedPeerKeyRecord, store::db::Database};
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -2805,6 +2832,62 @@ mod tests {
             updated_at: 0,
             missed_probes: 0,
         }
+    }
+
+    fn temp_database() -> (Database, std::path::PathBuf) {
+        let path = env::temp_dir().join(format!("colink-lan-test-{}.sqlite", Uuid::new_v4()));
+        let database = Database::new(path.clone());
+        database.initialize().expect("initialize database");
+        (database, path)
+    }
+
+    fn trusted_record(device_id: &str, trusted_by_lan: bool) -> TrustedPeerKeyRecord {
+        TrustedPeerKeyRecord {
+            device_id: device_id.to_string(),
+            name: "Peer".to_string(),
+            public_key: "peer-public-key".to_string(),
+            key_updated_at: 1,
+            trusted_by_lan,
+            trusted_by_cloud: !trusted_by_lan,
+        }
+    }
+
+    fn peer_proof(device_id: &str, public_key: &str) -> PeerProof {
+        PeerProof {
+            device_id: device_id.to_string(),
+            public_key: public_key.to_string(),
+            name: "Peer".to_string(),
+            nonce: "nonce".to_string(),
+        }
+    }
+
+    #[test]
+    fn lan_handshake_trust_requires_lan_trust() {
+        let (database, path) = temp_database();
+        database
+            .upsert_trusted_peer_key(trusted_record("cloud-only", false))
+            .expect("insert cloud trust");
+        database
+            .upsert_trusted_peer_key(trusted_record("lan", true))
+            .expect("insert lan trust");
+
+        assert!(!has_lan_trusted_record(&database, "cloud-only").expect("cloud only trust"));
+        assert!(matches!(
+            trust_state(&database, &peer_proof("cloud-only", "peer-public-key"))
+                .expect("cloud only state"),
+            TrustState::Unknown
+        ));
+        assert!(has_lan_trusted_record(&database, "lan").expect("lan trust"));
+        assert!(matches!(
+            trust_state(&database, &peer_proof("lan", "peer-public-key")).expect("lan state"),
+            TrustState::Trusted
+        ));
+        assert!(matches!(
+            trust_state(&database, &peer_proof("lan", "changed-key")).expect("changed state"),
+            TrustState::KeyChanged
+        ));
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
