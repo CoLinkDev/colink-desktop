@@ -790,7 +790,15 @@ impl LanManager {
                         gossip_count = ack.payload.gossip.len(),
                         "mdns-triggered swim ping succeeded"
                     );
-                    manager.process_swim_message(generation, &context, ack, None);
+                    if ack.is_target_ack(&device_id) {
+                        manager.process_swim_message(generation, &context, ack, None);
+                    } else {
+                        warn!(
+                            device_id = %device_id,
+                            from = %ack.payload.from,
+                            "ignored mdns-triggered swim ack from different device"
+                        );
+                    }
                 }
                 Err(error) => {
                     debug!(device_id = %device_id, %error, "mdns-triggered swim ping failed");
@@ -1266,6 +1274,14 @@ impl LanManager {
                     .send_swim_ping(context, &target)
                     .await
                     .map_err(|error| AppError::message(error.to_string()))?;
+                if !ack.is_target_ack(&target) {
+                    warn!(
+                        target = %target,
+                        from = %ack.payload.from,
+                        "ping-req target identity mismatch"
+                    );
+                    return Err(AppError::message("swim target identity mismatch"));
+                }
                 self.process_swim_message(generation, context, ack.clone(), None);
                 Ok(ack)
             }
@@ -1451,8 +1467,12 @@ impl LanManager {
         debug!(%target, "probing swim member");
         match self.send_swim_ping(&context, &target).await {
             Ok(ack) => {
-                self.process_swim_message(generation, &context, ack, None);
-                return;
+                let from = ack.payload.from.clone();
+                self.process_swim_message(generation, &context, ack.clone(), None);
+                if ack.is_target_ack(&target) {
+                    return;
+                }
+                warn!(%target, %from, "direct swim probe identity mismatch");
             }
             Err(error) => {
                 debug!(%target, %error, "direct swim probe failed");
@@ -1471,8 +1491,12 @@ impl LanManager {
         while let Some((intermediary, result)) = ping_reqs.next().await {
             match result {
                 Ok(ack) => {
-                    self.process_swim_message(generation, &context, ack, None);
-                    return;
+                    let from = ack.payload.from.clone();
+                    if ack.is_target_ack(&target) {
+                        self.process_swim_message(generation, &context, ack, None);
+                        return;
+                    }
+                    warn!(%target, %intermediary, %from, "indirect swim probe identity mismatch");
                 }
                 Err(error) => {
                     debug!(%target, %intermediary, %error, "indirect swim probe failed");
@@ -2765,6 +2789,12 @@ fn normalized_peer_type(value: &str) -> Option<String> {
 fn shuffled_probe_queue(mut candidates: Vec<String>) -> VecDeque<String> {
     candidates.shuffle(&mut rand::thread_rng());
     candidates.into()
+}
+
+impl SwimEnvelope {
+    fn is_target_ack(&self, target: &str) -> bool {
+        self.message_type == "swim.ack" && self.payload.from == target
+    }
 }
 
 fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
