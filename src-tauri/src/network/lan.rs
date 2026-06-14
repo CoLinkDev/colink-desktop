@@ -225,16 +225,9 @@ impl LanManager {
     }
 
     pub fn start(&self) -> AppResult<()> {
-        let settings = self
-            .database
+        self.database
             .load_settings()?
             .ok_or_else(|| AppError::message(self.user_text(TextKey::SettingsNotInitialized)))?;
-        if !settings.lan_discovery {
-            info!("lan discovery disabled");
-            self.stop();
-            return Ok(());
-        }
-
         let device = self.database.load_device_identity()?;
         let Some(device) = device else {
             debug!("lan manager skipped because device identity is missing");

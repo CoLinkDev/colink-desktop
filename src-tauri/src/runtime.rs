@@ -774,10 +774,6 @@ impl AppRuntime {
             self.inner.database.load_settings()?.ok_or_else(|| {
                 AppError::message(self.user_text(TextKey::SettingsNotInitialized))
             })?;
-        if !settings.notifications {
-            return Ok(());
-        }
-
         let title = i18n::message(&settings.language, title_key, title_args);
         self.inner
             .app

@@ -13,9 +13,7 @@ pub struct AppSettings {
     pub server_url: String,
     pub auto_start: bool,
     pub start_minimized: bool,
-    pub lan_discovery: bool,
     pub download_path: String,
-    pub notifications: bool,
     pub clipboard_sync: bool,
     pub language: String,
 }
@@ -26,9 +24,7 @@ impl AppSettings {
             server_url: DEFAULT_SERVER_URL.to_string(),
             auto_start: true,
             start_minimized: true,
-            lan_discovery: true,
             download_path,
-            notifications: true,
             clipboard_sync: true,
             language: crate::i18n::default_language_code(),
         }

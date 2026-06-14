@@ -6,9 +6,7 @@ export interface AppSettings {
   serverUrl: string
   autoStart: boolean
   startMinimized: boolean
-  lanDiscovery: boolean
   downloadPath: string
-  notifications: boolean
   clipboardSync: boolean
   language: string
 }
@@ -199,9 +197,7 @@ export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',
   autoStart: true,
   startMinimized: true,
-  lanDiscovery: true,
   downloadPath: '',
-  notifications: true,
   clipboardSync: true,
   language: resolveLanguage(),
 }

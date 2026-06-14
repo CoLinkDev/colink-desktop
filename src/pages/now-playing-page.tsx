@@ -126,15 +126,6 @@ export function NowPlayingPage() {
               <p className="mt-1 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
                 {t('nowPlaying.description')}
               </p>
-              <div className="mt-2 text-[12px] text-[hsl(var(--muted))]">
-                <button
-                  className="underline underline-offset-2 hover:text-[hsl(var(--text))]"
-                  onClick={() => setShowNcmHelp(true)}
-                  type="button"
-                >
-                  {t('nowPlaying.ncmHelpTitle')}
-                </button>
-              </div>
             </div>
           </div>
 
@@ -165,6 +156,7 @@ export function NowPlayingPage() {
                       <ProviderRow
                         key={item.id}
                         item={item}
+                        onShowNcmHelp={() => setShowNcmHelp(true)}
                         onToggle={handleToggle}
                       />
                     ))}
@@ -233,7 +225,15 @@ function NcmHelpDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function ProviderRow({ item, onToggle }: { item: ProviderItem; onToggle: (id: string, enabled: boolean) => void }) {
+function ProviderRow({
+  item,
+  onShowNcmHelp,
+  onToggle,
+}: {
+  item: ProviderItem
+  onShowNcmHelp: () => void
+  onToggle: (id: string, enabled: boolean) => void
+}) {
   const { t } = useTranslation()
   const {
     attributes,
@@ -269,14 +269,30 @@ function ProviderRow({ item, onToggle }: { item: ProviderItem; onToggle: (id: st
 
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
+          <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">
+            {t(providerNameKey(item.id), { defaultValue: item.name })}
+          </span>
           {!item.implemented && (
             <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--muted))]">
               {t('nowPlaying.comingSoon')}
             </span>
           )}
         </div>
-        <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{item.id}</div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[hsl(var(--muted))]">
+          <span>{item.id}</span>
+          {item.id === 'ncm' && (
+            <>
+              <span aria-hidden="true">·</span>
+              <button
+                className="truncate underline underline-offset-2 hover:text-[hsl(var(--text))]"
+                onClick={onShowNcmHelp}
+                type="button"
+              >
+                {t('nowPlaying.ncmHelpTitle')}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <Switch
@@ -326,4 +342,8 @@ function normalizePriorities<T extends MusicProviderConfig>(items: T[]) {
 
 function serializeItems(items: ProviderItem[]) {
   return JSON.stringify(items.map(({ id, enabled, priority }) => ({ id, enabled, priority })))
+}
+
+function providerNameKey(id: string) {
+  return `nowPlaying.providers.${id}`
 }

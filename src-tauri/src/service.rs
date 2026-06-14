@@ -309,11 +309,7 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     } else {
         state.cloud.stop_quiet();
     }
-    if normalized.lan_discovery {
-        state.runtime.activate()?;
-    } else {
-        state.runtime.deactivate()?;
-    }
+    state.runtime.activate()?;
     shell::refresh_tray(&state.app)?;
 
     Ok(normalized)
