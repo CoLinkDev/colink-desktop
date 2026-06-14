@@ -158,6 +158,9 @@ const resources = {
         available: '发现新版本 {{version}}',
         description: 'CoLink Desktop 有新版本可用。',
         download: '下载',
+        check: '检查更新',
+        checking: '正在检查...',
+        upToDate: '当前已是最新版本',
       },
       messages: {
         title: '消息',
@@ -435,6 +438,9 @@ const resources = {
         available: 'Version {{version}} is available',
         description: 'A new CoLink Desktop update is available.',
         download: 'Download',
+        check: 'Check for updates',
+        checking: 'Checking...',
+        upToDate: 'You are up to date',
       },
       messages: {
         title: 'Messages',
@@ -712,6 +718,9 @@ const resources = {
         available: '發現新版本 {{version}}',
         description: 'CoLink Desktop 有新版本可用。',
         download: '下載',
+        check: '檢查更新',
+        checking: '正在檢查...',
+        upToDate: '目前已是最新版本',
       },
       messages: {
         title: '訊息',
@@ -989,6 +998,9 @@ const resources = {
         available: 'バージョン {{version}} が利用できます',
         description: 'CoLink Desktop の新しいバージョンがあります。',
         download: 'ダウンロード',
+        check: '更新を確認',
+        checking: '確認中...',
+        upToDate: '最新バージョンです',
       },
       messages: {
         title: 'メッセージ',
@@ -1266,6 +1278,9 @@ const resources = {
         available: '버전 {{version}} 사용 가능',
         description: 'CoLink Desktop 새 버전을 사용할 수 있습니다.',
         download: '다운로드',
+        check: '업데이트 확인',
+        checking: '확인 중...',
+        upToDate: '최신 버전입니다',
       },
       messages: {
         title: '메시지',
@@ -1543,6 +1558,9 @@ const resources = {
         available: 'Versión {{version}} disponible',
         description: 'Hay una nueva versión de CoLink Desktop disponible.',
         download: 'Descargar',
+        check: 'Buscar actualizaciones',
+        checking: 'Buscando...',
+        upToDate: 'Ya tienes la última versión',
       },
       messages: {
         title: 'Mensajes',
@@ -1820,6 +1838,9 @@ const resources = {
         available: 'Version {{version}} ist verfügbar',
         description: 'Ein neues CoLink Desktop-Update ist verfügbar.',
         download: 'Herunterladen',
+        check: 'Nach Updates suchen',
+        checking: 'Suche...',
+        upToDate: 'Sie sind auf dem neuesten Stand',
       },
       messages: {
         title: 'Nachrichten',
@@ -2097,6 +2118,9 @@ const resources = {
         available: 'Доступна версия {{version}}',
         description: 'Доступна новая версия CoLink Desktop.',
         download: 'Скачать',
+        check: 'Проверить обновления',
+        checking: 'Проверка...',
+        upToDate: 'Установлена последняя версия',
       },
       messages: {
         title: 'Сообщения',

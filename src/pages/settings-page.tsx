@@ -3,12 +3,14 @@ import { useEffect, useState, useMemo } from 'react'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
+import { RefreshCw } from 'lucide-react'
 
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { buildTime, fallbackVersion, formatBuildTime, projectUrl, readAppVersion } from '../lib/app-meta'
+import { checkUpdate, openUpdateDownload } from '../lib/api'
 import type { AppSettings } from '../lib/types'
 import { cn } from '../lib/utils'
 import { resolveLanguage } from '../i18n'
@@ -47,6 +49,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   const { t, i18n } = useTranslation()
   const [form, setForm] = useState<AppSettings>(settings)
   const [version, setVersion] = useState(fallbackVersion)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const { setSettingsDirty } = useAppState()
 
   const settingsSchema = useMemo(() => z.object({
@@ -103,6 +106,41 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     setForm((current) => ({ ...current, language: resolved }))
   }
 
+  async function handleCheckUpdate() {
+    setCheckingUpdate(true)
+    try {
+      const update = await checkUpdate()
+      if (!update) {
+        toast.success(t('updates.upToDate'))
+        return
+      }
+
+      const asset = update.assets[0]
+      const notes = update.releaseNotes.trim()
+      const description =
+        notes.length > 240 ? `${notes.slice(0, 240)}...` : notes || t('updates.description')
+
+      toast.info(t('updates.available', { version: update.version }), {
+        description,
+        duration: Infinity,
+        action: asset
+          ? {
+              label: t('updates.download'),
+              onClick: () => {
+                void openUpdateDownload(asset.downloadUrl).catch(() => {
+                  toast.error(t('common.requestFailed'))
+                })
+              },
+            }
+          : undefined,
+      })
+    } catch (e) {
+      toast.error(readErrorMessage(e))
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
   return (
     <div className="max-w-2xl animate-fade-in space-y-6">
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
@@ -152,6 +190,10 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
         <InfoRow label={t('settings.projectUrl')} value={projectUrl} />
         <InfoRow label={t('settings.version')} value={version} />
         <InfoRow label={t('settings.buildTime')} value={formatBuildTime(buildTime)} />
+        <Button className="w-fit" disabled={checkingUpdate} onClick={handleCheckUpdate} variant="secondary">
+          <RefreshCw className={cn("size-4", checkingUpdate && "animate-spin")} />
+          {checkingUpdate ? t('updates.checking') : t('updates.check')}
+        </Button>
       </Section>
     </div>
   )
