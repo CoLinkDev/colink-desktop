@@ -91,6 +91,22 @@ struct TicketRequest<'a> {
     device_id: &'a str,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceRegisterRequest<'a> {
+    device_id: &'a str,
+    name: &'a str,
+    #[serde(rename = "type")]
+    device_type: &'a str,
+    public_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceRegisterResponse {
+    device_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TicketResponse {
@@ -335,7 +351,7 @@ impl CloudConnectionManager {
                 Err(error) => return ContextLoad::Retryable(error.to_string()),
             };
 
-        let device = match self.database.load_device_identity() {
+        let mut device = match self.database.load_device_identity() {
             Ok(Some(device)) => device,
             Ok(None) => {
                 return ContextLoad::Retryable("current device is not registered".to_string())
@@ -343,10 +359,15 @@ impl CloudConnectionManager {
             Err(error) => return ContextLoad::Retryable(error.to_string()),
         };
 
-        if device.user_id.as_deref() != Some(session.user_id.as_str()) {
-            return ContextLoad::Retryable(
-                "current device and account state are inconsistent".to_string(),
-            );
+        match self
+            .sync_current_device_identity(&settings, &session, &device)
+            .await
+        {
+            Ok(updated) => device = updated,
+            Err(error) if is_auth_error(&error) => {
+                return ContextLoad::Invalidated(error.to_string());
+            }
+            Err(error) => return ContextLoad::Retryable(error.to_string()),
         }
 
         ContextLoad::Ready(Box::new(ConnectionContext {
@@ -354,6 +375,36 @@ impl CloudConnectionManager {
             session,
             device,
         }))
+    }
+
+    async fn sync_current_device_identity(
+        &self,
+        settings: &AppSettings,
+        session: &SessionRecord,
+        identity: &DeviceIdentity,
+    ) -> AppResult<DeviceIdentity> {
+        let request = DeviceRegisterRequest {
+            device_id: &identity.device_id,
+            name: &identity.name,
+            device_type: &identity.device_type,
+            public_key: &identity.public_key,
+        };
+        let response: DeviceRegisterResponse = self
+            .http
+            .post(
+                &settings.server_url,
+                DEVICES_PATH,
+                &request,
+                Some(&session.access_token),
+            )
+            .await?;
+
+        let mut updated = identity.clone();
+        updated.user_id = Some(session.user_id.clone());
+        updated.device_id = response.device_id;
+        updated.cloud_key_sync_pending = false;
+        self.database.save_device_identity(&updated)?;
+        Ok(updated)
     }
 
     async fn connect_once(

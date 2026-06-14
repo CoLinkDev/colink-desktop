@@ -20,7 +20,6 @@ pub enum TextKey {
     DownloadPathEmpty,
     SettingsNotInitialized,
     NotLoggedIn,
-    LocalIdentityBoundOtherAccount,
     SelectFiles,
     FileNotFound,
     InvalidFileName,
@@ -149,9 +148,6 @@ fn text_en(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "Download path cannot be empty",
         TextKey::SettingsNotInitialized => "Local settings are not initialized",
         TextKey::NotLoggedIn => "Not logged in",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "Local identity is already bound to another account ({user_id})"
-        }
         TextKey::SelectFiles => "Select files",
         TextKey::FileNotFound => "File does not exist: {path}",
         TextKey::InvalidFileName => "Invalid file name",
@@ -196,7 +192,6 @@ fn text_zh_cn(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "下载路径不能为空",
         TextKey::SettingsNotInitialized => "本地设置未初始化",
         TextKey::NotLoggedIn => "尚未登录",
-        TextKey::LocalIdentityBoundOtherAccount => "本机身份已绑定其他账号 ({user_id})",
         TextKey::SelectFiles => "请选择文件",
         TextKey::FileNotFound => "文件不存在: {path}",
         TextKey::InvalidFileName => "文件名不合法",
@@ -241,7 +236,6 @@ fn text_zh_tw(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "下載路徑不能為空",
         TextKey::SettingsNotInitialized => "本機設定尚未初始化",
         TextKey::NotLoggedIn => "尚未登入",
-        TextKey::LocalIdentityBoundOtherAccount => "本機身份已綁定其他帳號 ({user_id})",
         TextKey::SelectFiles => "請選擇檔案",
         TextKey::FileNotFound => "檔案不存在: {path}",
         TextKey::InvalidFileName => "檔案名稱無效",
@@ -286,9 +280,6 @@ fn text_ja(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "ダウンロードパスを入力してください",
         TextKey::SettingsNotInitialized => "ローカル設定が初期化されていません",
         TextKey::NotLoggedIn => "ログインしていません",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "ローカル ID は別のアカウントに紐付いています ({user_id})"
-        }
         TextKey::SelectFiles => "ファイルを選択してください",
         TextKey::FileNotFound => "ファイルが存在しません: {path}",
         TextKey::InvalidFileName => "ファイル名が無効です",
@@ -333,9 +324,6 @@ fn text_ko(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "다운로드 경로를 입력해 주세요",
         TextKey::SettingsNotInitialized => "로컬 설정이 초기화되지 않았습니다",
         TextKey::NotLoggedIn => "로그인되어 있지 않습니다",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "로컬 ID가 다른 계정에 연결되어 있습니다 ({user_id})"
-        }
         TextKey::SelectFiles => "파일을 선택해 주세요",
         TextKey::FileNotFound => "파일이 없습니다: {path}",
         TextKey::InvalidFileName => "파일 이름이 올바르지 않습니다",
@@ -380,9 +368,6 @@ fn text_es(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "La ruta de descarga no puede estar vacía",
         TextKey::SettingsNotInitialized => "Los ajustes locales no están inicializados",
         TextKey::NotLoggedIn => "No has iniciado sesión",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "La identidad local ya está vinculada a otra cuenta ({user_id})"
-        }
         TextKey::SelectFiles => "Selecciona archivos",
         TextKey::FileNotFound => "El archivo no existe: {path}",
         TextKey::InvalidFileName => "Nombre de archivo no válido",
@@ -429,9 +414,6 @@ fn text_de(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "Download-Pfad darf nicht leer sein",
         TextKey::SettingsNotInitialized => "Lokale Einstellungen sind nicht initialisiert",
         TextKey::NotLoggedIn => "Nicht angemeldet",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "Lokale Identität ist bereits mit einem anderen Konto verknüpft ({user_id})"
-        }
         TextKey::SelectFiles => "Dateien auswählen",
         TextKey::FileNotFound => "Datei existiert nicht: {path}",
         TextKey::InvalidFileName => "Ungültiger Dateiname",
@@ -478,9 +460,6 @@ fn text_ru(key: TextKey) -> &'static str {
         TextKey::DownloadPathEmpty => "Путь загрузки не может быть пустым",
         TextKey::SettingsNotInitialized => "Локальные настройки не инициализированы",
         TextKey::NotLoggedIn => "Вход не выполнен",
-        TextKey::LocalIdentityBoundOtherAccount => {
-            "Локальная идентичность уже привязана к другой учетной записи ({user_id})"
-        }
         TextKey::SelectFiles => "Выберите файлы",
         TextKey::FileNotFound => "Файл не существует: {path}",
         TextKey::InvalidFileName => "Недопустимое имя файла",

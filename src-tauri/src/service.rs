@@ -45,7 +45,6 @@ struct MeResponse {
 #[serde(rename_all = "camelCase")]
 struct DeviceRegisterResponse {
     device_id: String,
-    device_secret: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -510,7 +509,6 @@ fn ensure_local_device_identity(state: &AppState) -> AppResult<DeviceIdentity> {
     let identity = DeviceIdentity {
         user_id: None,
         device_id: uuid::Uuid::new_v4().to_string(),
-        device_secret: None,
         name: detect_device_name(),
         device_type: detect_device_type(),
         public_key: generated.public_key,
@@ -526,21 +524,6 @@ async fn ensure_cloud_device_identity(
     session: &SessionRecord,
 ) -> AppResult<DeviceIdentity> {
     let mut identity = ensure_local_device_identity(state)?;
-    match identity.user_id.as_deref() {
-        Some(user_id) if user_id == session.user_id && identity.device_secret.is_some() => {
-            sync_cloud_device_identity(state, session, &identity).await;
-            return Ok(identity);
-        }
-        Some(user_id) if user_id != session.user_id => {
-            return Err(AppError::message(user_message(
-                state,
-                TextKey::LocalIdentityBoundOtherAccount,
-                &[("user_id", user_id.to_string())],
-            )));
-        }
-        _ => {}
-    }
-
     let settings = load_settings(state)?;
     let request = DeviceRegisterRequest {
         device_id: &identity.device_id,
@@ -561,7 +544,6 @@ async fn ensure_cloud_device_identity(
 
     identity.user_id = Some(session.user_id.clone());
     identity.device_id = response.device_id;
-    identity.device_secret = Some(response.device_secret);
     state.database.save_device_identity(&identity)?;
     sync_cloud_device_identity(state, session, &identity).await;
     Ok(identity)
@@ -741,9 +723,4 @@ fn settings_language(state: &AppState) -> String {
 fn user_text(state: &AppState, key: TextKey) -> String {
     let language = settings_language(state);
     i18n::text(&language, key).to_string()
-}
-
-fn user_message(state: &AppState, key: TextKey, args: &[(&str, String)]) -> String {
-    let language = settings_language(state);
-    i18n::message(&language, key, args)
 }

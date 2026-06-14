@@ -95,6 +95,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_music_providers",
         run: migrate_13_add_music_providers,
     },
+    Migration {
+        version: 14,
+        name: "drop_device_identity_secret",
+        run: migrate_14_drop_device_identity_secret,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -1105,6 +1110,14 @@ fn migrate_13_add_music_providers(transaction: &Transaction<'_>) -> AppResult<()
     Ok(())
 }
 
+fn migrate_14_drop_device_identity_secret(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(
+        transaction,
+        DEVICE_IDENTITY_KEY,
+        normalize_device_identity_json,
+    )
+}
+
 fn canonicalize_music_providers(providers: &[MusicProviderConfig]) -> Vec<MusicProviderConfig> {
     let mut normalized = Vec::new();
     for provider in providers {
@@ -1215,7 +1228,7 @@ fn normalize_session_json(value: Value) -> AppResult<Value> {
 fn normalize_device_identity_json(value: Value) -> AppResult<Value> {
     let mut object = into_object(value, DEVICE_IDENTITY_KEY)?;
     normalize_optional_string_field(&mut object, "userId")?;
-    normalize_optional_string_field(&mut object, "deviceSecret")?;
+    object.remove("deviceSecret");
     trim_string_field(&mut object, "name")?;
     trim_string_field(&mut object, "deviceType")?;
     trim_string_field(&mut object, "publicKey")?;
@@ -1567,7 +1580,6 @@ mod tests {
             .save_device_identity(&DeviceIdentity {
                 user_id: None,
                 device_id: "device-1".to_string(),
-                device_secret: None,
                 name: "Desktop".to_string(),
                 device_type: "windows".to_string(),
                 public_key: "pk".to_string(),
@@ -1582,7 +1594,6 @@ mod tests {
             .expect("identity");
 
         assert_eq!(identity.user_id, None);
-        assert_eq!(identity.device_secret, None);
         assert_eq!(identity.device_id, "device-1");
 
         let _ = fs::remove_file(path);
@@ -1616,7 +1627,6 @@ mod tests {
             .expect("load identity")
             .expect("identity");
         assert_eq!(identity.user_id.as_deref(), Some("user-1"));
-        assert_eq!(identity.device_secret.as_deref(), Some("secret-1"));
         assert_eq!(identity.name, "Desktop");
         assert!(!identity.cloud_key_sync_pending);
 
@@ -1646,7 +1656,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1662,7 +1672,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1677,7 +1687,10 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 13", [])
+            .execute(
+                "DELETE FROM schema_migrations WHERE version IN (13, 14)",
+                [],
+            )
             .expect("remove v13 marker");
         connection
             .execute("DROP TABLE music_providers", [])
@@ -1699,7 +1712,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1740,7 +1753,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1756,7 +1769,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1791,7 +1804,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1860,7 +1873,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1876,7 +1889,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1919,7 +1932,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -1935,7 +1948,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13, 14)",
                 [],
             )
             .expect("remove v6 marker");
@@ -1973,7 +1986,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -2037,7 +2050,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -2105,7 +2118,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -2129,7 +2142,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);
@@ -2145,7 +2158,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13)",
+                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14)",
                 [],
             )
             .expect("remove v9 marker");
@@ -2180,7 +2193,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
 
         let _ = fs::remove_file(path);

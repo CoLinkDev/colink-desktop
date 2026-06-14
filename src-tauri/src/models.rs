@@ -77,7 +77,6 @@ pub struct SessionSummary {
 pub struct DeviceIdentity {
     pub user_id: Option<String>,
     pub device_id: String,
-    pub device_secret: Option<String>,
     pub name: String,
     pub device_type: String,
     pub public_key: String,
@@ -88,7 +87,6 @@ pub struct DeviceIdentity {
 impl DeviceIdentity {
     pub fn normalize(mut self) -> Self {
         self.user_id = normalize_optional_string(self.user_id);
-        self.device_secret = normalize_optional_string(self.device_secret);
         self.name = self.name.trim().to_string();
         self.device_type = self.device_type.trim().to_string();
         self.public_key = self.public_key.trim().to_string();
