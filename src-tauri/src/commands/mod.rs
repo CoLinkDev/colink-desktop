@@ -7,7 +7,9 @@ mod settings;
 mod update;
 
 pub use app::bootstrap_app;
-pub use auth::{login, logout, register_account};
+pub use auth::{
+    clear_saved_login, get_saved_login, login, logout, register_account, save_saved_login,
+};
 pub use device::{
     delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,

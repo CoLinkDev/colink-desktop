@@ -23,6 +23,7 @@ hkdf = "0.12.4"
 hostname = "0.4.1"
 if-addrs = "0.15.0"
 image = { version = "0.25.8", default-features = false, features = ["png"] }
+keyring = { version = "3", features = ["windows-native"] }
 mdns-sd = "0.19.2"
 md5 = "0.8.0"
 rand = "0.8.5"

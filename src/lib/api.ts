@@ -12,6 +12,7 @@ import type {
   MusicProviderConfig,
   MusicProviderMeta,
   RegisterPayload,
+  SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
   TextMessageRecord,
@@ -31,6 +32,18 @@ export function registerAccount(payload: RegisterPayload) {
 
 export function logout() {
   return invoke<void>('logout')
+}
+
+export function getSavedLogin() {
+  return invoke<SavedLoginCredentials | null>('get_saved_login')
+}
+
+export function saveSavedLogin(payload: SavedLoginCredentials) {
+  return invoke<void>('save_saved_login', { payload })
+}
+
+export function clearSavedLogin() {
+  return invoke<void>('clear_saved_login')
 }
 
 export function listDevices() {

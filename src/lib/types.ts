@@ -109,6 +109,11 @@ export interface LoginPayload {
   password: string
 }
 
+export interface SavedLoginCredentials {
+  identifier: string
+  password: string
+}
+
 export interface RegisterPayload {
   email: string
   username: string

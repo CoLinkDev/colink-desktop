@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { useTranslation } from 'react-i18next'
 
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { clearSavedLogin, getSavedLogin, saveSavedLogin } from '../lib/api'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 
@@ -25,6 +26,7 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
     identifier: '',
     password: '',
   })
+  const [rememberPassword, setRememberPassword] = useState(false)
   const [registerForm, setRegisterForm] = useState({
     email: '',
     username: '',
@@ -79,6 +81,38 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
     }
   }, [open])
 
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let disposed = false
+
+    void getSavedLogin()
+      .then((savedLogin) => {
+        if (disposed) {
+          return
+        }
+
+        if (!savedLogin) {
+          setRememberPassword(false)
+          return
+        }
+
+        setForm(savedLogin)
+        setRememberPassword(true)
+      })
+      .catch(() => {
+        if (!disposed) {
+          setRememberPassword(false)
+        }
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [open])
+
   if (!open) {
     return null
   }
@@ -106,6 +140,11 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
           return
         }
         await login(parsed.data)
+        if (rememberPassword) {
+          await saveSavedLogin(parsed.data)
+        } else {
+          await clearSavedLogin()
+        }
       } else {
         const parsed = registerSchema.safeParse(registerForm)
         if (!parsed.success) {
@@ -220,6 +259,17 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
                   value={form.password}
                 />
               </Field>
+
+              <label className="flex items-center gap-2 text-[12px] font-medium text-[hsl(var(--text-secondary))]">
+                <input
+                  checked={rememberPassword}
+                  className="h-3.5 w-3.5 rounded border border-[hsl(var(--border))] accent-[hsl(var(--accent))]"
+                  disabled={submitting}
+                  onChange={(event) => setRememberPassword(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>{t('auth.rememberPassword')}</span>
+              </label>
             </>
           ) : (
             <>

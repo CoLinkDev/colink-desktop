@@ -358,6 +358,13 @@ pub struct LoginPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SavedLoginCredentials {
+    pub identifier: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterPayload {
     pub email: String,
     pub username: String,
