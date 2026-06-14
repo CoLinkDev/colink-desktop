@@ -16,7 +16,10 @@ export function MessagesPage() {
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const targetDevices = useMemo(() => devices.filter((i) => i.deviceId !== device?.deviceId), [device?.deviceId, devices])
+  const targetDevices = useMemo(
+    () => devices.filter((i) => i.deviceId !== device?.deviceId && i.online),
+    [device?.deviceId, devices],
+  )
 
   useEffect(() => {
     if (selectedDeviceId && targetDevices.some((i) => i.deviceId === selectedDeviceId)) return

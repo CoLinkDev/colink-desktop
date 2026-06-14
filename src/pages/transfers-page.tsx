@@ -20,7 +20,10 @@ export function TransfersPage() {
   const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
   const [isDragging, setIsDragging] = useState(false)
 
-  const targetDevices = useMemo(() => devices.filter((i) => i.deviceId !== device?.deviceId), [device?.deviceId, devices])
+  const targetDevices = useMemo(
+    () => devices.filter((i) => i.deviceId !== device?.deviceId && i.online),
+    [device?.deviceId, devices],
+  )
   const selectedDeviceId = useMemo(() => {
     const requestedDeviceId = searchParams.get('deviceId')
     if (requestedDeviceId && targetDevices.some((item) => item.deviceId === requestedDeviceId)) {
