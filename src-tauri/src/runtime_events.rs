@@ -6,6 +6,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+pub struct CorrelatedBusinessMessage {
+    pub message: BusinessEnvelope,
+    pub correlation_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     AuthInvalidated(String),
     CloudConnected,
@@ -13,6 +19,7 @@ pub enum RuntimeEvent {
     CloudUnavailable,
     CloudRelay {
         from: String,
+        envelope_id: Option<String>,
         message: BusinessEnvelope,
     },
     DevicePresence {
@@ -48,10 +55,11 @@ pub enum RuntimeEvent {
     },
     LanSendFailed {
         device_id: String,
-        messages: Vec<BusinessEnvelope>,
+        messages: Vec<CorrelatedBusinessMessage>,
     },
     LanMessage {
         from: String,
+        envelope_id: String,
         message: BusinessEnvelope,
     },
     LanTransferFrame {

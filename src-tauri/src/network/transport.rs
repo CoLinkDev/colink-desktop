@@ -22,9 +22,18 @@ impl TransportManager {
         }
     }
 
-    pub async fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<String> {
+    pub async fn send(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<String> {
         if self.lan.is_available(device_id) {
-            match self.lan.send(device_id, message.clone()).await {
+            match self
+                .lan
+                .send(device_id, message.clone(), correlation_id.clone())
+                .await
+            {
                 Ok(()) => return Ok("lan".to_string()),
                 Err(error) => {
                     tracing::warn!(%device_id, %error, "lan send failed; trying cloud fallback");
@@ -33,7 +42,8 @@ impl TransportManager {
         }
 
         if self.cloud.is_connected() {
-            self.cloud.send_relay(device_id, message)?;
+            self.cloud.ensure_business_compatible(device_id)?;
+            self.cloud.send_relay(device_id, message, correlation_id)?;
             return Ok("cloud".to_string());
         }
 
@@ -49,7 +59,7 @@ impl TransportManager {
         message: BusinessEnvelope,
     ) -> AppResult<String> {
         if self.lan.is_available(device_id) {
-            self.lan.send(device_id, message).await?;
+            self.lan.send(device_id, message, None).await?;
             return Ok("lan".to_string());
         }
 
@@ -58,9 +68,14 @@ impl TransportManager {
         ))
     }
 
-    pub fn broadcast_cloud(&self, message: BusinessEnvelope) -> AppResult<String> {
+    pub fn broadcast_cloud(
+        &self,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<String> {
         if self.cloud.is_connected() {
-            self.cloud.send_broadcast(message)?;
+            self.cloud.ensure_known_business_versions_compatible()?;
+            self.cloud.send_broadcast(message, correlation_id)?;
             return Ok("cloud".to_string());
         }
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -23,7 +24,10 @@ use crate::{
     i18n::{self, TextKey},
     models::{AppSettings, CloudStatus, DeviceIdentity, DeviceInfo, SessionRecord},
     network::http::HttpClient,
-    protocol::{BusinessEnvelope, CloudClientEnvelope, CloudServerEnvelope, DeviceOnlinePayload},
+    protocol::{
+        check_business_protocol_version, BusinessEnvelope, CloudClientEnvelope,
+        CloudServerEnvelope, DeviceOnlinePayload, BUSINESS_PROTOCOL_VERSION,
+    },
     runtime_events::RuntimeEvent,
     shell,
     store::db::Database,
@@ -51,6 +55,7 @@ struct ManagerState {
     cancel: Option<watch::Sender<bool>>,
     command_tx: Option<mpsc::UnboundedSender<CloudCommand>>,
     status: CloudStatus,
+    business_versions: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -78,9 +83,11 @@ enum ConnectionExit {
 enum CloudCommand {
     Relay {
         to: String,
+        correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
     Broadcast {
+        correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
 }
@@ -130,6 +137,7 @@ impl CloudConnectionManager {
                 cancel: None,
                 command_tx: None,
                 status: CloudStatus::disconnected(),
+                business_versions: HashMap::new(),
             })),
         }
     }
@@ -142,6 +150,52 @@ impl CloudConnectionManager {
         self.snapshot().connected
     }
 
+    pub fn ensure_business_compatible(&self, device_id: &str) -> AppResult<()> {
+        let version = {
+            self.inner
+                .lock_unpoisoned()
+                .business_versions
+                .get(device_id)
+                .cloned()
+        };
+        let Some(version) = version else {
+            return Ok(());
+        };
+        let compatibility = check_business_protocol_version(&version);
+        if compatibility.compatible {
+            Ok(())
+        } else {
+            Err(AppError::message(
+                compatibility
+                    .message
+                    .or(compatibility.reason)
+                    .unwrap_or_else(|| "business protocol version incompatible".to_string()),
+            ))
+        }
+    }
+
+    pub fn ensure_known_business_versions_compatible(&self) -> AppResult<()> {
+        let versions = self
+            .inner
+            .lock_unpoisoned()
+            .business_versions
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for version in versions {
+            let compatibility = check_business_protocol_version(&version);
+            if !compatibility.compatible {
+                return Err(AppError::message(
+                    compatibility
+                        .message
+                        .or(compatibility.reason)
+                        .unwrap_or_else(|| "business protocol version incompatible".to_string()),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn start(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let generation = {
@@ -152,6 +206,7 @@ impl CloudConnectionManager {
             inner.generation += 1;
             inner.cancel = Some(cancel_tx);
             inner.command_tx = None;
+            inner.business_versions.clear();
             inner.status = CloudStatus::connecting();
             inner.generation
         };
@@ -177,6 +232,7 @@ impl CloudConnectionManager {
             }
             inner.generation += 1;
             inner.command_tx = None;
+            inner.business_versions.clear();
             inner.status = CloudStatus::disconnected();
         }
 
@@ -196,6 +252,7 @@ impl CloudConnectionManager {
             }
             inner.generation += 1;
             inner.command_tx = None;
+            inner.business_versions.clear();
             inner.status = CloudStatus::disconnected();
         }
 
@@ -204,17 +261,30 @@ impl CloudConnectionManager {
         let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
     }
 
-    pub fn send_relay(&self, to: &str, message: BusinessEnvelope) -> AppResult<()> {
+    pub fn send_relay(
+        &self,
+        to: &str,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<()> {
         debug!(to, message_type = %message.message_type, "queueing cloud relay");
         self.send_command(CloudCommand::Relay {
             to: to.to_string(),
+            correlation_id,
             message,
         })
     }
 
-    pub fn send_broadcast(&self, message: BusinessEnvelope) -> AppResult<()> {
+    pub fn send_broadcast(
+        &self,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<()> {
         debug!(message_type = %message.message_type, "queueing cloud broadcast");
-        self.send_command(CloudCommand::Broadcast { message })
+        self.send_command(CloudCommand::Broadcast {
+            correlation_id,
+            message,
+        })
     }
 
     async fn run(&self, generation: u64, mut cancel_rx: watch::Receiver<bool>) {
@@ -429,8 +499,12 @@ impl CloudConnectionManager {
             .await
             .map_err(|error| classify_connect_error(error.to_string()))?;
 
-        let ws_url = build_ws_url(&context.settings.server_url, &ticket.ticket)
-            .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
+        let ws_url = build_ws_url(
+            &context.settings.server_url,
+            &ticket.ticket,
+            BUSINESS_PROTOCOL_VERSION,
+        )
+        .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         debug!(url = %ws_url, "connecting cloud websocket");
         let (stream, _) = connect_async(ws_url.as_str())
             .await
@@ -467,6 +541,7 @@ impl CloudConnectionManager {
                         id: Uuid::new_v4().to_string(),
                         message_type: "ping".to_string(),
                         to: None,
+                        correlation_id: None,
                         payload: None,
                     };
                     if write_client_message(&mut writer, ping).await.is_err() {
@@ -483,21 +558,23 @@ impl CloudConnectionManager {
                     };
 
                     let outbound = match command {
-                        CloudCommand::Relay { to, message } => {
+                        CloudCommand::Relay { to, correlation_id, message } => {
                             debug!(to, message_type = %message.message_type, "sending cloud relay");
                             CloudClientEnvelope {
                                 id: Uuid::new_v4().to_string(),
                                 message_type: "relay".to_string(),
                                 to: Some(to),
+                                correlation_id,
                                 payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
                             }
                         }
-                        CloudCommand::Broadcast { message } => {
+                        CloudCommand::Broadcast { correlation_id, message } => {
                             debug!(message_type = %message.message_type, "sending cloud broadcast");
                             CloudClientEnvelope {
                                 id: Uuid::new_v4().to_string(),
                                 message_type: "broadcast".to_string(),
                                 to: None,
+                                correlation_id,
                                 payload: Some(serde_json::to_value(message).map_err(|error| ConnectionFailure::Retryable(error.to_string()))?),
                             }
                         }
@@ -568,6 +645,9 @@ impl CloudConnectionManager {
                     .payload
                     .and_then(|value| serde_json::from_value::<DeviceOnlinePayload>(value).ok());
                 if let Some(device_id) = message.from {
+                    if let Some(payload) = payload.as_ref() {
+                        self.remember_business_version(&device_id, &payload.business_version);
+                    }
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
                         online: true,
@@ -581,6 +661,7 @@ impl CloudConnectionManager {
                     "cloud device offline"
                 );
                 if let Some(device_id) = message.from {
+                    self.forget_business_version(&device_id);
                     let _ = self.event_tx.send(RuntimeEvent::DevicePresence {
                         device_id,
                         online: false,
@@ -605,6 +686,7 @@ impl CloudConnectionManager {
                 };
                 let _ = self.event_tx.send(RuntimeEvent::CloudRelay {
                     from,
+                    envelope_id: message.id,
                     message: business,
                 });
             }
@@ -687,7 +769,22 @@ impl CloudConnectionManager {
         let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = None;
+            inner.business_versions.clear();
         }
+    }
+
+    fn remember_business_version(&self, device_id: &str, business_version: &str) {
+        self.inner
+            .lock_unpoisoned()
+            .business_versions
+            .insert(device_id.to_string(), business_version.to_string());
+    }
+
+    fn forget_business_version(&self, device_id: &str) {
+        self.inner
+            .lock_unpoisoned()
+            .business_versions
+            .remove(device_id);
     }
 
     fn invalidate_auth(&self, message: String, generation: u64) {
@@ -773,7 +870,11 @@ fn is_auth_error(error: &AppError) -> bool {
     }
 }
 
-fn build_ws_url(base_url: &str, ticket: &str) -> Result<Url, url::ParseError> {
+fn build_ws_url(
+    base_url: &str,
+    ticket: &str,
+    business_version: &str,
+) -> Result<Url, url::ParseError> {
     let mut url = Url::parse(base_url)?;
 
     match url.scheme() {
@@ -786,7 +887,10 @@ fn build_ws_url(base_url: &str, ticket: &str) -> Result<Url, url::ParseError> {
     }
 
     url.set_path(WS_CONNECT_PATH);
-    url.set_query(Some(&format!("ticket={ticket}")));
+    url.query_pairs_mut()
+        .clear()
+        .append_pair("ticket", ticket)
+        .append_pair("businessVersion", business_version);
     Ok(url)
 }
 

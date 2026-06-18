@@ -50,7 +50,18 @@ enum ChunkTransport {
 const REASON_TRANSFER_USER_CANCELLED: &str = "colink:transfer.user_cancelled.v1";
 const REASON_TRANSFER_USER_REJECTED: &str = "colink:transfer.user_rejected.v1";
 const REASON_TRANSFER_CHECKSUM_MISMATCH: &str = "colink:transfer.checksum_mismatch.v1";
+const REASON_TRANSFER_GENERIC: &str = "colink:transfer.generic.v1";
 const FILE_OFFER_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn transfer_error_message(reason: &str) -> String {
+    match reason {
+        REASON_TRANSFER_USER_CANCELLED => "User cancelled the transfer".to_string(),
+        REASON_TRANSFER_USER_REJECTED => "User rejected the file".to_string(),
+        REASON_TRANSFER_CHECKSUM_MISMATCH => "File checksum verification failed".to_string(),
+        REASON_TRANSFER_GENERIC => "Generic transfer failure".to_string(),
+        _ => reason.to_string(),
+    }
+}
 
 impl AppRuntime {
     pub async fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
@@ -184,6 +195,8 @@ impl AppRuntime {
                 FileCancelPayload {
                     session_id: file_id.to_string(),
                     reason: REASON_TRANSFER_USER_CANCELLED.to_string(),
+                    message: transfer_error_message(REASON_TRANSFER_USER_CANCELLED),
+                    details: None,
                 },
             )?;
             let runtime = self.clone();
@@ -218,6 +231,7 @@ impl AppRuntime {
         &self,
         from: &str,
         route: &str,
+        envelope_id: Option<String>,
         payload: FileOfferPayload,
     ) -> AppResult<()> {
         info!(
@@ -245,6 +259,7 @@ impl AppRuntime {
                 PendingFileOfferState {
                     from: from.to_string(),
                     route: route.to_string(),
+                    envelope_id,
                     payload,
                 },
             );
@@ -267,7 +282,11 @@ impl AppRuntime {
             if let Some(pending) = expired {
                 let _ = runtime.inner.app.emit(FILE_OFFER_ENDED_EVENT, &session_id);
                 let _ = runtime
-                    .reject_file_offer(&pending.from, pending.payload.session_id)
+                    .reject_file_offer(
+                        &pending.from,
+                        pending.payload.session_id,
+                        pending.envelope_id,
+                    )
                     .await;
             }
         });
@@ -291,7 +310,7 @@ impl AppRuntime {
         if decision.accepted {
             self.accept_file_offer(pending).await
         } else {
-            self.reject_file_offer(&pending.from, pending.payload.session_id)
+            self.reject_file_offer(&pending.from, pending.payload.session_id, pending.envelope_id)
                 .await
         }
     }
@@ -318,16 +337,25 @@ impl AppRuntime {
             .collect()
     }
 
-    async fn reject_file_offer(&self, from: &str, session_id: String) -> AppResult<()> {
+    async fn reject_file_offer(
+        &self,
+        from: &str,
+        session_id: String,
+        correlation_id: Option<String>,
+    ) -> AppResult<()> {
         info!(from = %from, session_id = %session_id, "file offer rejected by user");
         let envelope = BusinessEnvelope::from_payload(
             FILE_REJECT_TYPE,
             FileRejectPayload {
                 session_id,
                 reason: REASON_TRANSFER_USER_REJECTED.to_string(),
+                message: transfer_error_message(REASON_TRANSFER_USER_REJECTED),
+                details: None,
             },
         )?;
-        let _ = self.send_business_message(from, envelope).await?;
+        let _ = self
+            .send_business_message_with_correlation(from, envelope, correlation_id)
+            .await?;
         Ok(())
     }
 
@@ -335,6 +363,7 @@ impl AppRuntime {
         let PendingFileOfferState {
             from,
             route,
+            envelope_id,
             payload,
         } = pending;
         let settings =
@@ -393,7 +422,9 @@ impl AppRuntime {
                 transfer_token,
             },
         )?;
-        let _ = self.send_business_message(&from, envelope).await?;
+        let _ = self
+            .send_business_message_with_correlation(&from, envelope, envelope_id)
+            .await?;
         info!(
             from = %from,
             session_id = %record.file_id,
@@ -458,17 +489,19 @@ impl AppRuntime {
                     return self.send_file_data_lan(file_id, source_path, record).await;
                 }
                 Err(error) => {
-                    let reason = format!("LAN data connection failed: {error}");
+                    let message = format!("LAN data connection failed: {error}");
                     warn!(file_id = %file_id, %error, "lan data connection failed");
                     let cancel = BusinessEnvelope::from_payload(
                         FILE_CANCEL_TYPE,
                         FileCancelPayload {
                             session_id: file_id.clone(),
-                            reason: reason.clone(),
+                            reason: REASON_TRANSFER_GENERIC.to_string(),
+                            message: message.clone(),
+                            details: None,
                         },
                     )?;
                     let _ = self.send_business_message(&record.device_id, cancel).await;
-                    self.finish_outgoing_transfer(&file_id, "failed", Some(reason), None)?;
+                    self.finish_outgoing_transfer(&file_id, "failed", Some(message), None)?;
                     return Ok(());
                 }
             }
@@ -928,6 +961,12 @@ impl AppRuntime {
                 } else {
                     Some(REASON_TRANSFER_CHECKSUM_MISMATCH.to_string())
                 },
+                message: if success {
+                    None
+                } else {
+                    Some(transfer_error_message(REASON_TRANSFER_CHECKSUM_MISMATCH))
+                },
+                details: None,
             },
         )?;
         let _ = self.send_business_message(&record.device_id, done).await?;

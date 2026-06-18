@@ -90,6 +90,7 @@ struct LyricFetchRequest {
 struct MusicSendJob {
     device_id: String,
     label: &'static str,
+    correlation_id: Option<String>,
     envelope: BusinessEnvelope,
 }
 
@@ -203,7 +204,7 @@ impl MusicService {
         }
     }
 
-    pub async fn handle_request(&self, from_device_id: &str) {
+    pub async fn handle_request(&self, from_device_id: &str, correlation_id: Option<String>) {
         let device_id = from_device_id.trim();
         if device_id.is_empty() {
             return;
@@ -229,7 +230,8 @@ impl MusicService {
             self.log_info(format!("music sync activated by request from {device_id}"));
         }
 
-        self.send_snapshot_to_device(device_id, &snapshot).await;
+        self.send_snapshot_to_device(device_id, &snapshot, correlation_id)
+            .await;
     }
 
     pub fn stop(&self) {
@@ -556,16 +558,24 @@ impl MusicService {
         state.snapshot = MusicSnapshot::default();
     }
 
-    async fn send_snapshot_to_device(&self, device_id: &str, snapshot: &MusicSnapshot) {
+    async fn send_snapshot_to_device(
+        &self,
+        device_id: &str,
+        snapshot: &MusicSnapshot,
+        correlation_id: Option<String>,
+    ) {
         let Some(track) = &snapshot.track else {
             let empty = empty_track_payload();
-            self.send_track_message(device_id, &empty).await;
+            self.send_track_message_with_correlation(device_id, &empty, correlation_id)
+                .await;
             return;
         };
 
-        self.send_track_message(device_id, track).await;
+        self.send_track_message_with_correlation(device_id, track, correlation_id.clone())
+            .await;
         if let Some(lyric) = &snapshot.lyric {
-            self.send_lyric_message(device_id, lyric).await;
+            self.send_lyric_message_with_correlation(device_id, lyric, correlation_id.clone())
+                .await;
         }
         if let Some(progress) = &snapshot.progress {
             self.send_progress_message(device_id, progress).await;
@@ -573,7 +583,18 @@ impl MusicService {
     }
 
     async fn send_track_message(&self, device_id: &str, payload: &MusicTrackPayload) {
-        if let Err(error) = self.queue_music_message(device_id, "track", MUSIC_TRACK_TYPE, payload)
+        self.send_track_message_with_correlation(device_id, payload, None)
+            .await;
+    }
+
+    async fn send_track_message_with_correlation(
+        &self,
+        device_id: &str,
+        payload: &MusicTrackPayload,
+        correlation_id: Option<String>,
+    ) {
+        if let Err(error) =
+            self.queue_music_message(device_id, "track", MUSIC_TRACK_TYPE, payload, correlation_id)
         {
             self.log_warn(format!(
                 "failed to send music track to {device_id}: {error}"
@@ -582,7 +603,18 @@ impl MusicService {
     }
 
     async fn send_lyric_message(&self, device_id: &str, payload: &MusicLyricPayload) {
-        if let Err(error) = self.queue_music_message(device_id, "lyric", MUSIC_LYRIC_TYPE, payload)
+        self.send_lyric_message_with_correlation(device_id, payload, None)
+            .await;
+    }
+
+    async fn send_lyric_message_with_correlation(
+        &self,
+        device_id: &str,
+        payload: &MusicLyricPayload,
+        correlation_id: Option<String>,
+    ) {
+        if let Err(error) =
+            self.queue_music_message(device_id, "lyric", MUSIC_LYRIC_TYPE, payload, correlation_id)
         {
             self.log_warn(format!(
                 "failed to send music lyric to {device_id}: {error}"
@@ -592,7 +624,7 @@ impl MusicService {
 
     async fn send_progress_message(&self, device_id: &str, payload: &MusicProgressPayload) {
         if let Err(error) =
-            self.queue_music_message(device_id, "progress", MUSIC_PROGRESS_TYPE, payload)
+            self.queue_music_message(device_id, "progress", MUSIC_PROGRESS_TYPE, payload, None)
         {
             self.log_warn(format!(
                 "failed to send music progress to {device_id}: {error}"
@@ -606,6 +638,7 @@ impl MusicService {
         label: &'static str,
         message_type: &str,
         payload: &T,
+        correlation_id: Option<String>,
     ) -> Result<(), String>
     where
         T: serde::Serialize,
@@ -616,6 +649,7 @@ impl MusicService {
             .send(MusicSendJob {
                 device_id: device_id.to_string(),
                 label,
+                correlation_id,
                 envelope,
             })
             .map_err(|_| "music send queue is closed".to_string())?;
@@ -790,7 +824,10 @@ fn spawn_music_sender(
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = send_rx.recv().await {
-            if let Err(error) = transport.send(&job.device_id, job.envelope).await {
+            if let Err(error) = transport
+                .send(&job.device_id, job.envelope, job.correlation_id)
+                .await
+            {
                 emit_music_log(
                     &event_tx,
                     "warn",

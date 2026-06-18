@@ -30,7 +30,10 @@ use uuid::Uuid;
 use crate::{
     crypto::{
         keys::{sign_payload, verify_signature},
-        lan::{choose_suite, pairing_code, supported_suites, LanSessionCrypto, AES_256_GCM_SUITE},
+        lan::{
+            choose_suite, pairing_code, supported_suites, LanEphemeralKeyPair, LanSessionCrypto,
+            AES_256_GCM_SUITE,
+        },
     },
     error::{AppError, AppResult},
     i18n::{self, TextKey},
@@ -39,11 +42,15 @@ use crate::{
         LanPairingFailed, LanPairingRequest, TrustedPeerKeyRecord, LAN_PORT,
     },
     protocol::{
-        BusinessEnvelope, BusinessNegotiatePayload, EncryptedBusinessPayload, FileDataFrame,
-        HandshakeAcceptPayload, HandshakeProofPayload, HandshakeRejectPayload, PeerEnvelope,
-        SwimEnvelope, SwimGossip, SwimPayload,
+        check_business_protocol_version, check_lan_protocol_version, negotiated_lan_protocol_version,
+        supports_lan_key_exchange, AuthChallengePayload, AuthResponsePayload, BusinessEnvelope,
+        BusinessKeyExchangePayload, BusinessNegotiatePayload, BusinessVersionAckPayload,
+        BusinessVersionPayload, EmptyPayload, EncryptedBusinessPayload, FileDataFrame, LanEnvelope,
+        LanRejectPayload, PairingIdentityPayload, ProtocolHelloAckEnvelope, ProtocolHelloEnvelope,
+        ProtocolHelloPayload, SwimEnvelope, SwimGossip, SwimPayload, VersionAckPayload,
+        BUSINESS_PROTOCOL_VERSION, LAN_PROTOCOL_VERSION,
     },
-    runtime_events::RuntimeEvent,
+    runtime_events::{CorrelatedBusinessMessage, RuntimeEvent},
     store::db::Database,
     sync::MutexExt,
 };
@@ -52,8 +59,7 @@ const SERVICE_TYPE: &str = "_colink._tcp.local.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const BUSINESS_IDLE_TIMEOUT_SECS: u64 = 10 * 60;
-const PING_INTERVAL_SECS: u64 = 15;
+const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const SWIM_PERIOD: Duration = Duration::from_millis(5_000);
 const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -62,9 +68,21 @@ const SWIM_SUSPECT_MISSES: u8 = 2;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 3_000;
 const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
-const REASON_HANDSHAKE_USER_REJECTED: &str = "colink:handshake.user_rejected.v1";
-const REASON_HANDSHAKE_SIGNATURE_INVALID: &str = "colink:handshake.signature_invalid.v1";
-const REASON_HANDSHAKE_KEY_CHANGED: &str = "colink:handshake.key_changed.v1";
+const REASON_AUTH_UNKNOWN_DEVICE: &str = "colink:auth.unknown_device.v1";
+const REASON_AUTH_KEY_CHANGED: &str = "colink:auth.key_changed.v1";
+const REASON_PAIRING_USER_REJECTED: &str = "colink:pairing.user_rejected.v1";
+const REASON_KEY_EXCHANGE_SIGNATURE_INVALID: &str =
+    "colink:key_exchange.signature_invalid.v1";
+const REASON_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str =
+    "colink:key_exchange.timestamp_expired.v1";
+const REASON_KEY_EXCHANGE_GENERIC: &str = "colink:key_exchange.generic.v1";
+const MESSAGE_AUTH_UNKNOWN_DEVICE: &str = "No trust record for this device";
+const MESSAGE_AUTH_KEY_CHANGED: &str = "Peer public key differs from stored trust record";
+const MESSAGE_PAIRING_USER_REJECTED: &str = "User declined the pairing request";
+const MESSAGE_KEY_EXCHANGE_SIGNATURE_INVALID: &str =
+    "Ephemeral key signature verification failed";
+const MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str = "Ephemeral key timestamp expired";
+const MESSAGE_KEY_EXCHANGE_GENERIC: &str = "Ephemeral key exchange failed";
 
 enum TransferStreamEvent {
     Activity,
@@ -109,13 +127,19 @@ struct MemberRecord {
 
 struct PeerConnection {
     connection_id: Uuid,
-    sender: mpsc::UnboundedSender<BusinessEnvelope>,
+    sender: mpsc::UnboundedSender<PendingBusinessMessage>,
     initiated_by_local: bool,
 }
 
 struct PendingLanSend {
     message: BusinessEnvelope,
+    correlation_id: Option<String>,
     result_tx: oneshot::Sender<AppResult<()>>,
+}
+
+struct PendingBusinessMessage {
+    message: BusinessEnvelope,
+    correlation_id: Option<String>,
 }
 
 enum PeerEntry {
@@ -172,23 +196,17 @@ enum InboundRoute {
     Transfer { session_id: String },
 }
 
-enum TrustState {
-    Trusted,
-    Unknown,
-    KeyChanged,
-}
-
 struct HandshakeResult<S> {
     stream: WebSocketStream<S>,
     peer_device_id: String,
     crypto: LanSessionCrypto,
+    outbound_seq: u64,
 }
 
 struct PeerProof {
     device_id: String,
     public_key: String,
     name: String,
-    nonce: String,
 }
 
 struct PairingDecision {
@@ -324,7 +342,7 @@ impl LanManager {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| is_trusted(record))
+                    .filter(|record| Self::is_trusted(record))
                     .map(|record| record.device_id)
                     .collect::<HashSet<_>>()
             })
@@ -350,7 +368,7 @@ impl LanManager {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| is_trusted(record))
+                    .filter(|record| Self::is_trusted(record))
                     .map(|record| record.device_id)
                     .collect::<HashSet<_>>()
             })
@@ -384,11 +402,16 @@ impl LanManager {
 
     pub fn is_available(&self, device_id: &str) -> bool {
         self.is_swim_alive(device_id)
-            && self.is_lan_trusted(device_id)
+            && self.is_lan_authorized(device_id)
             && self.peer_endpoint(device_id).is_some()
     }
 
-    pub async fn send(&self, device_id: &str, message: BusinessEnvelope) -> AppResult<()> {
+    pub async fn send(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<()> {
         if !self.is_available(device_id) {
             return Err(AppError::message(
                 self.user_text(TextKey::LanPeerNotConnected),
@@ -404,7 +427,10 @@ impl LanManager {
             .parse::<IpAddr>()
             .map_err(|_| AppError::message(self.user_text(TextKey::LanDeviceAddressInvalid)))?;
 
-        let mut message = message;
+        let mut outbound = PendingBusinessMessage {
+            message,
+            correlation_id,
+        };
         loop {
             let receiver = {
                 let mut inner = self.inner.lock_unpoisoned();
@@ -418,10 +444,10 @@ impl LanManager {
                     Some(PeerEntry::Connected(peer)) => {
                         let sender = peer.sender.clone();
                         drop(inner);
-                        match sender.send(message) {
+                        match sender.send(outbound) {
                             Ok(()) => return Ok(()),
                             Err(error) => {
-                                message = error.0;
+                                outbound = error.0;
                                 self.remove_stale_peer_sender(device_id, &sender);
                                 continue;
                             }
@@ -430,7 +456,8 @@ impl LanManager {
                     Some(PeerEntry::Connecting(queue)) => {
                         let (tx, rx) = oneshot::channel();
                         queue.push_back(PendingLanSend {
-                            message,
+                            message: outbound.message,
+                            correlation_id: outbound.correlation_id.clone(),
                             result_tx: tx,
                         });
                         rx
@@ -439,7 +466,8 @@ impl LanManager {
                         let (tx, rx) = oneshot::channel();
                         let mut queue = VecDeque::new();
                         queue.push_back(PendingLanSend {
-                            message,
+                            message: outbound.message,
+                            correlation_id: outbound.correlation_id.clone(),
                             result_tx: tx,
                         });
                         inner
@@ -960,7 +988,7 @@ impl LanManager {
     fn remove_stale_peer_sender(
         &self,
         device_id: &str,
-        sender: &mpsc::UnboundedSender<BusinessEnvelope>,
+        sender: &mpsc::UnboundedSender<PendingBusinessMessage>,
     ) {
         let mut inner = self.inner.lock_unpoisoned();
         let should_remove = inner.peers.get(device_id).is_some_and(|entry| match entry {
@@ -987,7 +1015,7 @@ impl LanManager {
     {
         let peer_device_id = session.peer_device_id;
         let connection_id = Uuid::new_v4();
-        let (tx, mut rx) = mpsc::unbounded_channel::<BusinessEnvelope>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<PendingBusinessMessage>();
         let (pending, was_connected) = {
             let mut inner = self.inner.lock_unpoisoned();
             if inner.generation != generation {
@@ -1032,7 +1060,10 @@ impl LanManager {
 
         for pending in pending {
             let result = tx
-                .send(pending.message)
+                .send(PendingBusinessMessage {
+                    message: pending.message,
+                    correlation_id: pending.correlation_id,
+                })
                 .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)));
             let _ = pending.result_tx.send(result);
         }
@@ -1045,19 +1076,24 @@ impl LanManager {
         }
 
         let manager = self.clone();
+        let local_device_id = self
+            .load_context()
+            .map(|context| context.device.device_id)
+            .unwrap_or_default();
         tauri::async_runtime::spawn(async move {
             let (mut writer, mut reader) = session.stream.split();
             let mut crypto = session.crypto;
-            let mut last_business_activity = Instant::now();
-            let mut last_keepalive_activity = Instant::now();
-            let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
-            ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            ping_interval.tick().await;
+            let mut last_application_activity = Instant::now();
+            let mut heartbeat_interval =
+                tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+            heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            heartbeat_interval.tick().await;
+            let mut pending_heartbeats = HashSet::<String>::new();
+            let mut outbound_seq = session.outbound_seq;
             let mut failed_outbound = None;
             loop {
-                if last_keepalive_activity.elapsed() >= Duration::from_secs(KEEPALIVE_TIMEOUT_SECS)
-                    || last_business_activity.elapsed()
-                        >= Duration::from_secs(BUSINESS_IDLE_TIMEOUT_SECS)
+                if last_application_activity.elapsed()
+                    >= Duration::from_secs(KEEPALIVE_TIMEOUT_SECS)
                 {
                     break;
                 }
@@ -1066,19 +1102,33 @@ impl LanManager {
                         let Some(outbound) = outbound else {
                             break;
                         };
-                        let encrypted = match crypto.encrypt(&outbound) {
+                        let message = outbound.message;
+                        let correlation_id = outbound.correlation_id;
+                        let encrypted = match crypto.encrypt(&message) {
                             Ok(payload) => payload,
                             Err(_) => {
-                                failed_outbound = Some(outbound);
+                                failed_outbound = Some(CorrelatedBusinessMessage {
+                                    message,
+                                    correlation_id,
+                                });
                                 break;
                             }
                         };
-                        let envelope = PeerEnvelope {
+                        let envelope = LanEnvelope {
+                            id: Uuid::new_v4().to_string(),
                             message_type: "business.v1.message".to_string(),
+                            from: local_device_id.clone(),
+                            to: peer_device_id.clone(),
+                            seq: next_lan_seq(&mut outbound_seq),
+                            timestamp: unix_now_millis(),
+                            correlation_id: correlation_id.clone(),
                             payload: match serde_json::to_value(encrypted) {
                                 Ok(value) => value,
                                 Err(_) => {
-                                    failed_outbound = Some(outbound);
+                                    failed_outbound = Some(CorrelatedBusinessMessage {
+                                        message,
+                                        correlation_id,
+                                    });
                                     break;
                                 }
                             },
@@ -1086,59 +1136,106 @@ impl LanManager {
                         let text = match serde_json::to_string(&envelope) {
                             Ok(text) => text,
                             Err(_) => {
-                                failed_outbound = Some(outbound);
+                                failed_outbound = Some(CorrelatedBusinessMessage {
+                                    message,
+                                    correlation_id,
+                                });
                                 break;
                             }
                         };
                         if writer.send(Message::Text(text.into())).await.is_err() {
-                            failed_outbound = Some(outbound);
+                            failed_outbound = Some(CorrelatedBusinessMessage {
+                                message,
+                                correlation_id,
+                            });
                             break;
                         }
-                        last_business_activity = Instant::now();
-                        last_keepalive_activity = Instant::now();
                     }
-                    _ = ping_interval.tick() => {
-                        if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    _ = heartbeat_interval.tick() => {
+                        let heartbeat_id = Uuid::new_v4().to_string();
+                        let envelope = LanEnvelope {
+                            id: heartbeat_id.clone(),
+                            message_type: "heartbeat.v1.ping".to_string(),
+                            from: local_device_id.clone(),
+                            to: peer_device_id.clone(),
+                            seq: next_lan_seq(&mut outbound_seq),
+                            timestamp: unix_now_millis(),
+                            correlation_id: None,
+                            payload: serde_json::json!({}),
+                        };
+                        let Ok(text) = serde_json::to_string(&envelope) else {
+                            break;
+                        };
+                        pending_heartbeats.insert(heartbeat_id);
+                        if writer.send(Message::Text(text.into())).await.is_err() {
                             break;
                         }
                     }
                     inbound = reader.next() => {
                         match inbound {
                             Some(Ok(Message::Text(text))) => {
-                                last_keepalive_activity = Instant::now();
-                                let Ok(envelope) = serde_json::from_str::<PeerEnvelope>(&text) else {
+                                let Ok(envelope) = serde_json::from_str::<LanEnvelope>(&text) else {
                                     continue;
                                 };
-                                if envelope.message_type != "business.v1.message" {
+                                if envelope.from != peer_device_id || envelope.to != local_device_id {
                                     continue;
                                 }
+                                match envelope.message_type.as_str() {
+                                    "heartbeat.v1.ping" => {
+                                        last_application_activity = Instant::now();
+                                        let pong = LanEnvelope {
+                                            id: Uuid::new_v4().to_string(),
+                                            message_type: "heartbeat.v1.pong".to_string(),
+                                            from: local_device_id.clone(),
+                                            to: peer_device_id.clone(),
+                                            seq: next_lan_seq(&mut outbound_seq),
+                                            timestamp: unix_now_millis(),
+                                            correlation_id: Some(envelope.id),
+                                            payload: serde_json::json!({}),
+                                        };
+                                        let Ok(text) = serde_json::to_string(&pong) else {
+                                            break;
+                                        };
+                                        if writer.send(Message::Text(text.into())).await.is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    "heartbeat.v1.pong" => {
+                                        if envelope
+                                            .correlation_id
+                                            .as_ref()
+                                            .is_some_and(|id| pending_heartbeats.remove(id))
+                                        {
+                                            last_application_activity = Instant::now();
+                                        }
+                                        continue;
+                                    }
+                                    "business.v1.message" => {
+                                        last_application_activity = Instant::now();
+                                    }
+                                    _ => {
+                                        last_application_activity = Instant::now();
+                                        continue;
+                                    }
+                                }
                                 let Ok(payload) = serde_json::from_value::<EncryptedBusinessPayload>(envelope.payload) else {
-                                    break;
+                                    continue;
                                 };
                                 match crypto.decrypt(&payload) {
                                     Ok(message) => {
-                                        last_business_activity = Instant::now();
+                                        last_application_activity = Instant::now();
                                         let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
                                             from: peer_device_id.clone(),
+                                            envelope_id: envelope.id,
                                             message,
                                         });
                                     }
-                                    Err(_) => break,
+                                    Err(_) => continue,
                                 }
-                            }
-                            Some(Ok(Message::Pong(_))) => {
-                                last_keepalive_activity = Instant::now();
                             }
                             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                            Some(Ok(Message::Ping(payload))) => {
-                                last_keepalive_activity = Instant::now();
-                                if writer.send(Message::Pong(payload)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Ok(_)) => {
-                                last_keepalive_activity = Instant::now();
-                            }
+                            Some(Ok(_)) => {}
                         }
                     }
                 }
@@ -1149,7 +1246,10 @@ impl LanManager {
             }
             rx.close();
             while let Ok(message) = rx.try_recv() {
-                undelivered.push(message);
+                undelivered.push(CorrelatedBusinessMessage {
+                    message: message.message,
+                    correlation_id: message.correlation_id,
+                });
             }
             if !undelivered.is_empty() {
                 let _ = manager.event_tx.send(RuntimeEvent::LanSendFailed {
@@ -1691,7 +1791,7 @@ impl LanManager {
         match state {
             MemberState::Alive => {
                 self.update_pairing_candidate(device_id, state);
-                if self.is_lan_trusted(device_id) {
+                if self.is_lan_authorized(device_id) {
                     let _ = self.event_tx.send(RuntimeEvent::LanDeviceReachable {
                         device_id: device_id.to_string(),
                     });
@@ -1706,7 +1806,7 @@ impl LanManager {
             }
             MemberState::Suspect => {
                 self.update_pairing_candidate(device_id, state);
-                if self.is_lan_trusted(device_id) {
+                if self.is_lan_authorized(device_id) {
                     let _ = self.event_tx.send(RuntimeEvent::LanDeviceStateChanged {
                         device_id: device_id.to_string(),
                     });
@@ -1858,15 +1958,19 @@ impl LanManager {
         inner.seq
     }
 
-    fn is_lan_trusted(&self, device_id: &str) -> bool {
+    fn is_lan_authorized(&self, device_id: &str) -> bool {
         self.database
             .load_trusted_peer_keys()
             .map(|records| {
                 records
                     .iter()
-                    .any(|record| record.device_id == device_id && is_trusted(record))
+                    .any(|record| record.device_id == device_id && Self::is_trusted(record))
             })
             .unwrap_or(false)
+    }
+
+    fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
+        record.trusted_by_lan || record.trusted_by_cloud
     }
 
     async fn request_pairing(
@@ -1972,7 +2076,7 @@ impl LanManager {
             self.remove_pairing_candidate(device_id);
             return;
         }
-        if self.is_lan_trusted(device_id) {
+        if self.is_lan_authorized(device_id) {
             self.remove_pairing_candidate(device_id);
             return;
         }
@@ -2043,7 +2147,7 @@ impl LanManager {
             .is_some_and(|member| {
                 matches!(member.state, MemberState::Alive | MemberState::Suspect)
             });
-        if reachable && self.is_lan_trusted(device_id) {
+        if reachable && self.is_lan_authorized(device_id) {
             let _ = self.event_tx.send(RuntimeEvent::LanDeviceStateChanged {
                 device_id: device_id.to_string(),
             });
@@ -2261,170 +2365,45 @@ async fn perform_outbound_handshake(
     expected_device_id: &str,
     allow_pairing: bool,
 ) -> AppResult<HandshakeResult<tokio_tungstenite::MaybeTlsStream<TcpStream>>> {
-    let request_nonce = Uuid::new_v4().simple().to_string();
-    let local_has_trust = has_lan_trusted_record(database, expected_device_id)?;
-    let request = build_handshake_proof(&context.device, &request_nonce, local_has_trust)?;
-    write_peer_message(&mut stream, "handshake.v1.request", &request).await?;
+    let peer_hello = exchange_hello(&mut stream, context).await?;
+    let mut outbound_seq = 1_u64;
+    let trust_record = database
+        .load_trusted_peer_keys()?
+        .into_iter()
+        .find(|record| record.device_id == expected_device_id && LanManager::is_trusted(record));
 
-    let exchange = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
-        .await
-        .map_err(|_| AppError::message("LAN handshake timed out"))??;
-    if exchange.message_type == "handshake.v1.reject" {
-        let payload: HandshakeRejectPayload = serde_json::from_value(exchange.payload)?;
-        return Err(AppError::message(payload.reason));
-    }
-    if exchange.message_type != "handshake.v1.exchange" {
-        return Err(AppError::message("invalid LAN handshake response type"));
-    }
-    let peer_payload: HandshakeProofPayload = serde_json::from_value(exchange.payload)?;
-    let peer_has_trust = peer_payload.has_trust;
-    if peer_payload.device_id != expected_device_id {
-        return Err(AppError::message("LAN handshake device mismatch"));
-    }
-    if let Err(error) = verify_handshake_proof(&peer_payload) {
-        let _ = write_peer_message(
-            &mut stream,
-            "handshake.v1.reject",
-            &HandshakeRejectPayload {
-                reason: REASON_HANDSHAKE_SIGNATURE_INVALID.to_string(),
-            },
-        )
-        .await;
-        return Err(error);
-    }
-    let proof = PeerProof {
-        device_id: peer_payload.device_id,
-        public_key: peer_payload.public_key,
-        name: peer_payload.name,
-        nonce: peer_payload.nonce,
-    };
-    let trust = trust_state(database, &proof)?;
-    if matches!(trust, TrustState::KeyChanged) {
-        manager.revoke_lan_pairing_for_key_change(&proof)?;
-        let _ = write_peer_message(
-            &mut stream,
-            "handshake.v1.reject",
-            &HandshakeRejectPayload {
-                reason: REASON_HANDSHAKE_KEY_CHANGED.to_string(),
-            },
-        )
-        .await;
-        return Err(AppError::message("LAN device key changed"));
-    }
-    let mut pairing_request_id = None;
-    if !matches!(trust, TrustState::Trusted) || !local_has_trust || !peer_has_trust {
+    let session = if let Some(record) = trust_record {
+        authenticate_outbound(manager, &mut stream, context, &record, &mut outbound_seq).await?
+    } else {
         if !allow_pairing {
             return Err(AppError::message("LAN device key is not trusted"));
         }
-        let reason = match trust {
-            TrustState::Unknown => "unknown_device",
-            TrustState::Trusted => "trusted",
-            TrustState::KeyChanged => REASON_HANDSHAKE_KEY_CHANGED,
-        };
-        let code = pairing_code(
-            &context.device.public_key,
-            &proof.public_key,
-            &request_nonce,
-            &proof.nonce,
-        );
-        let decision = manager
-            .request_pairing(
-                &proof.device_id,
-                &proof.name,
-                &proof.public_key,
-                &code,
-                reason,
-            )
-            .await?;
-        pairing_request_id = Some(decision.request_id);
-        if !decision.accepted {
-            return Err(AppError::message("user cancelled LAN pairing"));
-        }
-    }
+        pair_outbound(
+            manager,
+            &mut stream,
+            context,
+            expected_device_id,
+            &mut outbound_seq,
+        )
+        .await?
+    };
 
-    let final_message = match timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream)).await {
-        Ok(Ok(message)) => message,
-        Ok(Err(error)) => {
-            if let Some(request_id) = pairing_request_id.as_deref() {
-                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            }
-            return Err(error);
-        }
-        Err(_) => {
-            let error = AppError::message("LAN handshake timed out");
-            if let Some(request_id) = pairing_request_id.as_deref() {
-                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            }
-            return Err(error);
-        }
-    };
-    if final_message.message_type == "handshake.v1.reject" {
-        let payload: HandshakeRejectPayload = match serde_json::from_value(final_message.payload) {
-            Ok(payload) => payload,
-            Err(error) => {
-                if let Some(request_id) = pairing_request_id.as_deref() {
-                    manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-                }
-                return Err(error.into());
-            }
-        };
-        if let Some(request_id) = pairing_request_id.as_deref() {
-            manager.emit_pairing_failed(request_id, &proof.device_id, payload.reason.clone());
-        }
-        return Err(AppError::message(payload.reason));
-    }
-    if final_message.message_type != "handshake.v1.accept" {
-        if let Some(request_id) = pairing_request_id.as_deref() {
-            manager.emit_pairing_failed(
-                request_id,
-                &proof.device_id,
-                "invalid LAN handshake confirmation type",
-            );
-        }
-        return Err(AppError::message("invalid LAN handshake confirmation type"));
-    }
-    let accept: HandshakeAcceptPayload = match serde_json::from_value(final_message.payload) {
-        Ok(accept) => accept,
-        Err(error) => {
-            if let Some(request_id) = pairing_request_id.as_deref() {
-                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            }
-            return Err(error.into());
-        }
-    };
-    if accept.device_id != proof.device_id {
-        if let Some(request_id) = pairing_request_id.as_deref() {
-            manager.emit_pairing_failed(
-                request_id,
-                &proof.device_id,
-                "LAN handshake confirmation device mismatch",
-            );
-        }
-        return Err(AppError::message(
-            "LAN handshake confirmation device mismatch",
-        ));
-    }
+    let crypto = negotiate_business_crypto(
+        &mut stream,
+        context,
+        &session.peer_public_key,
+        &session.peer_device_id,
+        &peer_hello.payload.protocol_version,
+        true,
+        &mut outbound_seq,
+    )
+    .await?;
 
-    let crypto = match negotiate_business_crypto(&mut stream, context, &proof, true).await {
-        Ok(crypto) => crypto,
-        Err(error) => {
-            if let Some(request_id) = pairing_request_id.as_deref() {
-                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            }
-            return Err(error);
-        }
-    };
-    if let Some(request_id) = pairing_request_id.as_deref() {
-        if let Err(error) = manager.trust_peer(&proof) {
-            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            return Err(error);
-        }
-        manager.emit_pairing_completed(request_id, &proof.device_id);
-    }
     Ok(HandshakeResult {
         stream,
-        peer_device_id: proof.device_id,
+        peer_device_id: session.peer_device_id,
         crypto,
+        outbound_seq,
     })
 }
 
@@ -2434,235 +2413,1145 @@ async fn perform_inbound_handshake(
     context: &LanContext,
     database: &Database,
 ) -> AppResult<HandshakeResult<TcpStream>> {
-    let request = timeout(HANDSHAKE_TIMEOUT, read_peer_message(&mut stream))
-        .await
-        .map_err(|_| AppError::message("LAN handshake timed out"))??;
-    if request.message_type != "handshake.v1.request" {
-        let _ = write_peer_message(
+    let peer_hello = exchange_hello(&mut stream, context).await?;
+    let mut outbound_seq = 1_u64;
+    let peer_device_id = peer_hello.payload.device_id;
+    let trust_record = database
+        .load_trusted_peer_keys()?
+        .into_iter()
+        .find(|record| record.device_id == peer_device_id && LanManager::is_trusted(record));
+
+    let session = if let Some(record) = trust_record {
+        authenticate_inbound(manager, &mut stream, context, &record, &mut outbound_seq).await?
+    } else {
+        pair_inbound(
+            manager,
             &mut stream,
-            "handshake.v1.reject",
-            &HandshakeRejectPayload {
-                reason: "invalid_handshake".to_string(),
-            },
+            context,
+            &peer_device_id,
+            &mut outbound_seq,
         )
-        .await;
-        return Err(AppError::message("invalid LAN handshake request type"));
-    }
-    let peer_payload: HandshakeProofPayload = serde_json::from_value(request.payload)?;
-    let peer_has_trust = peer_payload.has_trust;
-    if let Err(error) = verify_handshake_proof(&peer_payload) {
-        write_peer_message(
-            &mut stream,
-            "handshake.v1.reject",
-            &HandshakeRejectPayload {
-                reason: REASON_HANDSHAKE_SIGNATURE_INVALID.to_string(),
-            },
-        )
-        .await?;
-        return Err(error);
-    }
-    let proof = PeerProof {
-        device_id: peer_payload.device_id,
-        public_key: peer_payload.public_key,
-        name: peer_payload.name,
-        nonce: peer_payload.nonce,
+        .await?
     };
-    let trust = trust_state(database, &proof)?;
-    if matches!(trust, TrustState::KeyChanged) {
-        manager.revoke_lan_pairing_for_key_change(&proof)?;
-        write_peer_message(
-            &mut stream,
-            "handshake.v1.reject",
-            &HandshakeRejectPayload {
-                reason: REASON_HANDSHAKE_KEY_CHANGED.to_string(),
-            },
-        )
-        .await?;
-        return Err(AppError::message("LAN device key changed"));
+
+    let crypto = negotiate_business_crypto(
+        &mut stream,
+        context,
+        &session.peer_public_key,
+        &session.peer_device_id,
+        &peer_hello.payload.protocol_version,
+        false,
+        &mut outbound_seq,
+    )
+    .await?;
+
+    Ok(HandshakeResult {
+        stream,
+        peer_device_id: session.peer_device_id,
+        crypto,
+        outbound_seq,
+    })
+}
+
+struct LanPeerSession {
+    peer_device_id: String,
+    peer_public_key: String,
+}
+
+async fn exchange_hello<S>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+) -> AppResult<ProtocolHelloEnvelope>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let hello = ProtocolHelloEnvelope {
+        message_type: "protocol.hello".to_string(),
+        payload: ProtocolHelloPayload {
+            device_id: context.device.device_id.clone(),
+            protocol_version: LAN_PROTOCOL_VERSION.to_string(),
+            extensions: serde_json::json!({}),
+        },
+    };
+    stream
+        .send(Message::Text(serde_json::to_string(&hello)?.into()))
+        .await
+        .map_err(|error| AppError::message(error.to_string()))?;
+
+    let mut peer_hello = None;
+    let mut peer_ack = None;
+    while peer_hello.is_none() || peer_ack.is_none() {
+        let message = timeout(HANDSHAKE_TIMEOUT, read_text_frame(stream))
+            .await
+            .map_err(|_| AppError::message("LAN hello timed out"))??;
+
+        if peer_hello.is_none() {
+            if let Ok(next_hello) = serde_json::from_str::<ProtocolHelloEnvelope>(&message) {
+                if next_hello.message_type == "protocol.hello" {
+                    let compatibility =
+                        check_lan_protocol_version(&next_hello.payload.protocol_version);
+                    write_hello_ack(stream, &compatibility).await?;
+                    if !compatibility.compatible {
+                        return Err(AppError::message(
+                            compatibility
+                                .message
+                                .or(compatibility.reason)
+                                .unwrap_or_else(|| "LAN protocol version incompatible".to_string()),
+                        ));
+                    }
+                    peer_hello = Some(next_hello);
+                    continue;
+                }
+            }
+        }
+
+        if peer_ack.is_none() {
+            let Ok(ack) = serde_json::from_str::<ProtocolHelloAckEnvelope>(&message) else {
+                continue;
+            };
+            if ack.message_type != "protocol.hello-ack" {
+                continue;
+            }
+            if !ack.payload.compatible {
+                return Err(AppError::message(
+                    ack.payload
+                        .message
+                        .or(ack.payload.reason)
+                        .unwrap_or_else(|| "LAN protocol version incompatible".to_string()),
+                ));
+            }
+            peer_ack = Some(ack);
+            continue;
+        }
     }
 
-    let exchange_nonce = Uuid::new_v4().simple().to_string();
-    let local_has_trust = matches!(trust, TrustState::Trusted);
-    let exchange = build_handshake_proof(&context.device, &exchange_nonce, local_has_trust)?;
-    write_peer_message(&mut stream, "handshake.v1.exchange", &exchange).await?;
+    peer_hello.ok_or_else(|| AppError::message("LAN hello timed out"))
+}
+
+async fn write_hello_ack<S>(
+    stream: &mut WebSocketStream<S>,
+    compatibility: &crate::protocol::VersionCompatibility,
+) -> AppResult<()>
+where
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let ack = ProtocolHelloAckEnvelope {
+        message_type: "protocol.hello-ack".to_string(),
+        payload: VersionAckPayload {
+            compatible: compatibility.compatible,
+            reason: compatibility.reason.clone(),
+            message: compatibility.message.clone(),
+        },
+    };
+    stream
+        .send(Message::Text(serde_json::to_string(&ack)?.into()))
+        .await
+        .map_err(|error| AppError::message(error.to_string()))
+}
+
+async fn authenticate_outbound<S>(
+    manager: &LanManager,
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    record: &TrustedPeerKeyRecord,
+    outbound_seq: &mut u64,
+) -> AppResult<LanPeerSession>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let local_nonce = Uuid::new_v4().simple().to_string();
+    write_lan_message(
+        stream,
+        context,
+        &record.device_id,
+        "auth.v1.challenge",
+        None,
+        outbound_seq,
+        &AuthChallengePayload {
+            nonce: local_nonce.clone(),
+        },
+    )
+    .await?;
+
+    let mut peer_nonce = None;
+    let mut sent_response = false;
+    let mut local_verified = false;
+    let mut peer_verified = false;
+    let mut auth_aborted = false;
+    loop {
+        let envelope = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN auth timed out"))??;
+        if envelope.from != record.device_id || envelope.to != context.device.device_id {
+            continue;
+        }
+        match envelope.message_type.as_str() {
+            "auth.v1.challenge" => {
+                let Ok(payload) = serde_json::from_value::<AuthChallengePayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                peer_nonce = Some(payload.nonce.clone());
+                if !sent_response {
+                    send_auth_response(
+                        stream,
+                        context,
+                        &record.device_id,
+                        &payload.nonce,
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                    )
+                    .await?;
+                    sent_response = true;
+                }
+            }
+            "auth.v1.response" => {
+                let Ok(payload) =
+                    serde_json::from_value::<AuthResponsePayload>(envelope.payload.clone())
+                else {
+                    continue;
+                };
+                if verify_auth_response(record, &envelope, &local_nonce, &payload.signature)? {
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "auth.v1.verified",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &EmptyPayload {},
+                    )
+                    .await?;
+                    local_verified = true;
+                } else {
+                    if !auth_aborted {
+                        manager.revoke_lan_pairing_for_key_change(&PeerProof {
+                            device_id: record.device_id.clone(),
+                            public_key: record.public_key.clone(),
+                            name: record.name.clone(),
+                        })?;
+                        auth_aborted = true;
+                    }
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "auth.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_AUTH_KEY_CHANGED.to_string(),
+                            message: MESSAGE_AUTH_KEY_CHANGED.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                }
+            }
+            "auth.v1.verified" => {
+                if !auth_aborted {
+                    peer_verified = true;
+                }
+            }
+            "auth.v1.reject" => {
+                let Ok(payload) = serde_json::from_value::<LanRejectPayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                if payload.reason == REASON_AUTH_KEY_CHANGED && !auth_aborted {
+                    manager.revoke_lan_pairing_for_key_change(&PeerProof {
+                        device_id: record.device_id.clone(),
+                        public_key: record.public_key.clone(),
+                        name: record.name.clone(),
+                    })?;
+                    auth_aborted = true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if !auth_aborted && peer_nonce.is_some() && local_verified && peer_verified {
+            return Ok(LanPeerSession {
+                peer_device_id: record.device_id.clone(),
+                peer_public_key: record.public_key.clone(),
+            });
+        }
+    }
+}
+
+async fn authenticate_inbound<S>(
+    manager: &LanManager,
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    record: &TrustedPeerKeyRecord,
+    outbound_seq: &mut u64,
+) -> AppResult<LanPeerSession>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut local_nonce = None;
+    let mut sent_response = false;
+    let mut sent_challenge = false;
+    let mut local_verified = false;
+    let mut peer_verified = false;
+    let mut auth_aborted = false;
+    loop {
+        let envelope = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN auth timed out"))??;
+        if envelope.to != context.device.device_id {
+            continue;
+        }
+        match envelope.message_type.as_str() {
+            "pairing.v1.request" => {
+                if envelope.from != record.device_id {
+                    continue;
+                }
+                let Ok(request) =
+                    serde_json::from_value::<PairingIdentityPayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                let local_nonce = Uuid::new_v4().simple().to_string();
+                write_lan_message(
+                    stream,
+                    context,
+                    &record.device_id,
+                    "pairing.v1.exchange",
+                    Some(envelope.id.clone()),
+                    outbound_seq,
+                    &PairingIdentityPayload {
+                        public_key: context.device.public_key.clone(),
+                        name: context.device.name.clone(),
+                        nonce: local_nonce.clone(),
+                    },
+                )
+                .await?;
+                let code = pairing_code(
+                    &request.public_key,
+                    &context.device.public_key,
+                    &request.nonce,
+                    &local_nonce,
+                );
+                let decision = manager
+                    .request_pairing(
+                        &record.device_id,
+                        &request.name,
+                        &request.public_key,
+                        &code,
+                        "unknown_device",
+                    )
+                    .await?;
+                if !decision.accepted {
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "pairing.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_PAIRING_USER_REJECTED.to_string(),
+                            message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+                write_lan_message(
+                    stream,
+                    context,
+                    &record.device_id,
+                    "pairing.v1.confirm",
+                    Some(envelope.id.clone()),
+                    outbound_seq,
+                    &EmptyPayload {},
+                )
+                .await?;
+                loop {
+                    let complete = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+                        .await
+                        .map_err(|_| AppError::message("LAN pairing timed out"))??;
+                    if complete.to != context.device.device_id || complete.from != record.device_id
+                    {
+                        continue;
+                    }
+                    match complete.message_type.as_str() {
+                        "pairing.v1.complete" => {
+                            manager.trust_peer(&PeerProof {
+                                device_id: record.device_id.clone(),
+                                public_key: request.public_key.clone(),
+                                name: request.name.clone(),
+                            })?;
+                            manager.emit_pairing_completed(&decision.request_id, &record.device_id);
+                            return Ok(LanPeerSession {
+                                peer_device_id: record.device_id.clone(),
+                                peer_public_key: request.public_key,
+                            });
+                        }
+                        "pairing.v1.reject" => {
+                            let message =
+                                serde_json::from_value::<LanRejectPayload>(complete.payload)
+                                    .map(|payload| payload.message)
+                                    .unwrap_or_else(|_| "pairing rejected".to_string());
+                            manager.emit_pairing_failed(
+                                &decision.request_id,
+                                &record.device_id,
+                                message,
+                            );
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "auth.v1.challenge" => {
+                if envelope.from != record.device_id {
+                    write_lan_message(
+                        stream,
+                        context,
+                        &envelope.from,
+                        "auth.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_AUTH_UNKNOWN_DEVICE.to_string(),
+                            message: MESSAGE_AUTH_UNKNOWN_DEVICE.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+                let Ok(payload) = serde_json::from_value::<AuthChallengePayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                if !sent_challenge {
+                    let nonce = Uuid::new_v4().simple().to_string();
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "auth.v1.challenge",
+                        None,
+                        outbound_seq,
+                        &AuthChallengePayload {
+                            nonce: nonce.clone(),
+                        },
+                    )
+                    .await?;
+                    local_nonce = Some(nonce);
+                    sent_challenge = true;
+                }
+                if !sent_response {
+                    send_auth_response(
+                        stream,
+                        context,
+                        &record.device_id,
+                        &payload.nonce,
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                    )
+                    .await?;
+                    sent_response = true;
+                }
+            }
+            "auth.v1.response" => {
+                if envelope.from != record.device_id {
+                    continue;
+                }
+                let Some(nonce) = local_nonce.as_deref() else {
+                    continue;
+                };
+                let Ok(payload) =
+                    serde_json::from_value::<AuthResponsePayload>(envelope.payload.clone())
+                else {
+                    continue;
+                };
+                if verify_auth_response(record, &envelope, nonce, &payload.signature)? {
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "auth.v1.verified",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &EmptyPayload {},
+                    )
+                    .await?;
+                    local_verified = true;
+                } else {
+                    if !auth_aborted {
+                        manager.revoke_lan_pairing_for_key_change(&PeerProof {
+                            device_id: record.device_id.clone(),
+                            public_key: record.public_key.clone(),
+                            name: record.name.clone(),
+                        })?;
+                        auth_aborted = true;
+                    }
+                    write_lan_message(
+                        stream,
+                        context,
+                        &record.device_id,
+                        "auth.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_AUTH_KEY_CHANGED.to_string(),
+                            message: MESSAGE_AUTH_KEY_CHANGED.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                }
+            }
+            "auth.v1.verified" => {
+                if !auth_aborted && envelope.from == record.device_id {
+                    peer_verified = true;
+                }
+            }
+            "auth.v1.reject" => {
+                let Ok(payload) = serde_json::from_value::<LanRejectPayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                if payload.reason == REASON_AUTH_KEY_CHANGED && !auth_aborted {
+                    manager.revoke_lan_pairing_for_key_change(&PeerProof {
+                        device_id: record.device_id.clone(),
+                        public_key: record.public_key.clone(),
+                        name: record.name.clone(),
+                    })?;
+                    auth_aborted = true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if !auth_aborted && sent_challenge && sent_response && local_verified && peer_verified {
+            return Ok(LanPeerSession {
+                peer_device_id: record.device_id.clone(),
+                peer_public_key: record.public_key.clone(),
+            });
+        }
+    }
+}
+
+async fn pair_outbound<S>(
+    manager: &LanManager,
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    expected_device_id: &str,
+    outbound_seq: &mut u64,
+) -> AppResult<LanPeerSession>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let local_nonce = Uuid::new_v4().simple().to_string();
+    write_lan_message(
+        stream,
+        context,
+        expected_device_id,
+        "pairing.v1.request",
+        None,
+        outbound_seq,
+        &PairingIdentityPayload {
+            public_key: context.device.public_key.clone(),
+            name: context.device.name.clone(),
+            nonce: local_nonce.clone(),
+        },
+    )
+    .await?;
 
     let mut pairing_request_id = None;
-    if !matches!(trust, TrustState::Trusted) || !peer_has_trust {
-        let reason = match trust {
-            TrustState::Unknown => "unknown_device",
-            TrustState::Trusted => "trusted",
-            TrustState::KeyChanged => REASON_HANDSHAKE_KEY_CHANGED,
+    let mut peer_identity: Option<PairingIdentityPayload> = None;
+    loop {
+        let envelope = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN pairing timed out"))??;
+        if envelope.to != context.device.device_id || envelope.from != expected_device_id {
+            continue;
+        }
+        match envelope.message_type.as_str() {
+            "pairing.v1.exchange" => {
+                let Ok(payload) =
+                    serde_json::from_value::<PairingIdentityPayload>(envelope.payload)
+                else {
+                    continue;
+                };
+                let code = pairing_code(
+                    &context.device.public_key,
+                    &payload.public_key,
+                    &local_nonce,
+                    &payload.nonce,
+                );
+                let decision = manager
+                    .request_pairing(
+                        expected_device_id,
+                        &payload.name,
+                        &payload.public_key,
+                        &code,
+                        "unknown_device",
+                    )
+                    .await?;
+                pairing_request_id = Some(decision.request_id);
+                if !decision.accepted {
+                    write_lan_message(
+                        stream,
+                        context,
+                        expected_device_id,
+                        "pairing.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_PAIRING_USER_REJECTED.to_string(),
+                            message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+                peer_identity = Some(payload);
+            }
+            "pairing.v1.confirm" => {
+                let Some(request_id) = pairing_request_id.as_deref() else {
+                    continue;
+                };
+                let Some(peer_identity) = peer_identity else {
+                    continue;
+                };
+                manager.trust_peer(&PeerProof {
+                    device_id: expected_device_id.to_string(),
+                    public_key: peer_identity.public_key.clone(),
+                    name: peer_identity.name.clone(),
+                })?;
+                manager.emit_pairing_completed(request_id, expected_device_id);
+                write_lan_message(
+                    stream,
+                    context,
+                    expected_device_id,
+                    "pairing.v1.complete",
+                    Some(envelope.id.clone()),
+                    outbound_seq,
+                    &EmptyPayload {},
+                )
+                .await?;
+                return Ok(LanPeerSession {
+                    peer_device_id: expected_device_id.to_string(),
+                    peer_public_key: peer_identity.public_key,
+                });
+            }
+            "pairing.v1.reject" => {
+                if let Some(request_id) = pairing_request_id.as_deref() {
+                    let message = serde_json::from_value::<LanRejectPayload>(envelope.payload)
+                        .map(|payload| payload.message)
+                        .unwrap_or_else(|_| "pairing rejected".to_string());
+                    manager.emit_pairing_failed(request_id, expected_device_id, message);
+                }
+                continue;
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn pair_inbound<S>(
+    manager: &LanManager,
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    expected_device_id: &str,
+    outbound_seq: &mut u64,
+) -> AppResult<LanPeerSession>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    loop {
+        let envelope = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN pairing timed out"))??;
+        if envelope.to != context.device.device_id || envelope.from != expected_device_id {
+            continue;
+        }
+        if envelope.message_type != "pairing.v1.request" {
+            continue;
+        }
+        let Ok(request) = serde_json::from_value::<PairingIdentityPayload>(envelope.payload) else {
+            continue;
         };
+        let local_nonce = Uuid::new_v4().simple().to_string();
+        write_lan_message(
+            stream,
+            context,
+            expected_device_id,
+            "pairing.v1.exchange",
+            Some(envelope.id.clone()),
+            outbound_seq,
+            &PairingIdentityPayload {
+                public_key: context.device.public_key.clone(),
+                name: context.device.name.clone(),
+                nonce: local_nonce.clone(),
+            },
+        )
+        .await?;
         let code = pairing_code(
-            &proof.public_key,
+            &request.public_key,
             &context.device.public_key,
-            &proof.nonce,
-            &exchange_nonce,
+            &request.nonce,
+            &local_nonce,
         );
         let decision = manager
             .request_pairing(
-                &proof.device_id,
-                &proof.name,
-                &proof.public_key,
+                expected_device_id,
+                &request.name,
+                &request.public_key,
                 &code,
-                reason,
+                "unknown_device",
             )
             .await?;
-        pairing_request_id = Some(decision.request_id);
         if !decision.accepted {
-            write_peer_message(
-                &mut stream,
-                "handshake.v1.reject",
-                &HandshakeRejectPayload {
-                    reason: REASON_HANDSHAKE_USER_REJECTED.to_string(),
+            write_lan_message(
+                stream,
+                context,
+                expected_device_id,
+                "pairing.v1.reject",
+                Some(envelope.id.clone()),
+                outbound_seq,
+                &LanRejectPayload {
+                    reason: REASON_PAIRING_USER_REJECTED.to_string(),
+                    message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
+                    details: None,
                 },
             )
             .await?;
-            return Err(AppError::message("user rejected LAN pairing"));
+            continue;
         }
-    }
-
-    if let Err(error) = write_peer_message(
-        &mut stream,
-        "handshake.v1.accept",
-        &HandshakeAcceptPayload {
-            device_id: context.device.device_id.clone(),
-        },
-    )
-    .await
-    {
-        if let Some(request_id) = pairing_request_id.as_deref() {
-            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-        }
-        return Err(error);
-    }
-
-    let crypto = match negotiate_business_crypto(&mut stream, context, &proof, false).await {
-        Ok(crypto) => crypto,
-        Err(error) => {
-            if let Some(request_id) = pairing_request_id.as_deref() {
-                manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
+        write_lan_message(
+            stream,
+            context,
+            expected_device_id,
+            "pairing.v1.confirm",
+            Some(envelope.id.clone()),
+            outbound_seq,
+            &EmptyPayload {},
+        )
+        .await?;
+        loop {
+            let complete = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+                .await
+                .map_err(|_| AppError::message("LAN pairing timed out"))??;
+            if complete.to != context.device.device_id || complete.from != expected_device_id {
+                continue;
             }
-            return Err(error);
+            match complete.message_type.as_str() {
+                "pairing.v1.complete" => {
+                    manager.trust_peer(&PeerProof {
+                        device_id: expected_device_id.to_string(),
+                        public_key: request.public_key.clone(),
+                        name: request.name.clone(),
+                    })?;
+                    manager.emit_pairing_completed(&decision.request_id, expected_device_id);
+                    return Ok(LanPeerSession {
+                        peer_device_id: expected_device_id.to_string(),
+                        peer_public_key: request.public_key,
+                    });
+                }
+                "pairing.v1.reject" => {
+                    let message = serde_json::from_value::<LanRejectPayload>(complete.payload)
+                        .map(|payload| payload.message)
+                        .unwrap_or_else(|_| "pairing rejected".to_string());
+                    manager.emit_pairing_failed(&decision.request_id, expected_device_id, message);
+                    continue;
+                }
+                _ => {}
+            }
         }
-    };
-    if let Some(request_id) = pairing_request_id.as_deref() {
-        if let Err(error) = manager.trust_peer(&proof) {
-            manager.emit_pairing_failed(request_id, &proof.device_id, error.to_string());
-            return Err(error);
-        }
-        manager.emit_pairing_completed(request_id, &proof.device_id);
     }
-    Ok(HandshakeResult {
-        stream,
-        peer_device_id: proof.device_id,
-        crypto,
-    })
 }
 
 async fn negotiate_business_crypto<S>(
     stream: &mut WebSocketStream<S>,
     context: &LanContext,
-    proof: &PeerProof,
+    peer_public_key: &str,
+    peer_device_id: &str,
+    peer_protocol_version: &str,
     local_is_initiator: bool,
+    outbound_seq: &mut u64,
 ) -> AppResult<LanSessionCrypto>
 where
     WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
+    exchange_business_version(stream, context, peer_device_id, outbound_seq).await?;
+    let key_exchange = if supports_lan_key_exchange(peer_protocol_version) {
+        Some(
+            exchange_ephemeral_keys(
+                stream,
+                context,
+                peer_public_key,
+                peer_device_id,
+                outbound_seq,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
     let local_supported = supported_suites();
-    write_peer_message(
+    write_lan_message(
         stream,
+        context,
+        peer_device_id,
         "business.v1.negotiate",
+        None,
+        outbound_seq,
         &BusinessNegotiatePayload {
             supported: local_supported.clone(),
             preferred: AES_256_GCM_SUITE.to_string(),
         },
     )
     .await?;
-    let message = timeout(HANDSHAKE_TIMEOUT, read_peer_message(stream))
-        .await
-        .map_err(|_| AppError::message("LAN encryption negotiation timed out"))??;
-    if message.message_type != "business.v1.negotiate" {
-        return Err(AppError::message("invalid LAN encryption negotiation type"));
+    loop {
+        let message = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN encryption negotiation timed out"))??;
+        if message.to != context.device.device_id || message.from != peer_device_id {
+            continue;
+        }
+        if message.message_type != "business.v1.negotiate" {
+            continue;
+        }
+        let Ok(peer) = serde_json::from_value::<BusinessNegotiatePayload>(message.payload) else {
+            continue;
+        };
+        let suite = choose_suite(&local_supported, &peer.supported, local_is_initiator)
+            .ok_or_else(|| AppError::message("no compatible LAN encryption suite is available"))?;
+        return if let Some(key_exchange) = key_exchange.as_ref() {
+            LanSessionCrypto::new_with_ephemeral_keys(
+                suite,
+                &key_exchange.local,
+                &key_exchange.peer_public_key,
+                &context.device.device_id,
+                peer_device_id,
+                &negotiated_lan_protocol_version(peer_protocol_version),
+                local_is_initiator,
+            )
+        } else {
+            LanSessionCrypto::new(
+                suite,
+                &context.device.private_key,
+                peer_public_key,
+                local_is_initiator,
+            )
+        };
     }
-    let peer: BusinessNegotiatePayload = serde_json::from_value(message.payload)?;
-    let suite = choose_suite(&local_supported, &peer.supported, local_is_initiator)
-        .ok_or_else(|| AppError::message("no compatible LAN encryption suite is available"))?;
-    LanSessionCrypto::new(
-        suite,
-        &context.device.private_key,
-        &proof.public_key,
-        local_is_initiator,
-    )
 }
 
-fn build_handshake_proof(
-    device: &DeviceIdentity,
-    nonce: &str,
-    has_trust: bool,
-) -> AppResult<HandshakeProofPayload> {
+struct EphemeralKeyExchange {
+    local: LanEphemeralKeyPair,
+    peer_public_key: String,
+}
+
+async fn exchange_ephemeral_keys<S>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    peer_identity_public_key: &str,
+    peer_device_id: &str,
+    outbound_seq: &mut u64,
+) -> AppResult<EphemeralKeyExchange>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let local = LanEphemeralKeyPair::generate();
     let timestamp = unix_now_millis();
-    let proof = format!("{}{}{}", device.device_id, timestamp, nonce);
-    let signature = sign_payload(&device.private_key, proof.as_bytes())?;
-    Ok(HandshakeProofPayload {
-        device_id: device.device_id.clone(),
-        public_key: device.public_key.clone(),
-        name: device.name.clone(),
+    let signature = sign_payload(
+        &context.device.private_key,
+        key_exchange_signature_input(
+            &context.device.device_id,
+            peer_device_id,
+            &local.public_key,
+            timestamp,
+        )
+        .as_bytes(),
+    )?;
+    write_lan_message_with_timestamp(
+        stream,
+        context,
+        peer_device_id,
+        "business.v1.key-exchange",
+        None,
         timestamp,
-        nonce: nonce.to_string(),
-        signature,
-        has_trust,
-    })
+        outbound_seq,
+        &BusinessKeyExchangePayload {
+            ephemeral_public_key: local.public_key.clone(),
+            signature,
+        },
+    )
+    .await?;
+
+    loop {
+        let message = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN key exchange timed out"))??;
+        if message.to != context.device.device_id || message.from != peer_device_id {
+            continue;
+        }
+        match message.message_type.as_str() {
+            "business.v1.key-exchange" => {
+                let Ok(payload) =
+                    serde_json::from_value::<BusinessKeyExchangePayload>(message.payload)
+                else {
+                    reject_key_exchange(
+                        stream,
+                        context,
+                        peer_device_id,
+                        Some(message.id.clone()),
+                        outbound_seq,
+                        REASON_KEY_EXCHANGE_GENERIC,
+                        MESSAGE_KEY_EXCHANGE_GENERIC,
+                    )
+                    .await?;
+                    return Err(AppError::message(MESSAGE_KEY_EXCHANGE_GENERIC));
+                };
+                let now = unix_now_millis();
+                if (now - message.timestamp).abs() > 30_000 {
+                    reject_key_exchange(
+                        stream,
+                        context,
+                        peer_device_id,
+                        Some(message.id.clone()),
+                        outbound_seq,
+                        REASON_KEY_EXCHANGE_TIMESTAMP_EXPIRED,
+                        MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED,
+                    )
+                    .await?;
+                    return Err(AppError::message(MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED));
+                }
+                let valid = verify_signature(
+                    peer_identity_public_key,
+                    key_exchange_signature_input(
+                        &message.from,
+                        &message.to,
+                        &payload.ephemeral_public_key,
+                        message.timestamp,
+                    )
+                    .as_bytes(),
+                    &payload.signature,
+                )?;
+                if !valid {
+                    reject_key_exchange(
+                        stream,
+                        context,
+                        peer_device_id,
+                        Some(message.id.clone()),
+                        outbound_seq,
+                        REASON_KEY_EXCHANGE_SIGNATURE_INVALID,
+                        MESSAGE_KEY_EXCHANGE_SIGNATURE_INVALID,
+                    )
+                    .await?;
+                    return Err(AppError::message(MESSAGE_KEY_EXCHANGE_SIGNATURE_INVALID));
+                }
+                return Ok(EphemeralKeyExchange {
+                    local,
+                    peer_public_key: payload.ephemeral_public_key,
+                });
+            }
+            "business.v1.key-exchange-reject" => {
+                let message = serde_json::from_value::<LanRejectPayload>(message.payload)
+                    .map(|payload| payload.message)
+                    .unwrap_or_else(|_| MESSAGE_KEY_EXCHANGE_GENERIC.to_string());
+                return Err(AppError::message(message));
+            }
+            _ => {}
+        }
+    }
 }
 
-fn verify_handshake_proof(payload: &HandshakeProofPayload) -> AppResult<()> {
-    let proof = format!(
-        "{}{}{}",
-        payload.device_id, payload.timestamp, payload.nonce
-    );
-    if !verify_signature(&payload.public_key, proof.as_bytes(), &payload.signature)? {
-        return Err(AppError::message("signature invalid"));
+async fn reject_key_exchange<S>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    peer_device_id: &str,
+    correlation_id: Option<String>,
+    outbound_seq: &mut u64,
+    reason: &str,
+    message: &str,
+) -> AppResult<()>
+where
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    write_lan_message(
+        stream,
+        context,
+        peer_device_id,
+        "business.v1.key-exchange-reject",
+        correlation_id,
+        outbound_seq,
+        &LanRejectPayload {
+            reason: reason.to_string(),
+            message: message.to_string(),
+            details: None,
+        },
+    )
+    .await
+}
+
+async fn exchange_business_version<S>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    peer_device_id: &str,
+    outbound_seq: &mut u64,
+) -> AppResult<()>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    write_lan_message(
+        stream,
+        context,
+        peer_device_id,
+        "business.v1.version",
+        None,
+        outbound_seq,
+        &BusinessVersionPayload {
+            business_version: BUSINESS_PROTOCOL_VERSION.to_string(),
+        },
+    )
+    .await?;
+
+    let mut peer_version_received = false;
+    let mut ack_received = false;
+    while !peer_version_received || !ack_received {
+        let message = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN business version exchange timed out"))??;
+        if message.to != context.device.device_id || message.from != peer_device_id {
+            continue;
+        }
+        match message.message_type.as_str() {
+            "business.v1.version" => {
+                let compatibility =
+                    serde_json::from_value::<BusinessVersionPayload>(message.payload)
+                        .map(|payload| check_business_protocol_version(&payload.business_version))
+                        .unwrap_or_else(|_| check_business_protocol_version(""));
+                write_lan_message(
+                    stream,
+                    context,
+                    peer_device_id,
+                    "business.v1.version-ack",
+                    Some(message.id.clone()),
+                    outbound_seq,
+                    &BusinessVersionAckPayload {
+                        compatible: compatibility.compatible,
+                        reason: compatibility.reason.clone(),
+                        message: compatibility.message.clone(),
+                    },
+                )
+                .await?;
+                if !compatibility.compatible {
+                    return Err(AppError::message(
+                        compatibility
+                            .message
+                            .or(compatibility.reason)
+                            .unwrap_or_else(|| {
+                                "business protocol version incompatible".to_string()
+                            }),
+                    ));
+                }
+                peer_version_received = true;
+            }
+            "business.v1.version-ack" => {
+                let Ok(ack) = serde_json::from_value::<BusinessVersionAckPayload>(message.payload)
+                else {
+                    continue;
+                };
+                if !ack.compatible {
+                    return Err(AppError::message(
+                        ack.message.or(ack.reason).unwrap_or_else(|| {
+                            "business protocol version incompatible".to_string()
+                        }),
+                    ));
+                }
+                ack_received = true;
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
 
-fn trust_state(database: &Database, proof: &PeerProof) -> AppResult<TrustState> {
-    let trusts = database.load_trusted_peer_keys()?;
-    let Some(record) = trusts
-        .iter()
-        .find(|record| record.device_id == proof.device_id)
-    else {
-        return Ok(TrustState::Unknown);
-    };
-    if !is_trusted(record) {
-        return Ok(TrustState::Unknown);
-    }
-    if record.public_key != proof.public_key {
-        return Ok(TrustState::KeyChanged);
-    }
-    if record.trusted_by_lan {
-        Ok(TrustState::Trusted)
-    } else {
-        Ok(TrustState::Unknown)
-    }
-}
-
-fn has_lan_trusted_record(database: &Database, device_id: &str) -> AppResult<bool> {
-    Ok(database
-        .load_trusted_peer_keys()?
-        .iter()
-        .any(|record| record.device_id == device_id && record.trusted_by_lan))
-}
-
-fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
-    record.trusted_by_lan || record.trusted_by_cloud
-}
-
-async fn write_peer_message<S, T>(
+async fn send_auth_response<S>(
     stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    peer_device_id: &str,
+    peer_nonce: &str,
+    correlation_id: Option<String>,
+    outbound_seq: &mut u64,
+) -> AppResult<()>
+where
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let timestamp = unix_now_millis();
+    let input = auth_signature_input(&context.device.device_id, timestamp, peer_nonce);
+    let signature = sign_payload(&context.device.private_key, input.as_bytes())?;
+    write_lan_message_with_timestamp(
+        stream,
+        context,
+        peer_device_id,
+        "auth.v1.response",
+        correlation_id,
+        timestamp,
+        outbound_seq,
+        &AuthResponsePayload { signature },
+    )
+    .await
+}
+
+fn verify_auth_response(
+    record: &TrustedPeerKeyRecord,
+    envelope: &LanEnvelope,
+    peer_nonce: &str,
+    signature: &str,
+) -> AppResult<bool> {
+    let input = auth_signature_input(&envelope.from, envelope.timestamp, peer_nonce);
+    verify_signature(&record.public_key, input.as_bytes(), signature)
+}
+
+fn auth_signature_input(from: &str, timestamp: i64, nonce: &str) -> String {
+    format!("from={from}\ntimestamp={timestamp}\nnonce={nonce}")
+}
+
+fn key_exchange_signature_input(from: &str, to: &str, ephemeral_public_key: &str, timestamp: i64) -> String {
+    format!(
+        "domain=colink-lan-key-exchange\nfrom={from}\nto={to}\nephemeralPublicKey={ephemeral_public_key}\ntimestamp={timestamp}"
+    )
+}
+
+async fn write_lan_message<S, T>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    to: &str,
     message_type: &str,
+    correlation_id: Option<String>,
+    outbound_seq: &mut u64,
     payload: &T,
 ) -> AppResult<()>
 where
@@ -2670,25 +3559,78 @@ where
     WebSocketStream<S>:
         futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
-    let envelope = PeerEnvelope {
+    write_lan_message_with_timestamp(
+        stream,
+        context,
+        to,
+        message_type,
+        correlation_id,
+        unix_now_millis(),
+        outbound_seq,
+        payload,
+    )
+    .await
+}
+
+async fn write_lan_message_with_timestamp<S, T>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    to: &str,
+    message_type: &str,
+    correlation_id: Option<String>,
+    timestamp: i64,
+    outbound_seq: &mut u64,
+    payload: &T,
+) -> AppResult<()>
+where
+    T: serde::Serialize,
+    WebSocketStream<S>:
+        futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let envelope = LanEnvelope {
+        id: Uuid::new_v4().to_string(),
         message_type: message_type.to_string(),
+        from: context.device.device_id.clone(),
+        to: to.to_string(),
+        seq: next_lan_seq(outbound_seq),
+        timestamp,
+        correlation_id,
         payload: serde_json::to_value(payload)?,
     };
-    let text = serde_json::to_string(&envelope)?;
     stream
-        .send(Message::Text(text.into()))
+        .send(Message::Text(serde_json::to_string(&envelope)?.into()))
         .await
         .map_err(|error| AppError::message(error.to_string()))
 }
 
-async fn read_peer_message<S>(stream: &mut WebSocketStream<S>) -> AppResult<PeerEnvelope>
+fn next_lan_seq(next: &mut u64) -> u64 {
+    let seq = *next;
+    *next = next.saturating_add(1);
+    seq
+}
+
+async fn read_lan_message<S>(stream: &mut WebSocketStream<S>) -> AppResult<LanEnvelope>
+where
+    WebSocketStream<S>:
+        futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let text = read_text_frame(stream).await?;
+        let Ok(envelope) = serde_json::from_str::<LanEnvelope>(&text) else {
+            continue;
+        };
+        return Ok(envelope);
+    }
+}
+
+async fn read_text_frame<S>(stream: &mut WebSocketStream<S>) -> AppResult<String>
 where
     WebSocketStream<S>:
         futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     while let Some(message) = stream.next().await {
         match message.map_err(|error| AppError::message(error.to_string()))? {
-            Message::Text(text) => return Ok(serde_json::from_str(&text)?),
+            Message::Text(text) => return Ok(text.to_string()),
             Message::Close(_) => return Err(AppError::message("LAN connection was closed")),
             Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
@@ -2819,11 +3761,8 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{
-        has_lan_trusted_record, trust_state, LanManager, MemberRecord, MemberState, PeerProof,
-        TrustState,
-    };
-    use crate::{models::TrustedPeerKeyRecord, store::db::Database};
+    use super::{LanManager, MemberRecord, MemberState};
+    use crate::store::db::Database;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -2839,55 +3778,6 @@ mod tests {
         let database = Database::new(path.clone());
         database.initialize().expect("initialize database");
         (database, path)
-    }
-
-    fn trusted_record(device_id: &str, trusted_by_lan: bool) -> TrustedPeerKeyRecord {
-        TrustedPeerKeyRecord {
-            device_id: device_id.to_string(),
-            name: "Peer".to_string(),
-            public_key: "peer-public-key".to_string(),
-            key_updated_at: 1,
-            trusted_by_lan,
-            trusted_by_cloud: !trusted_by_lan,
-        }
-    }
-
-    fn peer_proof(device_id: &str, public_key: &str) -> PeerProof {
-        PeerProof {
-            device_id: device_id.to_string(),
-            public_key: public_key.to_string(),
-            name: "Peer".to_string(),
-            nonce: "nonce".to_string(),
-        }
-    }
-
-    #[test]
-    fn lan_handshake_trust_requires_lan_trust() {
-        let (database, path) = temp_database();
-        database
-            .upsert_trusted_peer_key(trusted_record("cloud-only", false))
-            .expect("insert cloud trust");
-        database
-            .upsert_trusted_peer_key(trusted_record("lan", true))
-            .expect("insert lan trust");
-
-        assert!(!has_lan_trusted_record(&database, "cloud-only").expect("cloud only trust"));
-        assert!(matches!(
-            trust_state(&database, &peer_proof("cloud-only", "peer-public-key"))
-                .expect("cloud only state"),
-            TrustState::Unknown
-        ));
-        assert!(has_lan_trusted_record(&database, "lan").expect("lan trust"));
-        assert!(matches!(
-            trust_state(&database, &peer_proof("lan", "peer-public-key")).expect("lan state"),
-            TrustState::Trusted
-        ));
-        assert!(matches!(
-            trust_state(&database, &peer_proof("lan", "changed-key")).expect("changed state"),
-            TrustState::KeyChanged
-        ));
-
-        let _ = fs::remove_file(path);
     }
 
     #[test]

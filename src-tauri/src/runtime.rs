@@ -120,6 +120,7 @@ struct IncomingFileState {
 pub(super) struct PendingFileOfferState {
     from: String,
     route: String,
+    envelope_id: Option<String>,
     payload: FileOfferPayload,
 }
 
@@ -343,9 +344,13 @@ impl AppRuntime {
                     &self.inner.lan.peer_endpoints(),
                 );
             }
-            RuntimeEvent::CloudRelay { from, message } => {
+            RuntimeEvent::CloudRelay {
+                from,
+                envelope_id,
+                message,
+            } => {
                 debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
-                self.handle_business_message(&from, "cloud", message).await;
+                self.handle_business_message(&from, "cloud", envelope_id, message).await;
             }
             RuntimeEvent::DevicePresence {
                 device_id,
@@ -464,13 +469,21 @@ impl AppRuntime {
                 warn!(%device_id, count = messages.len(), "runtime received failed lan sends");
                 if self.inner.cloud.is_connected() {
                     for message in messages {
-                        let _ = self.inner.cloud.send_relay(&device_id, message);
+                        let _ = self.inner.cloud.send_relay(
+                            &device_id,
+                            message.message,
+                            message.correlation_id,
+                        );
                     }
                 }
             }
-            RuntimeEvent::LanMessage { from, message } => {
+            RuntimeEvent::LanMessage {
+                from,
+                envelope_id,
+                message,
+            } => {
                 debug!(%from, message_type = %message.message_type, "runtime received lan message");
-                self.handle_business_message(&from, "lan", message).await;
+                self.handle_business_message(&from, "lan", Some(envelope_id), message).await;
             }
             RuntimeEvent::LanTransferFrame { session_id, frame } => {
                 debug!(%session_id, "runtime received lan transfer frame");
@@ -533,7 +546,13 @@ impl AppRuntime {
         }
     }
 
-    async fn handle_business_message(&self, from: &str, route: &str, message: BusinessEnvelope) {
+    async fn handle_business_message(
+        &self,
+        from: &str,
+        route: &str,
+        envelope_id: Option<String>,
+        message: BusinessEnvelope,
+    ) {
         match message.message_type.as_str() {
             TEXT_MESSAGE_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<TextMessagePayload>(message.payload) {
@@ -562,7 +581,7 @@ impl AppRuntime {
             }
             FILE_OFFER_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileOfferPayload>(message.payload) {
-                    let _ = self.handle_file_offer(from, route, payload).await;
+                    let _ = self.handle_file_offer(from, route, envelope_id, payload).await;
                 }
             }
             FILE_ACCEPT_TYPE => {
@@ -578,7 +597,7 @@ impl AppRuntime {
                     let _ = self.finish_outgoing_transfer(
                         &payload.session_id,
                         "rejected",
-                        Some(payload.reason),
+                        Some(payload.message),
                         None,
                     );
                 }
@@ -620,14 +639,14 @@ impl AppRuntime {
                     let _ = self.finish_outgoing_transfer(
                         &payload.session_id,
                         status,
-                        payload.reason,
+                        payload.message.or(payload.reason),
                         None,
                     );
                 }
             }
             FILE_CANCEL_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileCancelPayload>(message.payload) {
-                    let _ = self.handle_file_cancel(&payload.session_id, payload.reason);
+                    let _ = self.handle_file_cancel(&payload.session_id, payload.message);
                 }
             }
             CLIPBOARD_SYNC_TYPE => {
@@ -647,7 +666,7 @@ impl AppRuntime {
                 let music = self.inner.music.clone();
                 let from = from.to_string();
                 tauri::async_runtime::spawn(async move {
-                    music.handle_request(&from).await;
+                    music.handle_request(&from, envelope_id).await;
                 });
             }
             _ => {}
@@ -680,7 +699,7 @@ impl AppRuntime {
         }
 
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
-        self.inner.transport.broadcast_cloud(envelope)?;
+        self.inner.transport.broadcast_cloud(envelope, None)?;
         self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
         Ok(())
     }
@@ -820,7 +839,20 @@ impl AppRuntime {
         device_id: &str,
         message: BusinessEnvelope,
     ) -> AppResult<String> {
-        self.inner.transport.send(device_id, message).await
+        self.send_business_message_with_correlation(device_id, message, None)
+            .await
+    }
+
+    pub(super) async fn send_business_message_with_correlation(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        correlation_id: Option<String>,
+    ) -> AppResult<String> {
+        self.inner
+            .transport
+            .send(device_id, message, correlation_id)
+            .await
     }
 
     pub fn reconcile_device_routes(&self) -> AppResult<Vec<DeviceInfo>> {

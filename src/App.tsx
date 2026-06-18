@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RouterProvider } from 'react-router-dom'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
@@ -8,7 +8,11 @@ import { AppStateProvider } from './hooks/use-app-state'
 import { useAppState } from './hooks/use-app-state'
 import { FileOfferDialog } from './components/file-offer-dialog'
 import { LanPairingDialog } from './components/lan-pairing-dialog'
-import { checkUpdate, openUpdateDownload } from './lib/api'
+import { UpdateDialog } from './components/update-dialog'
+import { checkUpdate } from './lib/api'
+import { isReleaseBuild } from './lib/app-meta'
+import type { AppUpdateRelease } from './lib/types'
+import { isBreakingVersionUpdate } from './lib/update-policy'
 import { router } from './router'
 
 interface LanKeyChangedPayload {
@@ -55,8 +59,9 @@ export default function App() {
 
 function UpdateNotification() {
   const { status } = useAppState()
-  const { t } = useTranslation()
   const checkedRef = useRef(false)
+  const [update, setUpdate] = useState<AppUpdateRelease | null>(null)
+  const required = update ? isReleaseBuild && update.assets.length > 0 && isBreakingVersionUpdate(update.version) : false
 
   useEffect(() => {
     if (status !== 'ready' || checkedRef.current) {
@@ -71,25 +76,7 @@ function UpdateNotification() {
         if (disposed || !update) {
           return
         }
-        const asset = update.assets[0]
-        const notes = update.releaseNotes.trim()
-        const description =
-          notes.length > 240 ? `${notes.slice(0, 240)}...` : notes || t('updates.description')
-
-        toast.info(t('updates.available', { version: update.version }), {
-          description,
-          duration: Infinity,
-          action: asset
-            ? {
-                label: t('updates.download'),
-                onClick: () => {
-                  void openUpdateDownload(asset.downloadUrl).catch(() => {
-                    toast.error(t('common.requestFailed'))
-                  })
-                },
-              }
-            : undefined,
-        })
+        setUpdate(update)
       } catch {
         // Update check is optional.
       }
@@ -98,7 +85,17 @@ function UpdateNotification() {
     return () => {
       disposed = true
     }
-  }, [status, t])
+  }, [status])
 
-  return null
+  return (
+    <UpdateDialog
+      update={update}
+      required={required}
+      onClose={() => {
+        if (!required) {
+          setUpdate(null)
+        }
+      }}
+    />
+  )
 }

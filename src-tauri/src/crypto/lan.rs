@@ -6,6 +6,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaChaNonce};
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use hkdf::Hkdf;
+use rand::rngs::OsRng;
 use sha2::{Digest, Sha256, Sha512};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
@@ -16,6 +17,22 @@ use crate::{
 
 pub const AES_256_GCM_SUITE: &str = "x25519-aes-256-gcm";
 pub const CHACHA20_POLY1305_SUITE: &str = "x25519-chacha20-poly1305";
+
+pub struct LanEphemeralKeyPair {
+    pub public_key: String,
+    private_key: StaticSecret,
+}
+
+impl LanEphemeralKeyPair {
+    pub fn generate() -> Self {
+        let private_key = StaticSecret::random_from_rng(OsRng);
+        let public_key = X25519PublicKey::from(&private_key);
+        Self {
+            public_key: STANDARD.encode(public_key.as_bytes()),
+            private_key,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CipherSuite {
@@ -92,6 +109,30 @@ impl LanSessionCrypto {
         })
     }
 
+    pub fn new_with_ephemeral_keys(
+        suite: CipherSuite,
+        local_ephemeral: &LanEphemeralKeyPair,
+        peer_ephemeral_public_key: &str,
+        local_device_id: &str,
+        peer_device_id: &str,
+        protocol_version: &str,
+        local_is_initiator: bool,
+    ) -> AppResult<Self> {
+        Ok(Self {
+            suite,
+            key: derive_session_key_from_ephemeral(
+                suite,
+                local_ephemeral,
+                peer_ephemeral_public_key,
+                local_device_id,
+                peer_device_id,
+                protocol_version,
+            )?,
+            outbound_role: if local_is_initiator { 0 } else { 1 },
+            counter: 0,
+        })
+    }
+
     pub fn encrypt(&mut self, message: &BusinessEnvelope) -> AppResult<EncryptedBusinessPayload> {
         let plaintext = serde_json::to_vec(message)?;
         let nonce = self.next_nonce();
@@ -161,12 +202,13 @@ pub fn pairing_code(
 ) -> String {
     let mut keys = [public_key_a, public_key_b];
     keys.sort_unstable();
+    let canonical = format!(
+        "domain=colink-lan-pairing-code\npublicKeyA={}\npublicKeyB={}\nnonceA={}\nnonceB={}",
+        keys[0], keys[1], request_nonce, exchange_nonce
+    );
 
     let mut hasher = Sha256::new();
-    hasher.update(keys[0].as_bytes());
-    hasher.update(keys[1].as_bytes());
-    hasher.update(request_nonce.as_bytes());
-    hasher.update(exchange_nonce.as_bytes());
+    hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();
     let value = u64::from_be_bytes([
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
@@ -182,6 +224,51 @@ fn derive_session_key(private_key: &str, peer_public_key: &str) -> AppResult<[u8
     let hkdf = Hkdf::<Sha256>::new(Some(b"colink-lan-v1"), shared.as_bytes());
     let mut key = [0_u8; 32];
     hkdf.expand(b"encryption", &mut key)
+        .map_err(|error| AppError::Crypto(error.to_string()))?;
+    Ok(key)
+}
+
+fn derive_session_key_from_ephemeral(
+    suite: CipherSuite,
+    local_ephemeral: &LanEphemeralKeyPair,
+    peer_ephemeral_public_key: &str,
+    local_device_id: &str,
+    peer_device_id: &str,
+    protocol_version: &str,
+) -> AppResult<[u8; 32]> {
+    let peer_bytes = STANDARD.decode(peer_ephemeral_public_key)?;
+    let peer_bytes: [u8; 32] = peer_bytes
+        .try_into()
+        .map_err(|_| AppError::Crypto("ephemeral public key length invalid".to_string()))?;
+    let peer_public_key = X25519PublicKey::from(peer_bytes);
+    let shared = local_ephemeral.private_key.diffie_hellman(&peer_public_key);
+
+    let local_first = local_device_id <= peer_device_id;
+    let (from, to, ephemeral_a, ephemeral_b) = if local_first {
+        (
+            local_device_id,
+            peer_device_id,
+            local_ephemeral.public_key.as_str(),
+            peer_ephemeral_public_key,
+        )
+    } else {
+        (
+            peer_device_id,
+            local_device_id,
+            peer_ephemeral_public_key,
+            local_ephemeral.public_key.as_str(),
+        )
+    };
+    let suite = match suite {
+        CipherSuite::Aes256Gcm => AES_256_GCM_SUITE,
+        CipherSuite::ChaCha20Poly1305 => CHACHA20_POLY1305_SUITE,
+    };
+    let info = format!(
+        "domain=colink-lan-session-key\nfrom={from}\nto={to}\nephemeralA={ephemeral_a}\nephemeralB={ephemeral_b}\nprotocolVersion={protocol_version}\nsuite={suite}"
+    );
+    let hkdf = Hkdf::<Sha256>::new(Some(b"colink-lan-v2"), shared.as_bytes());
+    let mut key = [0_u8; 32];
+    hkdf.expand(info.as_bytes(), &mut key)
         .map_err(|error| AppError::Crypto(error.to_string()))?;
     Ok(key)
 }
@@ -225,6 +312,7 @@ mod tests {
 
         assert_eq!(code_a, code_b);
         assert_eq!(code_a.len(), 6);
+        assert_eq!(code_a, "893018");
     }
 
     #[test]

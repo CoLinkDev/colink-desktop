@@ -5,13 +5,15 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { RefreshCw } from 'lucide-react'
 
+import { UpdateDialog } from '../components/update-dialog'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
-import { buildTime, fallbackVersion, formatBuildTime, projectUrl, readAppVersion } from '../lib/app-meta'
-import { checkUpdate, openUpdateDownload } from '../lib/api'
-import type { AppSettings } from '../lib/types'
+import { buildTime, fallbackVersion, formatBuildTime, isReleaseBuild, projectUrl, readAppVersion } from '../lib/app-meta'
+import { checkUpdate } from '../lib/api'
+import type { AppSettings, AppUpdateRelease } from '../lib/types'
+import { isBreakingVersionUpdate } from '../lib/update-policy'
 import { cn } from '../lib/utils'
 import { resolveLanguage } from '../i18n'
 
@@ -50,7 +52,13 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   const [form, setForm] = useState<AppSettings>(settings)
   const [version, setVersion] = useState(fallbackVersion)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateRelease | null>(null)
   const { setSettingsDirty } = useAppState()
+  const requiredUpdate =
+    availableUpdate != null &&
+    isReleaseBuild &&
+    availableUpdate.assets.length > 0 &&
+    isBreakingVersionUpdate(availableUpdate.version, version)
 
   const settingsSchema = useMemo(() => z.object({
     serverUrl: z.string().url(t('settings.validation.serverUrl')),
@@ -113,25 +121,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
         return
       }
 
-      const asset = update.assets[0]
-      const notes = update.releaseNotes.trim()
-      const description =
-        notes.length > 240 ? `${notes.slice(0, 240)}...` : notes || t('updates.description')
-
-      toast.info(t('updates.available', { version: update.version }), {
-        description,
-        duration: Infinity,
-        action: asset
-          ? {
-              label: t('updates.download'),
-              onClick: () => {
-                void openUpdateDownload(asset.downloadUrl).catch(() => {
-                  toast.error(t('common.requestFailed'))
-                })
-              },
-            }
-          : undefined,
-      })
+      setAvailableUpdate(update)
     } catch (e) {
       toast.error(readErrorMessage(e))
     } finally {
@@ -141,6 +131,15 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
 
   return (
     <div className="max-w-2xl animate-fade-in space-y-6">
+      <UpdateDialog
+        update={availableUpdate}
+        required={requiredUpdate}
+        onClose={() => {
+          if (!requiredUpdate) {
+            setAvailableUpdate(null)
+          }
+        }}
+      />
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
         <Section title={t('settings.general')}>
           <Field label={t('settings.serverUrl')} tip={t('settings.serverTip')}>

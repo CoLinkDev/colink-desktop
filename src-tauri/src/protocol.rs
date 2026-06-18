@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const LAN_PROTOCOL_VERSION: &str = "1.1.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.0.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -79,6 +81,9 @@ pub struct FileAcceptPayload {
 pub struct FileRejectPayload {
     pub session_id: String,
     pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +91,9 @@ pub struct FileRejectPayload {
 pub struct FileCancelPayload {
     pub session_id: String,
     pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +130,10 @@ pub struct FileDonePayload {
     pub session_id: String,
     pub success: bool,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +287,8 @@ pub struct CloudClientEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
 }
 
@@ -286,6 +300,8 @@ pub struct CloudServerEnvelope {
     pub message_type: String,
     pub from: Option<String>,
     pub to: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
     pub payload: Option<Value>,
     pub timestamp: Option<i64>,
 }
@@ -296,43 +312,89 @@ pub struct DeviceOnlinePayload {
     pub name: String,
     #[serde(rename = "type")]
     pub device_type: String,
+    pub business_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PeerEnvelope {
+pub struct ProtocolHelloEnvelope {
     #[serde(rename = "type")]
     pub message_type: String,
+    pub payload: ProtocolHelloPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolHelloPayload {
+    pub device_id: String,
+    pub protocol_version: String,
+    pub extensions: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolHelloAckEnvelope {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub payload: VersionAckPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionAckPayload {
+    pub compatible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanEnvelope {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub from: String,
+    pub to: String,
+    pub seq: u64,
+    pub timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
     pub payload: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HandshakeProofPayload {
-    pub device_id: String,
+pub struct AuthChallengePayload {
+    pub nonce: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthResponsePayload {
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingIdentityPayload {
     pub public_key: String,
     pub name: String,
-    pub timestamp: i64,
     pub nonce: String,
-    pub signature: String,
-    #[serde(default = "default_has_trust")]
-    pub has_trust: bool,
-}
-
-fn default_has_trust() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HandshakeAcceptPayload {
-    pub device_id: String,
-}
+pub struct EmptyPayload {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HandshakeRejectPayload {
+pub struct LanRejectPayload {
     pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +402,147 @@ pub struct HandshakeRejectPayload {
 pub struct BusinessNegotiatePayload {
     pub supported: Vec<String>,
     pub preferred: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessVersionPayload {
+    pub business_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessVersionAckPayload {
+    pub compatible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VersionCompatibility {
+    pub compatible: bool,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessKeyExchangePayload {
+    pub ephemeral_public_key: String,
+    pub signature: String,
+}
+
+pub fn check_lan_protocol_version(peer_version: &str) -> VersionCompatibility {
+    check_semantic_major(
+        LAN_PROTOCOL_VERSION,
+        peer_version,
+        "colink:protocol.invalid_version.v1",
+        "colink:protocol.major_mismatch.v1",
+        "LAN protocol",
+    )
+}
+
+pub fn supports_lan_key_exchange(peer_version: &str) -> bool {
+    match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
+        (Some(local), Some(peer)) => {
+            local.major == peer.major && local >= Semver::new(1, 1, 0) && peer >= Semver::new(1, 1, 0)
+        }
+        _ => false,
+    }
+}
+
+pub fn negotiated_lan_protocol_version(peer_version: &str) -> String {
+    match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
+        (Some(local), Some(peer)) => std::cmp::min(local, peer).to_wire(),
+        _ => LAN_PROTOCOL_VERSION.to_string(),
+    }
+}
+
+pub fn check_business_protocol_version(peer_version: &str) -> VersionCompatibility {
+    check_semantic_major(
+        BUSINESS_PROTOCOL_VERSION,
+        peer_version,
+        "colink:business.invalid_version.v1",
+        "colink:business.major_mismatch.v1",
+        "Business protocol",
+    )
+}
+
+fn check_semantic_major(
+    local_version: &str,
+    peer_version: &str,
+    invalid_reason: &str,
+    mismatch_reason: &str,
+    label: &str,
+) -> VersionCompatibility {
+    let Some(local_major) = semver_major(local_version) else {
+        return VersionCompatibility {
+            compatible: false,
+            reason: Some(invalid_reason.to_string()),
+            message: Some(format!("{label} local version is invalid")),
+        };
+    };
+    let Some(peer_major) = semver_major(peer_version) else {
+        return VersionCompatibility {
+            compatible: false,
+            reason: Some(invalid_reason.to_string()),
+            message: Some(format!("{label} peer version is invalid")),
+        };
+    };
+    if local_major != peer_major {
+        return VersionCompatibility {
+            compatible: false,
+            reason: Some(mismatch_reason.to_string()),
+            message: Some(format!(
+                "{label} major version {peer_major} is incompatible with local major version {local_major}"
+            )),
+        };
+    }
+    VersionCompatibility {
+        compatible: true,
+        reason: None,
+        message: None,
+    }
+}
+
+fn semver_major(value: &str) -> Option<u64> {
+    semver(value).map(|version| version.major)
+}
+
+fn parse_semver_part(value: &str) -> Option<u64> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.parse::<u64>().ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Semver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl Semver {
+    const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self { major, minor, patch }
+    }
+
+    fn to_wire(self) -> String {
+        format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+fn semver(value: &str) -> Option<Semver> {
+    let mut parts = value.trim().split('.');
+    let version = Semver {
+        major: parse_semver_part(parts.next()?)?,
+        minor: parse_semver_part(parts.next()?)?,
+        patch: parse_semver_part(parts.next()?)?,
+    };
+    parts.next().is_none().then_some(version)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,9 +583,9 @@ pub struct SwimGossip {
 #[cfg(test)]
 mod tests {
     use super::{
-        BusinessEnvelope, FileDataFrame, FileDataFrameKind, HandshakeProofPayload,
-        MusicLyricLinePayload, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
-        MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
+        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, MUSIC_LYRIC_TYPE,
+        MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -392,21 +595,6 @@ mod tests {
 
         assert_eq!(encoded[..8], [1, 1, 0, 0, 0, 0, 0, 7]);
         assert_eq!(FileDataFrame::decode(&encoded), Some(frame));
-    }
-
-    #[test]
-    fn handshake_proof_defaults_missing_has_trust_to_true() {
-        let payload: HandshakeProofPayload = serde_json::from_value(serde_json::json!({
-            "deviceId": "device-a",
-            "publicKey": "public-key",
-            "name": "Device A",
-            "timestamp": 1716451200000_i64,
-            "nonce": "nonce",
-            "signature": "signature"
-        }))
-        .expect("decode handshake proof");
-
-        assert!(payload.has_trust);
     }
 
     #[test]

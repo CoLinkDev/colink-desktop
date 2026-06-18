@@ -3,6 +3,7 @@ import { getVersion } from '@tauri-apps/api/app'
 export const projectUrl = __APP_PROJECT_URL__
 export const buildTime = __APP_BUILD_TIME__
 export const fallbackVersion = __APP_FALLBACK_VERSION__
+export const isReleaseBuild = __APP_IS_RELEASE__
 
 export async function readAppVersion() {
   try {
