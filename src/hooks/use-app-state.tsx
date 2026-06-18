@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
   type PropsWithChildren,
+  type ReactNode,
 } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
@@ -81,6 +82,8 @@ interface AppStateValue {
   clearTransfers: () => Promise<void>
   settingsDirty: boolean
   setSettingsDirty: (dirty: boolean) => void
+  headerActions: ReactNode
+  setHeaderActions: (actions: ReactNode) => void
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null)
@@ -136,6 +139,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<SessionSummary | null>(null)
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [settingsDirty, setSettingsDirty] = useState(false)
+  const [headerActions, setHeaderActions] = useState<ReactNode>(null)
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [cloud, setCloud] = useState<CloudStatus>(defaultCloudStatus)
@@ -438,6 +442,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      headerActions,
+      setHeaderActions,
     }),
     [
       status,
@@ -470,6 +476,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      headerActions,
     ],
   )
 

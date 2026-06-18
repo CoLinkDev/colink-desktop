@@ -18,7 +18,7 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, session, theme, setTheme, settingsDirty } = useAppState()
+  const { cloud, logout, session, theme, setTheme, settingsDirty, headerActions } = useAppState()
   const { t } = useTranslation()
 
   const [showThemeModal, setShowThemeModal] = useState(false)
@@ -189,6 +189,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <h1 className="text-[20px] font-semibold tracking-tight text-[hsl(var(--text))]">{getTitle()}</h1>
 
           <div className="flex items-center gap-2">
+            {headerActions}
             {isFormRoute && (
               <Button
                 disabled={isSettingsRoute && !settingsDirty}
