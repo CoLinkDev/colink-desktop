@@ -15,6 +15,7 @@ mod network;
 mod protocol;
 mod runtime;
 mod runtime_events;
+mod sysinfo;
 mod service;
 mod shell;
 mod state;

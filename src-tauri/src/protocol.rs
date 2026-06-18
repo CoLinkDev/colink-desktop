@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.1.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.0.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -19,6 +19,8 @@ pub const MUSIC_LYRIC_TYPE: &str = "music.v1.lyric";
 pub const MUSIC_PROGRESS_TYPE: &str = "music.v1.progress";
 pub const MUSIC_ALIVE_TYPE: &str = "music.v1.alive";
 pub const MUSIC_REQUEST_TYPE: &str = "music.v1.request";
+pub const SYSINFO_STATS_TYPE: &str = "sysinfo.v1.stats";
+pub const SYSINFO_ALIVE_TYPE: &str = "sysinfo.v1.alive";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -172,6 +174,15 @@ pub struct MusicProgressPayload {
     pub track_id: String,
     pub progress: i64,
     pub paused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SysInfoStatsPayload {
+    pub cpu: f64,
+    pub mem: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
