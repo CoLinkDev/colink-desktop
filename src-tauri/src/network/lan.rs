@@ -64,6 +64,7 @@ const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const SWIM_PERIOD: Duration = Duration::from_millis(5_000);
 const SWIM_DIRECT_TIMEOUT: Duration = Duration::from_millis(1_000);
 const SWIM_INDIRECT_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SWIM_PROBE_BATCH_SIZE: usize = 2;
 const SWIM_SUSPECT_MISSES: u8 = 2;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 3_000;
 const SWIM_MAX_GOSSIP: usize = 10;
@@ -1544,15 +1545,18 @@ impl LanManager {
     }
 
     fn schedule_probe_next_member(&self, generation: u64, context: LanContext) {
-        let Some(target) = self.next_probe_target(&context.device.device_id) else {
+        let targets = self.next_probe_targets(&context.device.device_id);
+        if targets.is_empty() {
             return;
-        };
+        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager
-                .probe_member(generation, context, target.clone())
-                .await;
-            manager.finish_probe(generation, &target);
+            for target in targets {
+                manager
+                    .probe_member(generation, context.clone(), target.clone())
+                    .await;
+                manager.finish_probe(generation, &target);
+            }
         });
     }
 
@@ -1611,10 +1615,10 @@ impl LanManager {
         warn!(%target, missed_probes, "swim member marked suspect");
     }
 
-    fn next_probe_target(&self, local_device_id: &str) -> Option<String> {
+    fn next_probe_targets(&self, local_device_id: &str) -> Vec<String> {
         let mut inner = self.inner.lock_unpoisoned();
         if !inner.probe_in_flight.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let mut candidates = inner
@@ -1631,21 +1635,27 @@ impl LanManager {
         if candidates.is_empty() {
             inner.probe_queue.clear();
             inner.probe_round_candidates.clear();
-            return None;
+            return Vec::new();
         }
         let target_set = candidates.iter().cloned().collect::<HashSet<_>>();
         if inner.probe_queue.is_empty() || inner.probe_round_candidates != candidates {
             inner.probe_round_candidates = candidates.clone();
             inner.probe_queue = shuffled_probe_queue(candidates);
         }
-        while let Some(target) = inner.probe_queue.pop_front() {
+        let mut targets = Vec::new();
+        while targets.len() < SWIM_PROBE_BATCH_SIZE {
+            let Some(target) = inner.probe_queue.pop_front() else {
+                break;
+            };
             if target_set.contains(&target) {
                 inner.probe_in_flight.insert(target.clone());
-                return Some(target);
+                targets.push(target);
             }
         }
-        inner.probe_round_candidates.clear();
-        None
+        if targets.is_empty() {
+            inner.probe_round_candidates.clear();
+        }
+        targets
     }
 
     fn finish_probe(&self, generation: u64, target: &str) {
