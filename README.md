@@ -1,73 +1,43 @@
-# React + TypeScript + Vite
+# CoLink Desktop
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Desktop client for CoLink — clipboard sync, file transfer, text messaging, now-playing display, and CastBoard.
 
-Currently, two official plugins are available:
+**Tech stack:** Tauri 2 · Rust · React 19 · TypeScript · Vite · Tailwind CSS · SQLite (rusqlite) · i18next
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Requirements
 
-## React Compiler
+- [Rust toolchain](https://rustup.rs/)
+- Node.js 20+ and [pnpm](https://pnpm.io/)
+- Tauri prerequisites for your platform: https://tauri.app/start/prerequisites/
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Development
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+pnpm install
+pnpm tauri dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Vite serves the frontend on port 1420; Tauri connects to it automatically.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Build
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sh
+# Unpackaged debug binary
+pnpm tauri:debug-build
+
+# Production installer (NSIS on Windows)
+pnpm tauri build
 ```
+
+## Architecture
+
+| Layer | Tech | Responsibilities |
+|---|---|---|
+| Frontend | React + Vite | UI, routing (hash router), server API calls |
+| Backend | Rust (Tauri) | LAN networking, crypto, SQLite storage, clipboard, system tray, IPC |
+
+- **LAN discovery**: mdns-sd
+- **LAN crypto**: ed25519-dalek (identity), x25519-dalek + hkdf + sha2 (session key), aes-gcm / chacha20poly1305
+- **Music sync** (Now Playing / CastBoard): NetEase Cloud Music, QQ Music, Spotify
+- **Local storage**: SQLite (device trust store, settings, logs)
+- **Credentials**: system keyring
