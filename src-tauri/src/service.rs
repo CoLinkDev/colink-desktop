@@ -687,11 +687,10 @@ fn is_auth_error(error: &AppError) -> bool {
 }
 
 fn detect_device_name() -> String {
-    get()
-        .ok()
-        .and_then(|value| value.into_string().ok())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "CoLink Desktop".to_string())
+    detect_device_name_from(
+        get().ok().and_then(|value| value.into_string().ok()).as_deref(),
+        cfg!(debug_assertions),
+    )
 }
 
 fn detect_device_type() -> String {
@@ -719,4 +718,34 @@ fn settings_language(state: &AppState) -> String {
 fn user_text(state: &AppState, key: TextKey) -> String {
     let language = settings_language(state);
     i18n::text(&language, key).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_device_name_from;
+
+    #[test]
+    fn appends_debug_suffix_in_debug_builds() {
+        let name = detect_device_name_from(Some("CoLink"), true);
+        assert_eq!(name, "CoLinkDebug");
+    }
+
+    #[test]
+    fn falls_back_to_default_name_and_applies_suffix() {
+        let name = detect_device_name_from(None, true);
+        assert_eq!(name, "CoLink DesktopDebug");
+    }
+}
+
+fn detect_device_name_from(system_name: Option<&str>, debug_build: bool) -> String {
+    let base_name = system_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("CoLink Desktop");
+
+    if debug_build {
+        format!("{base_name}Debug")
+    } else {
+        base_name.to_string()
+    }
 }
