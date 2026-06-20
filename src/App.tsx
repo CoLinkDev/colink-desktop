@@ -10,7 +10,7 @@ import { FileOfferDialog } from './components/file-offer-dialog'
 import { LanPairingDialog } from './components/lan-pairing-dialog'
 import { UpdateDialog } from './components/update-dialog'
 import { checkUpdate } from './lib/api'
-import { isReleaseBuild } from './lib/app-meta'
+import { fallbackVersion, isReleaseBuild, readAppVersion } from './lib/app-meta'
 import type { AppUpdateRelease } from './lib/types'
 import { isBreakingVersionUpdate } from './lib/update-policy'
 import { router } from './router'
@@ -61,7 +61,8 @@ function UpdateNotification() {
   const { status } = useAppState()
   const checkedRef = useRef(false)
   const [update, setUpdate] = useState<AppUpdateRelease | null>(null)
-  const required = update ? isReleaseBuild && update.assets.length > 0 && isBreakingVersionUpdate(update.version) : false
+  const [version, setVersion] = useState(fallbackVersion)
+  const required = update ? isReleaseBuild && update.assets.length > 0 && isBreakingVersionUpdate(update.version, version) : false
 
   useEffect(() => {
     if (status !== 'ready' || checkedRef.current) {
@@ -72,10 +73,12 @@ function UpdateNotification() {
 
     void (async () => {
       try {
+        const version = await readAppVersion()
         const update = await checkUpdate()
         if (disposed || !update) {
           return
         }
+        setVersion(version)
         setUpdate(update)
       } catch {
         // Update check is optional.
