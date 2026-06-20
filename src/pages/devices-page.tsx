@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
-import { ArrowDown, ArrowUp, Grid2X2, Info, Key, List, Search, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Grid2X2, Info, Key, List, RefreshCw, Search, Trash2 } from 'lucide-react'
 
 import { DeviceCard } from '../components/device-card'
 import { DeviceDetailsDialog } from '../components/device-details-dialog'
@@ -29,6 +29,7 @@ export function DevicesPage() {
   const {
     devices,
     device,
+    cloud,
     rotateDeviceKey,
     refreshDevices,
     setHeaderActions,
@@ -42,6 +43,18 @@ export function DevicesPage() {
   const [viewMode, setViewMode] = useState<DeviceViewMode>(() => readDeviceViewMode())
   const [searchQuery, setSearchQuery] = useState('')
   const [sort, setSort] = useState<DeviceSort>({ key: 'name', direction: 'asc' })
+  const [refreshing, setRefreshing] = useState(false)
+
+  const handleRefreshDevices = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      await refreshDevices()
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    } finally {
+      setRefreshing(false)
+    }
+  }, [refreshDevices])
 
   useEffect(() => {
     let disposed = false
@@ -72,36 +85,48 @@ export function DevicesPage() {
   useEffect(() => {
     localStorage.setItem(DEVICE_VIEW_MODE_KEY, viewMode)
     setHeaderActions(
-      <div className="inline-flex rounded-lg border bg-[hsl(var(--panel))] p-0.5">
+      <>
         <button
-          aria-label={t('devices.cardMode')}
-          className={cn(
-            'inline-flex h-7 w-8 items-center justify-center rounded-md text-[hsl(var(--muted))] transition-colors hover:text-[hsl(var(--text))]',
-            viewMode === 'cards' && 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))]',
-          )}
-          onClick={() => setViewMode('cards')}
-          title={t('devices.cardMode')}
+          aria-label={t('common.refresh')}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
+          disabled={!cloud.connected || refreshing}
+          onClick={handleRefreshDevices}
+          title={t('common.refresh')}
           type="button"
         >
-          <Grid2X2 className="h-4 w-4" />
+          <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
         </button>
-        <button
-          aria-label={t('devices.listMode')}
-          className={cn(
-            'inline-flex h-7 w-8 items-center justify-center rounded-md text-[hsl(var(--muted))] transition-colors hover:text-[hsl(var(--text))]',
-            viewMode === 'list' && 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))]',
-          )}
-          onClick={() => setViewMode('list')}
-          title={t('devices.listMode')}
-          type="button"
-        >
-          <List className="h-4 w-4" />
-        </button>
-      </div>,
+        <div className="inline-flex rounded-lg border bg-[hsl(var(--panel))] p-0.5">
+          <button
+            aria-label={t('devices.cardMode')}
+            className={cn(
+              'inline-flex h-7 w-8 items-center justify-center rounded-md text-[hsl(var(--muted))] transition-colors hover:text-[hsl(var(--text))]',
+              viewMode === 'cards' && 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))]',
+            )}
+            onClick={() => setViewMode('cards')}
+            title={t('devices.cardMode')}
+            type="button"
+          >
+            <Grid2X2 className="h-4 w-4" />
+          </button>
+          <button
+            aria-label={t('devices.listMode')}
+            className={cn(
+              'inline-flex h-7 w-8 items-center justify-center rounded-md text-[hsl(var(--muted))] transition-colors hover:text-[hsl(var(--text))]',
+              viewMode === 'list' && 'bg-[hsl(var(--panel-2))] text-[hsl(var(--text))]',
+            )}
+            onClick={() => setViewMode('list')}
+            title={t('devices.listMode')}
+            type="button"
+          >
+            <List className="h-4 w-4" />
+          </button>
+        </div>
+      </>,
     )
 
     return () => setHeaderActions(null)
-  }, [setHeaderActions, t, viewMode])
+  }, [cloud.connected, handleRefreshDevices, refreshing, setHeaderActions, t, viewMode])
 
   function handleInitiateRotate(deviceId: string) {
     setRotateConfirmId(deviceId)
