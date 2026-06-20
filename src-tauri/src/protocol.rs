@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.1.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.1.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.2.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -183,6 +183,14 @@ pub struct SysInfoStatsPayload {
     pub mem: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu: Option<f64>,
+    #[serde(rename = "net_up", skip_serializing_if = "Option::is_none")]
+    pub net_up: Option<f64>,
+    #[serde(rename = "net_down", skip_serializing_if = "Option::is_none")]
+    pub net_down: Option<f64>,
+    #[serde(rename = "disk_read", skip_serializing_if = "Option::is_none")]
+    pub disk_read: Option<f64>,
+    #[serde(rename = "disk_write", skip_serializing_if = "Option::is_none")]
+    pub disk_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

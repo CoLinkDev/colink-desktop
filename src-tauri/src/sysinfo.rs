@@ -197,6 +197,9 @@ async fn sample_system_info() -> Option<SysInfoStatsPayload> {
 struct SystemSampler {
     system: sysinfo::System,
     gpu: GpuSampler,
+    networks: sysinfo::Networks,
+    disks: sysinfo::Disks,
+    last_sample_at: std::time::Instant,
 }
 
 impl SystemSampler {
@@ -204,6 +207,11 @@ impl SystemSampler {
         let mut sampler = Self {
             system: sysinfo::System::new_all(),
             gpu: GpuSampler::new(),
+            networks: sysinfo::Networks::new_with_refreshed_list(),
+            disks: sysinfo::Disks::new_with_refreshed_list_specifics(
+                sysinfo::DiskRefreshKind::everything(),
+            ),
+            last_sample_at: std::time::Instant::now(),
         };
         sampler.system.refresh_cpu_usage();
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
@@ -213,6 +221,13 @@ impl SystemSampler {
     fn sample(&mut self) -> Option<SysInfoStatsPayload> {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
+        let elapsed = self.last_sample_at.elapsed();
+        self.last_sample_at = std::time::Instant::now();
+        self.networks.refresh(true);
+        self.disks.refresh_specifics(
+            true,
+            sysinfo::DiskRefreshKind::nothing().with_io_usage(),
+        );
         let total_memory = self.system.total_memory();
         if total_memory == 0 {
             return None;
@@ -221,8 +236,19 @@ impl SystemSampler {
         let cpu = clamp_percent(f64::from(self.system.global_cpu_usage()));
         let mem = clamp_percent((self.system.used_memory() as f64 / total_memory as f64) * 100.0);
         let gpu = self.gpu.sample().map(clamp_percent);
+        let elapsed_secs = elapsed.as_secs_f64();
+        let (net_up, net_down) = network_rates(&self.networks, elapsed_secs);
+        let (disk_read, disk_write) = disk_rates(&self.disks, elapsed_secs);
 
-        Some(SysInfoStatsPayload { cpu, mem, gpu })
+        Some(SysInfoStatsPayload {
+            cpu,
+            mem,
+            gpu,
+            net_up,
+            net_down,
+            disk_read,
+            disk_write,
+        })
     }
 }
 
@@ -231,6 +257,28 @@ fn clamp_percent(value: f64) -> f64 {
         return 0.0;
     }
     value.clamp(0.0, 100.0)
+}
+
+fn rate_per_second(bytes: u64, elapsed_secs: f64) -> Option<f64> {
+    (elapsed_secs.is_finite() && elapsed_secs > 0.0).then_some(bytes as f64 / elapsed_secs)
+}
+
+fn network_rates(networks: &sysinfo::Networks, elapsed_secs: f64) -> (Option<f64>, Option<f64>) {
+    let down = networks.values().map(|network| network.received()).sum();
+    let up = networks.values().map(|network| network.transmitted()).sum();
+    (
+        rate_per_second(up, elapsed_secs),
+        rate_per_second(down, elapsed_secs),
+    )
+}
+
+fn disk_rates(disks: &sysinfo::Disks, elapsed_secs: f64) -> (Option<f64>, Option<f64>) {
+    let read = disks.list().iter().map(|disk| disk.usage().read_bytes).sum();
+    let written = disks.list().iter().map(|disk| disk.usage().written_bytes).sum();
+    (
+        rate_per_second(read, elapsed_secs),
+        rate_per_second(written, elapsed_secs),
+    )
 }
 
 fn prune_expired_receivers_locked(receivers: &mut HashMap<String, ReceiverState>) {
