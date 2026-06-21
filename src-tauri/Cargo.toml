@@ -30,6 +30,7 @@ rand = "0.8.5"
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls"] }
 rfd = "0.15.4"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
+rustls = { version = "0.23.40", features = ["ring"] }
 sanitize-filename = "0.5.0"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.132"

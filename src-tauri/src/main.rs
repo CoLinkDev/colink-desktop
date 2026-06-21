@@ -35,6 +35,8 @@ use state::AppState;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

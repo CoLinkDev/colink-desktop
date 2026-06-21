@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::{
     sync::{mpsc, watch},
-    time::{interval, sleep, MissedTickBehavior},
+    time::{interval, sleep, timeout, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -36,6 +36,7 @@ use crate::{
 
 const WS_TICKET_PATH: &str = "/api/v1/ws/ticket";
 const WS_CONNECT_PATH: &str = "/ws/v1";
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub const AUTH_INVALIDATED_EVENT: &str = "auth-invalidated";
 pub const CLOUD_STATUS_EVENT: &str = "cloud-status";
@@ -506,8 +507,14 @@ impl CloudConnectionManager {
         )
         .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         debug!(url = %ws_url, "connecting cloud websocket");
-        let (stream, _) = connect_async(ws_url.as_str())
+        let (stream, _) = timeout(WS_CONNECT_TIMEOUT, connect_async(ws_url.as_str()))
             .await
+            .map_err(|_| {
+                ConnectionFailure::Retryable(format!(
+                    "cloud websocket connect timed out after {} seconds",
+                    WS_CONNECT_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         let connected_at = Instant::now();
 
