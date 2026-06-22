@@ -903,7 +903,7 @@ fn build_ws_url(
 
 fn backoff_delay(attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(16);
-    let seconds = 2_u64.pow(exponent).min(300);
+    let seconds = 2_u64.pow(exponent).min(30);
     Duration::from_secs(seconds)
 }
 
