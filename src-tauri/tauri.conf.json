@@ -26,6 +26,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"]
+    "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "languages": [
+          "SimpChinese",
+          "English",
+          "TradChinese",
+          "Japanese",
+          "Korean",
+          "Spanish",
+          "German",
+          "Russian"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }
