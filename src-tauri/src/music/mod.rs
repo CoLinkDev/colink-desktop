@@ -1,5 +1,6 @@
 mod ncm;
 pub mod provider;
+mod kugou;
 mod qqmusic;
 mod spotify;
 

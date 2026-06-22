@@ -255,6 +255,7 @@ const resources = {
         saveSuccess: '音乐源已保存',
         providers: {
           qqmusic: 'QQ 音乐',
+          kugou: '酷狗音乐',
           ncm: '网易云音乐',
           spotify: 'Spotify',
         },
@@ -553,6 +554,7 @@ const resources = {
         saveSuccess: 'Music providers saved',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },
@@ -851,6 +853,7 @@ const resources = {
         saveSuccess: '音樂源已儲存',
         providers: {
           qqmusic: 'QQ 音樂',
+          kugou: '酷狗音樂',
           ncm: '網易雲音樂',
           spotify: 'Spotify',
         },
@@ -1149,6 +1152,7 @@ const resources = {
         saveSuccess: '音楽プロバイダーを保存しました',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },
@@ -1447,6 +1451,7 @@ const resources = {
         saveSuccess: '음악 제공자가 저장되었습니다',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },
@@ -1745,6 +1750,7 @@ const resources = {
         saveSuccess: 'Proveedores de música guardados',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },
@@ -2043,6 +2049,7 @@ const resources = {
         saveSuccess: 'Musikanbieter gespeichert',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },
@@ -2341,6 +2348,7 @@ const resources = {
         saveSuccess: 'Музыкальные провайдеры сохранены',
         providers: {
           qqmusic: 'QQ Music',
+          kugou: 'Kugou Music',
           ncm: 'NetEase Cloud Music',
           spotify: 'Spotify',
         },

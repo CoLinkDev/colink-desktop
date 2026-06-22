@@ -1,0 +1,134 @@
+mod gsmtc;
+mod lyrics;
+mod search;
+mod uia;
+
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
+
+use async_trait::async_trait;
+use lru::LruCache;
+use reqwest::Client;
+
+use crate::{
+    music::provider::{ActiveTrack, LyricFuture, MusicProvider, TrackState},
+    protocol::MusicLyricPayload,
+    sync::MutexExt,
+};
+
+use self::{gsmtc::GsmTrack, search::KugouTrack};
+
+const PROVIDER_ID: &str = "kugou";
+const LYRIC_CACHE_CAPACITY: usize = 64;
+const TRACK_CACHE_CAPACITY: usize = 32;
+
+pub struct KugouProvider {
+    client: Client,
+    track_cache: Arc<Mutex<LruCache<String, KugouTrack>>>,
+    lyric_cache: Arc<Mutex<LruCache<String, MusicLyricPayload>>>,
+    progress_reader: uia::ProgressReader,
+}
+
+impl KugouProvider {
+    pub fn new() -> Self {
+        Self {
+            client: Client::new(),
+            track_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(TRACK_CACHE_CAPACITY).expect("cache capacity must be non-zero"),
+            ))),
+            lyric_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(LYRIC_CACHE_CAPACITY).expect("cache capacity must be non-zero"),
+            ))),
+            progress_reader: uia::ProgressReader::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl MusicProvider for KugouProvider {
+    async fn fetch_track(&mut self) -> TrackState {
+        let Some(gsm_track) = gsmtc::fetch_current_track() else {
+            self.progress_reader.clear();
+            return TrackState::None;
+        };
+
+        let matched = self.match_track(&gsm_track).await;
+        let progress = self.progress_reader.read_progress();
+        TrackState::Active(ActiveTrack {
+            track_id: matched
+                .as_ref()
+                .map(|track| track.hash.clone())
+                .or_else(|| gsm_track.fallback_track_id.clone()),
+            title: matched
+                .as_ref()
+                .map(|track| track.title.clone())
+                .unwrap_or_else(|| gsm_track.title.clone()),
+            artists: matched
+                .as_ref()
+                .map(|track| track.artists.clone())
+                .filter(|artists| !artists.is_empty())
+                .unwrap_or_else(|| gsm_track.artists.clone()),
+            album: matched
+                .as_ref()
+                .and_then(|track| track.album.clone())
+                .or(gsm_track.album),
+            source: PROVIDER_ID,
+            cover_url: matched.as_ref().and_then(|track| track.cover_url.clone()),
+            cover_data: None,
+            duration_ms: matched
+                .as_ref()
+                .and_then(|track| track.duration_ms)
+                .or(progress.as_ref().and_then(|item| item.duration_ms))
+                .or(gsm_track.duration_ms),
+            progress_ms: progress
+                .and_then(|item| item.position_ms)
+                .or(gsm_track.progress_ms)
+                .unwrap_or(0),
+            paused: gsm_track.paused,
+        })
+    }
+
+    fn fetch_lyrics(&self, track_id: &str) -> LyricFuture {
+        let track_id = track_id.trim().to_string();
+        let client = self.client.clone();
+        let cache = self.lyric_cache.clone();
+        let track_cache = self.track_cache.clone();
+        Box::pin(async move {
+            if track_id.is_empty() {
+                return None;
+            }
+
+            if let Some(cached) = cache.lock_unpoisoned().get(&track_id).cloned() {
+                return Some(cached);
+            }
+
+            let meta = track_cache
+                .lock_unpoisoned()
+                .iter()
+                .find_map(|(_, track)| (track.hash == track_id).then_some(track.clone()))?;
+
+            let payload = lyrics::fetch_lyric(&client, &meta).await?;
+            cache
+                .lock_unpoisoned()
+                .put(track_id.clone(), payload.clone());
+            Some(payload)
+        })
+    }
+}
+
+impl KugouProvider {
+    async fn match_track(&self, track: &GsmTrack) -> Option<KugouTrack> {
+        let cache_key = track.cache_key();
+        if let Some(cached) = self.track_cache.lock_unpoisoned().get(&cache_key).cloned() {
+            return Some(cached);
+        }
+
+        let matched = search::search_track(&self.client, track).await?;
+        self.track_cache
+            .lock_unpoisoned()
+            .put(cache_key, matched.clone());
+        Some(matched)
+    }
+}

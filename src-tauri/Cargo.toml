@@ -54,4 +54,4 @@ musixmatch-inofficial = "0.4.1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"
-windows = { version = "0.61.3", features = ["Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "Win32_System_Performance"] }
+windows = { version = "0.61.3", features = ["Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Performance", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

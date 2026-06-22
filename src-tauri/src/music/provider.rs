@@ -4,7 +4,9 @@ use async_trait::async_trait;
 
 use crate::protocol::MusicLyricPayload;
 
-use super::{ncm::NcmProvider, qqmusic::QqMusicProvider, spotify::SpotifyProvider};
+use super::{
+    kugou::KugouProvider, ncm::NcmProvider, qqmusic::QqMusicProvider, spotify::SpotifyProvider,
+};
 
 pub enum TrackState {
     Active(ActiveTrack),
@@ -46,6 +48,11 @@ pub const KNOWN_PROVIDERS: &[KnownProvider] = &[
         implemented: true,
     },
     KnownProvider {
+        id: "kugou",
+        name: "Kugou Music",
+        implemented: true,
+    },
+    KnownProvider {
         id: "ncm",
         name: "NetEase Cloud Music",
         implemented: true,
@@ -60,6 +67,7 @@ pub const KNOWN_PROVIDERS: &[KnownProvider] = &[
 pub fn create_provider(id: &str) -> Option<Box<dyn MusicProvider>> {
     match id {
         "qqmusic" => Some(Box::new(QqMusicProvider::new())),
+        "kugou" => Some(Box::new(KugouProvider::new())),
         "ncm" => Some(Box::new(NcmProvider::new())),
         "spotify" => Some(Box::new(SpotifyProvider::new())),
         _ => None,
