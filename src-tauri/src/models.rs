@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
-const TOKEN_EXPIRY_BUFFER_SECONDS: i64 = 60;
+const LEGACY_ACCESS_TOKEN_TTL_SECONDS: i64 = 15 * 60;
+const ACCESS_TOKEN_LONG_REFRESH_BUFFER_SECONDS: i64 = 60 * 60;
+const ACCESS_TOKEN_SHORT_REFRESH_PERCENT: i64 = 90;
 pub const LAN_PORT: u16 = 27_777;
 pub const MAX_TEXT_LENGTH: usize = 10_000;
 pub const FILE_CHUNK_SIZE: usize = 1_048_576;
@@ -46,11 +48,12 @@ pub struct SessionRecord {
     pub access_token: String,
     pub refresh_token: String,
     pub access_token_expires_at: i64,
+    pub access_token_refresh_at: i64,
 }
 
 impl SessionRecord {
     pub fn is_expiring_soon(&self) -> bool {
-        self.access_token_expires_at <= unix_now() + TOKEN_EXPIRY_BUFFER_SECONDS
+        self.access_token_refresh_at <= unix_now()
     }
 
     pub fn summary(&self) -> SessionSummary {
@@ -59,6 +62,23 @@ impl SessionRecord {
             username: self.username.clone(),
         }
     }
+}
+
+pub fn access_token_timestamps(expires_in_seconds: Option<i64>) -> (i64, i64) {
+    let now = unix_now();
+    let expires_in = expires_in_seconds
+        .unwrap_or(LEGACY_ACCESS_TOKEN_TTL_SECONDS)
+        .max(0);
+    let refresh_after = if expires_in <= ACCESS_TOKEN_LONG_REFRESH_BUFFER_SECONDS {
+        expires_in * ACCESS_TOKEN_SHORT_REFRESH_PERCENT / 100
+    } else {
+        expires_in - ACCESS_TOKEN_LONG_REFRESH_BUFFER_SECONDS
+    };
+
+    (
+        now.saturating_add(expires_in),
+        now.saturating_add(refresh_after.max(0)),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -105,6 +105,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "drop_always_enabled_settings",
         run: migrate_15_drop_always_enabled_settings,
     },
+    Migration {
+        version: 16,
+        name: "add_session_access_token_refresh_at",
+        run: migrate_16_add_session_access_token_refresh_at,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -1131,6 +1136,10 @@ fn migrate_15_drop_always_enabled_settings(transaction: &Transaction<'_>) -> App
     )
 }
 
+fn migrate_16_add_session_access_token_refresh_at(transaction: &Transaction<'_>) -> AppResult<()> {
+    migrate_json_record(transaction, SESSION_KEY, normalize_session_json)
+}
+
 fn canonicalize_music_providers(providers: &[MusicProviderConfig]) -> Vec<MusicProviderConfig> {
     let mut normalized = Vec::new();
     for provider in providers {
@@ -1245,6 +1254,16 @@ fn normalize_session_json(value: Value) -> AppResult<Value> {
     object
         .entry("username".to_string())
         .or_insert_with(|| Value::String(String::new()));
+    if !object.contains_key("accessTokenRefreshAt") {
+        let expires_at = object
+            .get("accessTokenExpiresAt")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| AppError::message("accessTokenExpiresAt must be an integer"))?;
+        object.insert(
+            "accessTokenRefreshAt".to_string(),
+            Value::from(expires_at.saturating_sub(60)),
+        );
+    }
     serde_json::from_value::<SessionRecord>(Value::Object(object.clone()))?;
     Ok(Value::Object(object))
 }
@@ -1644,6 +1663,7 @@ mod tests {
             .expect("load session")
             .expect("session");
         assert_eq!(session.username, "");
+        assert_eq!(session.access_token_refresh_at, 63);
 
         let identity = database
             .load_device_identity()
@@ -1679,7 +1699,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1695,7 +1715,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1711,7 +1731,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (13, 14, 15)",
+                "DELETE FROM schema_migrations WHERE version IN (13, 14, 15, 16)",
                 [],
             )
             .expect("remove v13 marker");
@@ -1735,7 +1755,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1776,7 +1796,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1792,7 +1812,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1827,7 +1847,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1896,7 +1916,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1912,7 +1932,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)",
                 [],
             )
             .expect("remove v5 marker");
@@ -1955,7 +1975,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -1971,7 +1991,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)",
                 [],
             )
             .expect("remove v6 marker");
@@ -2009,7 +2029,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -2073,7 +2093,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -2141,7 +2161,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -2165,7 +2185,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);
@@ -2179,7 +2199,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 15", [])
+            .execute("DELETE FROM schema_migrations WHERE version = 16", [])
             .expect("remove v15 marker");
         connection
             .execute(
@@ -2239,7 +2259,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15)",
+                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16)",
                 [],
             )
             .expect("remove v9 marker");
@@ -2274,7 +2294,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
 
         let _ = fs::remove_file(path);

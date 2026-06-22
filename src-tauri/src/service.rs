@@ -5,15 +5,16 @@ use tracing::warn;
 use url::{form_urlencoded, Url};
 
 use crate::{
-    api::{DeviceListResponse, ACCESS_TOKEN_TTL_SECONDS, DEVICES_PATH},
+    api::{DeviceListResponse, DEVICES_PATH},
     auth,
     crypto::keys::generate_key_pair,
     error::{AppError, AppResult},
     i18n::{self, TextKey},
     models::{
-        unix_now, AppSettings, AppUpdateRelease, BootstrapPayload, DeviceDeletePayload,
-        DeviceIdentity, DeviceInfo, DeviceNameUpdatePayload, LoginPayload, MusicProviderConfig,
-        MusicProviderMeta, RegisterPayload, RotateDeviceKeyPayload, SessionRecord,
+        access_token_timestamps, AppSettings, AppUpdateRelease, BootstrapPayload,
+        DeviceDeletePayload, DeviceIdentity, DeviceInfo, DeviceNameUpdatePayload, LoginPayload,
+        MusicProviderConfig, MusicProviderMeta, RegisterPayload, RotateDeviceKeyPayload,
+        SessionRecord,
     },
     music::provider::KNOWN_PROVIDERS,
     shell,
@@ -32,6 +33,8 @@ struct SessionExchangeResponse {
     user_id: String,
     token: String,
     refresh_token: String,
+    expires_in: Option<i64>,
+    refresh_expires_in: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,12 +406,16 @@ async fn save_session_and_bootstrap(
     settings: AppSettings,
     response: SessionExchangeResponse,
 ) -> AppResult<BootstrapPayload> {
+    let _ = response.refresh_expires_in;
+    let (access_token_expires_at, access_token_refresh_at) =
+        access_token_timestamps(response.expires_in);
     let session = SessionRecord {
         user_id: response.user_id,
         username: String::new(),
         access_token: response.token,
         refresh_token: response.refresh_token,
-        access_token_expires_at: unix_now() + ACCESS_TOKEN_TTL_SECONDS,
+        access_token_expires_at,
+        access_token_refresh_at,
     };
     let session = session_with_profile(state, &settings, &session).await?;
 
