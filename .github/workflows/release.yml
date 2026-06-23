@@ -12,7 +12,16 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Desktop
+        uses: actions/checkout@v4
+        with:
+          path: colink-desktop
+
+      - name: Checkout CastBoard
+        uses: actions/checkout@v4
+        with:
+          repository: CoLinkDev/colink-castboard
+          path: colink-castboard
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -30,9 +39,10 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: colink-desktop/src-tauri
 
       - name: Install frontend dependencies
+        working-directory: colink-desktop
         run: pnpm install
 
       - name: Extract version from tag
@@ -43,6 +53,7 @@ jobs:
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
       - name: Update version in tauri.conf.json
+        working-directory: colink-desktop
         shell: pwsh
         run: |
           $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
@@ -51,6 +62,7 @@ jobs:
           $conf | ConvertTo-Json -Depth 10 | Set-Content src-tauri/tauri.conf.json
 
       - name: Update version in Cargo.toml
+        working-directory: colink-desktop
         shell: pwsh
         run: |
           $content = Get-Content src-tauri/Cargo.toml -Raw
@@ -58,9 +70,11 @@ jobs:
           Set-Content src-tauri/Cargo.toml $content
 
       - name: Build Tauri app
+        working-directory: colink-desktop
         run: pnpm tauri build
 
       - name: Upload artifacts
+        working-directory: colink-desktop
         shell: pwsh
         run: |
           $bundlePath = "src-tauri/target/release/bundle"
@@ -79,5 +93,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            colink-desktop/src-tauri/target/release/bundle/nsis/*.exe
+            colink-desktop/src-tauri/target/release/bundle/msi/*.msi
