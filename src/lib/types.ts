@@ -198,6 +198,14 @@ export interface CastBoardMonitor {
   scaleFactor: number
 }
 
+export type CastBoardState = 'closed' | 'opening' | 'open' | 'closing' | 'failed'
+
+export interface CastBoardStatus {
+  state: CastBoardState
+  monitor: CastBoardMonitor | null
+  message: string | null
+}
+
 export interface SendTextPayload {
   deviceId: string
   text: string

@@ -13,6 +13,7 @@ import type {
   MusicProviderConfig,
   MusicProviderMeta,
   CastBoardMonitor,
+  CastBoardStatus,
   RegisterPayload,
   SavedLoginCredentials,
   SendFilePayload,
@@ -132,8 +133,16 @@ export function listCastBoardMonitors() {
   return invoke<CastBoardMonitor[]>('list_castboard_monitors')
 }
 
+export function getCastBoardStatus() {
+  return invoke<CastBoardStatus>('get_castboard_status')
+}
+
 export function openCastBoardOnMonitor(monitorId: string) {
   return invoke<void>('open_castboard_on_monitor', { monitorId })
+}
+
+export function stopCastBoard() {
+  return invoke<void>('stop_castboard')
 }
 
 export function checkUpdate() {

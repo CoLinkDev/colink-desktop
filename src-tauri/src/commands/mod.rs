@@ -12,7 +12,10 @@ pub use app::bootstrap_app;
 pub use auth::{
     clear_saved_login, get_saved_login, login, logout, register_account, save_saved_login,
 };
-pub use castboard::{list_castboard_monitors, open_castboard_on_monitor};
+pub use castboard::{
+    get_castboard_status, handle_castboard_window_event, list_castboard_monitors,
+    open_castboard_on_monitor, stop_castboard,
+};
 pub use device::{
     delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,
