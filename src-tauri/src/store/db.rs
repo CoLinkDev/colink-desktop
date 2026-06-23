@@ -2247,7 +2247,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 16", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (15, 16)", [])
             .expect("remove v15 marker");
         connection
             .execute(

@@ -3767,12 +3767,7 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
-
-    use uuid::Uuid;
-
     use super::{LanManager, MemberRecord, MemberState};
-    use crate::store::db::Database;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -3781,13 +3776,6 @@ mod tests {
             updated_at: 0,
             missed_probes: 0,
         }
-    }
-
-    fn temp_database() -> (Database, std::path::PathBuf) {
-        let path = env::temp_dir().join(format!("colink-lan-test-{}.sqlite", Uuid::new_v4()));
-        let database = Database::new(path.clone());
-        database.initialize().expect("initialize database");
-        (database, path)
     }
 
     #[test]

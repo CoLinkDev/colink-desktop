@@ -929,3 +929,41 @@ where
         .map_err(|error| tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other(error)))?;
     writer.send(Message::Text(payload.into())).await
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{backoff_delay, build_ws_url, WS_CONNECT_PATH};
+
+    #[test]
+    fn builds_websocket_url_from_http_base_url() {
+        let url = build_ws_url(
+            "http://example.com/base?ignored=true",
+            "ticket value",
+            "business.v1",
+        )
+        .expect("url");
+
+        assert_eq!(url.scheme(), "ws");
+        assert_eq!(url.host_str(), Some("example.com"));
+        assert_eq!(url.path(), WS_CONNECT_PATH);
+        assert_eq!(url.query(), Some("ticket=ticket+value&businessVersion=business.v1"));
+    }
+
+    #[test]
+    fn builds_secure_websocket_url_from_https_base_url() {
+        let url = build_ws_url("https://example.com", "ticket", "business.v1").expect("url");
+
+        assert_eq!(url.scheme(), "wss");
+        assert_eq!(url.path(), WS_CONNECT_PATH);
+    }
+
+    #[test]
+    fn caps_cloud_reconnect_backoff_at_thirty_seconds() {
+        assert_eq!(backoff_delay(1), Duration::from_secs(1));
+        assert_eq!(backoff_delay(2), Duration::from_secs(2));
+        assert_eq!(backoff_delay(6), Duration::from_secs(30));
+        assert_eq!(backoff_delay(99), Duration::from_secs(30));
+    }
+}

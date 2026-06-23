@@ -174,3 +174,83 @@ fn hash_file_by_algorithm(path: &Path, algorithm: FileChecksumAlgorithm) -> AppR
         FileChecksumAlgorithm::Blake3 => unreachable!("blake3 uses the parallel file path"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Write};
+
+    use sha2::{Digest, Sha256};
+    use uuid::Uuid;
+
+    use super::{
+        build_file_checksum_with_algorithm, split_checksum, unique_download_path,
+        FileChecksumAlgorithm, FileChecksumVerifier,
+    };
+
+    #[test]
+    fn verifies_prefixed_sha256_checksum_incrementally() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"hello ");
+        hasher.update(b"world");
+        let checksum = format!("sha256:{:x}", hasher.finalize());
+
+        let mut verifier = FileChecksumVerifier::new(&checksum).expect("verifier");
+        verifier.update(b"hello ");
+        verifier.update(b"world");
+
+        assert!(verifier.verify());
+    }
+
+    #[test]
+    fn rejects_checksum_without_supported_algorithm_prefix() {
+        assert!(split_checksum("abc123").is_err());
+        assert!(FileChecksumVerifier::new("md5:abc123").is_err());
+    }
+
+    #[test]
+    fn builds_blake3_file_checksum_with_prefix() {
+        let path = std::env::temp_dir().join(format!("colink-checksum-{}.bin", Uuid::new_v4()));
+        fs::write(&path, b"payload").expect("write file");
+
+        let checksum =
+            build_file_checksum_with_algorithm(&path, FileChecksumAlgorithm::Blake3)
+                .expect("checksum");
+
+        assert!(checksum.starts_with("blake3:"));
+        let mut verifier = FileChecksumVerifier::new(&checksum).expect("verifier");
+        verifier.update(b"payload");
+        assert!(verifier.verify());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unique_download_path_uses_next_available_numbered_name() {
+        let dir = std::env::temp_dir().join(format!("colink-download-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::File::create(dir.join("report.txt")).expect("create original");
+        fs::File::create(dir.join("report (2).txt")).expect("create second");
+
+        let path = unique_download_path(&dir, "report.txt");
+
+        assert_eq!(path.file_name().and_then(|value| value.to_str()), Some("report (3).txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unique_download_path_sanitizes_unsafe_file_name() {
+        let dir = std::env::temp_dir().join(format!("colink-download-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create dir");
+        let mut file = fs::File::create(dir.join("safe.txt")).expect("create file");
+        file.write_all(b"existing").expect("write");
+
+        let path = unique_download_path(&dir, "../safe.txt");
+
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert!(!path.file_name().and_then(|value| value.to_str()).unwrap_or("").contains('/'));
+        assert!(!path.file_name().and_then(|value| value.to_str()).unwrap_or("").contains('\\'));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+}
