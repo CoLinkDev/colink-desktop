@@ -1,9 +1,13 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useEffect, useState, useMemo } from 'react'
+import { createPortal } from 'react-dom'
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
-import { RefreshCw } from 'lucide-react'
+import { GripVertical, RefreshCw, X } from 'lucide-react'
 
 import { UpdateDialog } from '../components/update-dialog'
 import { Button } from '../components/ui/button'
@@ -11,8 +15,8 @@ import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { buildTime, fallbackVersion, formatBuildTime, isReleaseBuild, projectUrl, readAppVersion } from '../lib/app-meta'
-import { checkUpdate } from '../lib/api'
-import type { AppSettings, AppUpdateRelease } from '../lib/types'
+import { checkUpdate, getMusicProviders, listAvailableMusicProviders, updateMusicProviders } from '../lib/api'
+import type { AppSettings, AppUpdateRelease, MusicProviderConfig, MusicProviderMeta } from '../lib/types'
 import { isBreakingVersionUpdate } from '../lib/update-policy'
 import { cn } from '../lib/utils'
 import { resolveLanguage } from '../i18n'
@@ -47,13 +51,29 @@ interface SettingsFormProps {
   onPickDownloadDirectory: () => Promise<string | null>
 }
 
+interface ProviderItem extends MusicProviderConfig {
+  name: string
+  implemented: boolean
+}
+
 function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFormProps) {
   const { t, i18n } = useTranslation()
   const [form, setForm] = useState<AppSettings>(settings)
+  const [providerItems, setProviderItems] = useState<ProviderItem[]>([])
+  const [initialProviderItems, setInitialProviderItems] = useState<ProviderItem[]>([])
+  const [providersLoading, setProvidersLoading] = useState(true)
+  const [providersLoadError, setProvidersLoadError] = useState<string | null>(null)
+  const [showNcmHelp, setShowNcmHelp] = useState(false)
   const [version, setVersion] = useState(fallbackVersion)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [availableUpdate, setAvailableUpdate] = useState<AppUpdateRelease | null>(null)
   const { setSettingsDirty } = useAppState()
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+  const formDirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(settings), [form, settings])
+  const providersDirty = useMemo(
+    () => serializeProviderItems(providerItems) !== serializeProviderItems(initialProviderItems),
+    [initialProviderItems, providerItems],
+  )
   const requiredUpdate =
     availableUpdate != null &&
     isReleaseBuild &&
@@ -70,13 +90,12 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   }), [t])
 
   useEffect(() => {
-    const isDirty = JSON.stringify(form) !== JSON.stringify(settings)
-    setSettingsDirty(isDirty)
+    setSettingsDirty(formDirty || providersDirty)
 
     return () => {
       setSettingsDirty(false)
     }
-  }, [form, settings, setSettingsDirty])
+  }, [formDirty, providersDirty, setSettingsDirty])
 
   useEffect(() => {
     let cancelled = false
@@ -92,6 +111,39 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadProviders() {
+      setProvidersLoading(true)
+      setProvidersLoadError(null)
+      try {
+        const [available, configured] = await Promise.all([
+          listAvailableMusicProviders(),
+          getMusicProviders(),
+        ])
+        if (cancelled) return
+        const merged = mergeProviders(available, configured)
+        setProviderItems(merged)
+        setInitialProviderItems(merged)
+      } catch (error) {
+        if (!cancelled) {
+          setProvidersLoadError(readErrorMessage(error))
+        }
+      } finally {
+        if (!cancelled) {
+          setProvidersLoading(false)
+        }
+      }
+    }
+
+    void loadProviders()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const parsed = settingsSchema.safeParse(form)
@@ -100,7 +152,20 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
       return
     }
     try {
-      await onSave(parsed.data)
+      if (formDirty) {
+        await onSave(parsed.data)
+      }
+      if (providersDirty) {
+        const providers = normalizeProviderPriorities(providerItems).map(({ id, enabled, priority }) => ({
+          id,
+          enabled,
+          priority,
+        }))
+        await updateMusicProviders(providers)
+        const nextItems = normalizeProviderPriorities(providerItems)
+        setProviderItems(nextItems)
+        setInitialProviderItems(nextItems)
+      }
       toast.success(t('settings.saveSuccess'))
     } catch (e) {
       toast.error(readErrorMessage(e))
@@ -127,6 +192,28 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     } finally {
       setCheckingUpdate(false)
     }
+  }
+
+  function handleProviderDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    setProviderItems((current) => {
+      const oldIndex = current.findIndex((item) => item.id === active.id)
+      const newIndex = current.findIndex((item) => item.id === over.id)
+      if (oldIndex < 0 || newIndex < 0) return current
+      return normalizeProviderPriorities(arrayMove(current, oldIndex, newIndex))
+    })
+  }
+
+  function handleProviderToggle(id: string, enabled: boolean) {
+    setProviderItems((current) =>
+      normalizeProviderPriorities(
+        current.map((item) =>
+          item.id === id ? { ...item, enabled: item.implemented && enabled } : item,
+        ),
+      ),
+    )
   }
 
   return (
@@ -179,7 +266,50 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
           <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
         </Section>
+
+        <Section title={t('nowPlaying.title')}>
+          <div className="text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+            {t('nowPlaying.description')}
+          </div>
+
+          {providersLoading && (
+            <div className="rounded-lg border border-dashed px-4 py-8 text-center text-[13px] text-[hsl(var(--muted))]">
+              {t('common.loading')}
+            </div>
+          )}
+
+          {!providersLoading && providersLoadError && (
+            <div className="rounded-lg border border-[hsl(var(--danger)/0.2)] bg-[hsl(var(--danger)/0.08)] px-4 py-3 text-[13px] text-[hsl(var(--danger))]">
+              {providersLoadError}
+            </div>
+          )}
+
+          {!providersLoading && !providersLoadError && providerItems.length === 0 && (
+            <div className="rounded-lg border border-dashed px-4 py-8 text-center text-[13px] text-[hsl(var(--muted))]">
+              {t('nowPlaying.empty')}
+            </div>
+          )}
+
+          {!providersLoading && !providersLoadError && providerItems.length > 0 && (
+            <DndContext collisionDetection={closestCenter} onDragEnd={handleProviderDragEnd} sensors={sensors}>
+              <SortableContext items={providerItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>
+                <div className="grid gap-2">
+                  {providerItems.map((item) => (
+                    <ProviderRow
+                      key={item.id}
+                      item={item}
+                      onShowNcmHelp={() => setShowNcmHelp(true)}
+                      onToggle={handleProviderToggle}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
+        </Section>
       </form>
+
+      {showNcmHelp && <NcmHelpDialog onClose={() => setShowNcmHelp(false)} />}
 
       <Section title={t('settings.about')}>
         <InfoRow label={t('settings.projectUrl')} value={projectUrl} />
@@ -192,6 +322,162 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
       </Section>
     </div>
   )
+}
+
+function NcmHelpDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation()
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+      <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[16px] font-semibold text-[hsl(var(--text))]">
+            {t('nowPlaying.ncmHelpTitle')}
+          </div>
+          <button
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+            onClick={onClose}
+            title={t('common.close')}
+            type="button"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <p className="mt-4 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+          {t('nowPlaying.ncmHelpMessage')}
+        </p>
+        <div className="mt-6 flex justify-end">
+          <Button onClick={onClose} variant="primary">
+            {t('common.confirm')}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function ProviderRow({
+  item,
+  onShowNcmHelp,
+  onToggle,
+}: {
+  item: ProviderItem
+  onShowNcmHelp: () => void
+  onToggle: (id: string, enabled: boolean) => void
+}) {
+  const { t } = useTranslation()
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+      }}
+      className={cn(
+        'flex min-h-[54px] items-center gap-3 rounded-lg border bg-[hsl(var(--panel))] px-3 py-2',
+        isDragging && 'z-10 shadow-lg',
+        !item.implemented && 'opacity-60',
+      )}
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        aria-label={item.name}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+        type="button"
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">
+            {t(providerNameKey(item.id), { defaultValue: item.name })}
+          </span>
+          {!item.implemented && (
+            <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--muted))]">
+              {t('nowPlaying.comingSoon')}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[hsl(var(--muted))]">
+          <span>{item.id}</span>
+          {item.id === 'ncm' && (
+            <>
+              <span aria-hidden="true">·</span>
+              <button
+                className="truncate underline underline-offset-2 hover:text-[hsl(var(--text))]"
+                onClick={onShowNcmHelp}
+                type="button"
+              >
+                {t('nowPlaying.ncmHelpTitle')}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <Switch
+        aria-label={item.name}
+        checked={item.enabled}
+        disabled={!item.implemented}
+        onChange={(event) => onToggle(item.id, event.target.checked)}
+      />
+    </div>
+  )
+}
+
+function mergeProviders(available: MusicProviderMeta[], configured: MusicProviderConfig[]) {
+  const metaById = new Map(available.map((item) => [item.id, item]))
+  const configuredById = new Map(configured.map((item) => [item.id, item]))
+  const ordered: ProviderItem[] = []
+
+  for (const config of [...configured].sort((a, b) => a.priority - b.priority)) {
+    const meta = metaById.get(config.id)
+    if (!meta) continue
+    ordered.push({
+      id: meta.id,
+      name: meta.name,
+      implemented: meta.implemented,
+      enabled: meta.implemented && config.enabled,
+      priority: ordered.length,
+    })
+  }
+
+  for (const meta of available) {
+    if (configuredById.has(meta.id)) continue
+    ordered.push({
+      id: meta.id,
+      name: meta.name,
+      implemented: meta.implemented,
+      enabled: false,
+      priority: ordered.length,
+    })
+  }
+
+  return normalizeProviderPriorities(ordered)
+}
+
+function normalizeProviderPriorities<T extends MusicProviderConfig>(items: T[]) {
+  return items.map((item, index) => ({ ...item, priority: index }))
+}
+
+function serializeProviderItems(items: ProviderItem[]) {
+  return JSON.stringify(items.map(({ id, enabled, priority }) => ({ id, enabled, priority })))
+}
+
+function providerNameKey(id: string) {
+  return `nowPlaying.providers.${id}`
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
