@@ -6,8 +6,8 @@ use std::{
 
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    webview::PageLoadEvent, AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tracing::{info, warn};
 use url::Url;
@@ -148,6 +148,7 @@ pub async fn open_castboard_on_monitor(
         set_castboard_status(&app, "failed", Some(monitor.clone()), Some(error.clone()));
         error
     })?;
+    let runtime = state.runtime.clone();
     info!(%url_label, "castboard window build starting");
     let window = WebviewWindowBuilder::new(&app, CASTBOARD_WINDOW_LABEL, url)
         .title("CastBoard")
@@ -156,6 +157,11 @@ pub async fn open_castboard_on_monitor(
         .resizable(false)
         .inner_size(size.width as f64, size.height as f64)
         .position(position.x as f64, position.y as f64)
+        .on_page_load(move |_window, payload| {
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                runtime.begin_local_castboard(CASTBOARD_WINDOW_LABEL);
+            }
+        })
         .build()
         .map_err(|error| {
             warn!(%error, "castboard window build failed");
