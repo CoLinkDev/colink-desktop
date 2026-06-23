@@ -25,14 +25,16 @@ mod sync;
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,
     delete_device, forget_lan_trust, get_music_providers, get_saved_login, get_settings,
-    list_available_music_providers, list_devices, list_lan_pairing_candidates, list_logs, login,
-    logout, open_update_download, pending_file_offers, pick_download_directory, pick_files,
-    register_account, respond_file_offer, respond_lan_pairing, rotate_device_key, save_saved_login,
-    send_files, send_text, start_lan_pairing, update_device_name, update_music_providers,
-    update_settings,
+    list_available_music_providers, list_castboard_monitors, list_devices,
+    list_lan_pairing_candidates, list_logs, login, logout, open_castboard_on_monitor,
+    open_update_download, pending_file_offers, pick_download_directory, pick_files,
+    register_account, respond_file_offer, respond_lan_pairing, rotate_device_key,
+    save_saved_login, send_files, send_text, start_lan_pairing, update_device_name,
+    update_music_providers, update_settings,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
+use tracing::info;
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -59,6 +61,14 @@ fn main() {
             let _ = shell::handle_menu_event(app, event.id().0.as_ref());
         })
         .on_window_event(|window, event| {
+            if window.label() == "castboard" {
+                if let WindowEvent::Destroyed = event {
+                    info!("castboard window destroyed");
+                    let state = window.app_handle().state::<AppState>();
+                    state.runtime.end_local_castboard("castboard");
+                }
+                return;
+            }
             if window.label() != "main" {
                 return;
             }
@@ -93,6 +103,8 @@ fn main() {
             get_music_providers,
             update_music_providers,
             list_available_music_providers,
+            list_castboard_monitors,
+            open_castboard_on_monitor,
             check_update,
             open_update_download,
             pick_download_directory,

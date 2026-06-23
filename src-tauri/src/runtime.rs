@@ -141,8 +141,13 @@ impl AppRuntime {
             event_tx.clone(),
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
-        let music = MusicService::new(database.clone(), transport.clone(), event_tx.clone());
-        let sysinfo = SysInfoService::new(transport.clone(), event_tx.clone());
+        let music = MusicService::new(
+            app.clone(),
+            database.clone(),
+            transport.clone(),
+            event_tx.clone(),
+        );
+        let sysinfo = SysInfoService::new(app.clone(), transport.clone(), event_tx.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
@@ -200,6 +205,16 @@ impl AppRuntime {
 
     pub fn reload_music_config(&self) {
         self.inner.music.notify_config_change();
+    }
+
+    pub fn begin_local_castboard(&self, window_label: &str) {
+        self.inner.music.begin_local_session(window_label);
+        self.inner.sysinfo.begin_local_session(window_label);
+    }
+
+    pub fn end_local_castboard(&self, window_label: &str) {
+        self.inner.music.end_local_session(window_label);
+        self.inner.sysinfo.end_local_session(window_label);
     }
 
     pub async fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {

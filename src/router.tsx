@@ -11,6 +11,7 @@ import { SettingsPage } from './pages/settings-page'
 import { ClipboardPage } from './pages/clipboard-page'
 import { LogsPage } from './pages/logs-page'
 import { NowPlayingPage } from './pages/now-playing-page'
+import { CastBoardPage } from './pages/castboard-page'
 
 function RootRedirect() {
   const { status } = useAppState()
@@ -74,6 +75,10 @@ export const router = createHashRouter([
       {
         path: '/now-playing',
         element: <NowPlayingPage />,
+      },
+      {
+        path: '/castboard',
+        element: <CastBoardPage />,
       },
     ],
   },

@@ -12,6 +12,7 @@ import type {
   LoginPayload,
   MusicProviderConfig,
   MusicProviderMeta,
+  CastBoardMonitor,
   RegisterPayload,
   SavedLoginCredentials,
   SendFilePayload,
@@ -125,6 +126,14 @@ export function updateMusicProviders(providers: MusicProviderConfig[]) {
 
 export function listAvailableMusicProviders() {
   return invoke<MusicProviderMeta[]>('list_available_music_providers')
+}
+
+export function listCastBoardMonitors() {
+  return invoke<CastBoardMonitor[]>('list_castboard_monitors')
+}
+
+export function openCastBoardOnMonitor(monitorId: string) {
+  return invoke<void>('open_castboard_on_monitor', { monitorId })
 }
 
 export function checkUpdate() {

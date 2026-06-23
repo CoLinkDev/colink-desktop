@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, Music } from 'lucide-react'
+import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, Music, MonitorPlay } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -85,6 +85,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.clipboard')
       case '/now-playing':
         return t('nav.nowPlaying')
+      case '/castboard':
+        return t('nav.castboard')
       default:
         return 'CoLink Desktop'
     }
@@ -110,6 +112,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
           <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={Music} label={t('nav.nowPlaying')} to="/now-playing" />
+          <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 

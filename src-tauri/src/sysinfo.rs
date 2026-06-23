@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,7 +8,8 @@ use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
-use tracing::info;
+use tauri::{AppHandle, Manager};
+use tracing::{info, warn};
 
 use crate::{
     network::transport::TransportManager,
@@ -23,6 +24,7 @@ const ERROR_SUCCESS: u32 = 0;
 
 #[derive(Clone)]
 pub struct SysInfoService {
+    app: AppHandle,
     transport: TransportManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Arc<Mutex<SysInfoState>>,
@@ -32,6 +34,7 @@ struct SysInfoState {
     running: bool,
     cancel: Option<watch::Sender<bool>>,
     active_receivers: HashMap<String, ReceiverState>,
+    local_windows: HashSet<String>,
 }
 
 struct ReceiverState {
@@ -40,18 +43,50 @@ struct ReceiverState {
 
 impl SysInfoService {
     pub fn new(
+        app: AppHandle,
         transport: TransportManager,
         event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) -> Self {
         Self {
+            app,
             transport,
             event_tx,
             state: Arc::new(Mutex::new(SysInfoState {
                 running: false,
                 cancel: None,
                 active_receivers: HashMap::new(),
+                local_windows: HashSet::new(),
             })),
         }
+    }
+
+    pub fn begin_local_session(&self, window_label: &str) {
+        let label = window_label.trim();
+        if label.is_empty() {
+            return;
+        }
+
+        let should_start = {
+            let mut state = self.state.lock_unpoisoned();
+            state.local_windows.insert(label.to_string());
+            if state.running {
+                false
+            } else {
+                state.running = true;
+                true
+            }
+        };
+
+        if should_start {
+            self.start_loop();
+            self.log_info("sysinfo sync activated by local CastBoard".to_string());
+        }
+        info!(window_label = label, "sysinfo local CastBoard session started");
+    }
+
+    pub fn end_local_session(&self, window_label: &str) {
+        self.state.lock_unpoisoned().local_windows.remove(window_label);
+        info!(%window_label, "sysinfo local CastBoard session ended");
     }
 
     pub async fn handle_alive(&self, from_device_id: &str) {
@@ -89,6 +124,7 @@ impl SysInfoService {
             let mut state = self.state.lock_unpoisoned();
             state.running = false;
             state.active_receivers.clear();
+            state.local_windows.clear();
             state.cancel.take()
         };
 
@@ -123,7 +159,9 @@ impl SysInfoService {
                 break;
             }
 
-            if self.prune_active_receivers().is_empty() {
+            let targets = self.prune_active_receivers();
+            let local_windows = self.local_windows();
+            if targets.is_empty() && local_windows.is_empty() {
                 break;
             }
 
@@ -156,6 +194,7 @@ impl SysInfoService {
         for device_id in targets {
             self.send_snapshot_to_device(&device_id, snapshot.clone()).await;
         }
+        self.dispatch_to_local(&snapshot);
     }
 
     async fn send_snapshot_to_device(&self, device_id: &str, snapshot: SysInfoStatsPayload) {
@@ -171,11 +210,21 @@ impl SysInfoService {
         state.active_receivers.keys().cloned().collect()
     }
 
+    fn local_windows(&self) -> Vec<String> {
+        self.state
+            .lock_unpoisoned()
+            .local_windows
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     fn finish_run(&self) {
         let mut state = self.state.lock_unpoisoned();
         state.running = false;
         state.cancel = None;
         state.active_receivers.clear();
+        state.local_windows.clear();
     }
 
     fn log_info(&self, message: impl Into<String>) {
@@ -184,6 +233,23 @@ impl SysInfoService {
             source: "sysinfo".to_string(),
             message: message.into(),
         });
+    }
+
+    fn dispatch_to_local(&self, snapshot: &SysInfoStatsPayload) {
+        let Ok(message_type_json) = serde_json::to_string(SYSINFO_STATS_TYPE) else {
+            return;
+        };
+        let Ok(payload_json) = serde_json::to_string(snapshot) else {
+            return;
+        };
+        let script = format!("window.handleCoLinkBusinessEvent?.({message_type_json}, {payload_json});");
+        for label in self.local_windows() {
+            if let Some(window) = self.app.get_webview_window(&label) {
+                if let Err(error) = window.eval(&script) {
+                    warn!(%error, window_label = %label, "sysinfo local CastBoard dispatch failed");
+                }
+            }
+        }
     }
 }
 

@@ -188,6 +188,16 @@ export interface MusicProviderMeta {
   implemented: boolean
 }
 
+export interface CastBoardMonitor {
+  id: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  scaleFactor: number
+}
+
 export interface SendTextPayload {
   deviceId: string
   text: string

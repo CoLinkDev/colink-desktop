@@ -14,7 +14,8 @@ use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
-use tracing::{debug, info};
+use tauri::{AppHandle, Manager};
+use tracing::{debug, info, warn};
 
 use crate::{
     network::transport::TransportManager,
@@ -37,6 +38,7 @@ const FAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct MusicService {
+    app: AppHandle,
     database: Database,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     send_tx: mpsc::UnboundedSender<MusicSendJob>,
@@ -48,6 +50,7 @@ struct MusicState {
     running: bool,
     cancel: Option<watch::Sender<bool>>,
     active_receivers: HashMap<String, Instant>,
+    local_windows: HashSet<String>,
     snapshot: MusicSnapshot,
 }
 
@@ -146,6 +149,7 @@ impl ProviderChain {
 
 impl MusicService {
     pub fn new(
+        app: AppHandle,
         database: Database,
         transport: TransportManager,
         event_tx: mpsc::UnboundedSender<RuntimeEvent>,
@@ -155,6 +159,7 @@ impl MusicService {
         spawn_music_sender(transport.clone(), event_tx.clone(), send_rx);
 
         Self {
+            app,
             database,
             event_tx,
             send_tx,
@@ -163,9 +168,41 @@ impl MusicService {
                 running: false,
                 cancel: None,
                 active_receivers: HashMap::new(),
+                local_windows: HashSet::new(),
                 snapshot: MusicSnapshot::default(),
             })),
         }
+    }
+
+    pub fn begin_local_session(&self, window_label: &str) {
+        let label = window_label.trim();
+        if label.is_empty() {
+            return;
+        }
+
+        let (should_start, snapshot) = {
+            let mut state = self.state.lock_unpoisoned();
+            state.local_windows.insert(label.to_string());
+            let should_start = if state.running {
+                false
+            } else {
+                state.running = true;
+                true
+            };
+            (should_start, state.snapshot.clone())
+        };
+
+        if should_start {
+            self.start_loop();
+            self.log_info("music sync activated by local CastBoard".to_string());
+        }
+        info!(window_label = label, "music local CastBoard session started");
+        self.dispatch_snapshot_to_local(label, &snapshot);
+    }
+
+    pub fn end_local_session(&self, window_label: &str) {
+        self.state.lock_unpoisoned().local_windows.remove(window_label);
+        info!(%window_label, "music local CastBoard session ended");
     }
 
     pub fn notify_config_change(&self) {
@@ -240,6 +277,7 @@ impl MusicService {
             let mut state = self.state.lock_unpoisoned();
             state.running = false;
             state.active_receivers.clear();
+            state.local_windows.clear();
             state.snapshot = MusicSnapshot::default();
             state.cancel.take()
         };
@@ -288,7 +326,7 @@ impl MusicService {
             }
 
             let active_ids = self.prune_active_receivers();
-            if active_ids.is_empty() {
+            if active_ids.is_empty() && self.local_windows().is_empty() {
                 break;
             }
 
@@ -475,6 +513,7 @@ impl MusicService {
         for device_id in active_ids {
             self.send_lyric_message(device_id, &result.payload).await;
         }
+        self.dispatch_to_local(MUSIC_LYRIC_TYPE, &result.payload);
     }
 
     async fn publish_track_change(&self, track: &ActiveTrack) {
@@ -493,6 +532,10 @@ impl MusicService {
             if let Some(progress) = &progress {
                 self.send_progress_message(&device_id, progress).await;
             }
+        }
+        self.dispatch_to_local(MUSIC_TRACK_TYPE, &track_payload);
+        if let Some(progress) = &progress {
+            self.dispatch_to_local(MUSIC_PROGRESS_TYPE, progress);
         }
 
         if let Some(track_id) = track.track_id.as_deref() {
@@ -515,6 +558,7 @@ impl MusicService {
         for device_id in self.prune_active_receivers() {
             self.send_progress_message(&device_id, &progress).await;
         }
+        self.dispatch_to_local(MUSIC_PROGRESS_TYPE, &progress);
     }
 
     fn clear_progress_snapshot(&self) {
@@ -543,6 +587,7 @@ impl MusicService {
         for device_id in active_ids {
             self.send_track_message(&device_id, &empty).await;
         }
+        self.dispatch_to_local(MUSIC_TRACK_TYPE, &empty);
     }
 
     fn prune_active_receivers(&self) -> Vec<String> {
@@ -551,11 +596,21 @@ impl MusicService {
         state.active_receivers.keys().cloned().collect()
     }
 
+    fn local_windows(&self) -> Vec<String> {
+        self.state
+            .lock_unpoisoned()
+            .local_windows
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     fn finish_run(&self) {
         let mut state = self.state.lock_unpoisoned();
         state.running = false;
         state.cancel = None;
         state.active_receivers.clear();
+        state.local_windows.clear();
         state.snapshot = MusicSnapshot::default();
     }
 
@@ -671,6 +726,53 @@ impl MusicService {
             source: "music".to_string(),
             message: message.into(),
         });
+    }
+
+    fn dispatch_snapshot_to_local(&self, window_label: &str, snapshot: &MusicSnapshot) {
+        match &snapshot.track {
+            Some(track) => self.dispatch_to_local_window(window_label, MUSIC_TRACK_TYPE, track),
+            None => self.dispatch_to_local_window(window_label, MUSIC_TRACK_TYPE, &empty_track_payload()),
+        }
+        if let Some(lyric) = &snapshot.lyric {
+            self.dispatch_to_local_window(window_label, MUSIC_LYRIC_TYPE, lyric);
+        }
+        if let Some(progress) = &snapshot.progress {
+            self.dispatch_to_local_window(window_label, MUSIC_PROGRESS_TYPE, progress);
+        }
+    }
+
+    fn dispatch_to_local<T>(&self, message_type: &str, payload: &T)
+    where
+        T: serde::Serialize,
+    {
+        for label in self.local_windows() {
+            self.dispatch_to_local_window(&label, message_type, payload);
+        }
+    }
+
+    fn dispatch_to_local_window<T>(&self, window_label: &str, message_type: &str, payload: &T)
+    where
+        T: serde::Serialize,
+    {
+        let Some(window) = self.app.get_webview_window(window_label) else {
+            return;
+        };
+        let Ok(message_type_json) = serde_json::to_string(message_type) else {
+            return;
+        };
+        let Ok(payload_json) = serde_json::to_string(payload) else {
+            return;
+        };
+        if let Err(error) = window.eval(&format!(
+            "window.handleCoLinkBusinessEvent?.({message_type_json}, {payload_json});"
+        )) {
+            warn!(
+                %error,
+                %window_label,
+                message_type,
+                "music local CastBoard dispatch failed"
+            );
+        }
     }
 }
 
