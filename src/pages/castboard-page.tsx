@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Monitor, Play, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -7,10 +7,11 @@ import { listCastBoardMonitors, openCastBoardOnMonitor } from '../lib/api'
 import type { CastBoardMonitor } from '../lib/types'
 import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
-import { readErrorMessage } from '../hooks/use-app-state'
+import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 
 export function CastBoardPage() {
   const { t } = useTranslation()
+  const { setHeaderActions } = useAppState()
   const [monitors, setMonitors] = useState<CastBoardMonitor[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -21,7 +22,7 @@ export function CastBoardPage() {
     [monitors, selectedId],
   )
 
-  async function refreshMonitors() {
+  const refreshMonitors = useCallback(async () => {
     setLoading(true)
     try {
       const next = await listCastBoardMonitors()
@@ -37,7 +38,7 @@ export function CastBoardPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   async function handleOpen() {
     if (!selectedMonitor) {
@@ -56,21 +57,21 @@ export function CastBoardPage() {
 
   useEffect(() => {
     void refreshMonitors()
-  }, [])
+  }, [refreshMonitors])
+
+  useEffect(() => {
+    setHeaderActions(
+      <Button disabled={loading} onClick={refreshMonitors} size="sm" variant="secondary">
+        <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+        {t('castboard.refreshDisplays')}
+      </Button>,
+    )
+
+    return () => setHeaderActions(null)
+  }, [loading, refreshMonitors, setHeaderActions, t])
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-5 animate-fade-in">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[15px] font-semibold text-[hsl(var(--text))]">{t('castboard.title')}</div>
-          <div className="mt-1 text-[13px] text-[hsl(var(--muted))]">{t('castboard.description')}</div>
-        </div>
-        <Button disabled={loading} onClick={refreshMonitors} size="sm" variant="secondary">
-          <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-          {t('common.refresh')}
-        </Button>
-      </div>
-
+    <div className="flex max-w-2xl flex-col gap-4 animate-fade-in">
       <div className="grid gap-3 md:grid-cols-2">
         {monitors.map((monitor) => {
           const active = monitor.id === selectedId
