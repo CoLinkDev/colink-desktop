@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{Mutex, OnceLock},
     time::Duration,
 };
@@ -12,6 +13,18 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::state::AppState;
+
+#[cfg(windows)]
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW},
+        UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
+    },
+};
+
+#[cfg(windows)]
+use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 
 const CASTBOARD_WINDOW_LABEL: &str = "castboard";
 const CASTBOARD_STATUS_EVENT: &str = "castboard-status";
@@ -41,6 +54,7 @@ static CASTBOARD_STATUS: OnceLock<Mutex<CastBoardStatus>> = OnceLock::new();
 
 #[tauri::command]
 pub fn list_castboard_monitors(app: AppHandle) -> Result<Vec<CastBoardMonitor>, String> {
+    let friendly_names = friendly_monitor_names();
     let monitors = app.available_monitors().map_err(|error| error.to_string())?;
     Ok(monitors
         .into_iter()
@@ -48,12 +62,10 @@ pub fn list_castboard_monitors(app: AppHandle) -> Result<Vec<CastBoardMonitor>, 
         .map(|(index, monitor)| {
             let position = monitor.position();
             let size = monitor.size();
+            let raw_name = monitor.name().map(String::as_str);
             CastBoardMonitor {
                 id: index.to_string(),
-                name: monitor
-                    .name()
-                    .cloned()
-                    .unwrap_or_else(|| format!("Display {}", index + 1)),
+                name: castboard_monitor_name(index, raw_name, &friendly_names),
                 x: position.x,
                 y: position.y,
                 width: size.width,
@@ -215,6 +227,7 @@ fn resolve_monitor(
     app: &AppHandle,
     monitor_id: &str,
 ) -> Result<(CastBoardMonitor, PhysicalPosition<i32>, PhysicalSize<u32>, usize), String> {
+    let friendly_names = friendly_monitor_names();
     let index = monitor_id
         .trim()
         .parse::<usize>()
@@ -228,10 +241,7 @@ fn resolve_monitor(
     Ok((
         CastBoardMonitor {
             id: index.to_string(),
-            name: monitor
-                .name()
-                .cloned()
-                .unwrap_or_else(|| format!("Display {}", index + 1)),
+            name: castboard_monitor_name(index, monitor.name().map(String::as_str), &friendly_names),
             x: position.x,
             y: position.y,
             width: size.width,
@@ -242,6 +252,124 @@ fn resolve_monitor(
         size,
         index,
     ))
+}
+
+fn castboard_monitor_name(
+    index: usize,
+    raw_name: Option<&str>,
+    friendly_names: &HashMap<String, String>,
+) -> String {
+    raw_name
+        .and_then(|name| friendly_names.get(&name.to_ascii_uppercase()).cloned())
+        .or_else(|| raw_name.map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("Display {}", index + 1))
+}
+
+#[cfg(not(windows))]
+fn friendly_monitor_names() -> HashMap<String, String> {
+    HashMap::new()
+}
+
+#[cfg(windows)]
+fn friendly_monitor_names() -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let mut adapter_index = 0;
+
+    loop {
+        let mut adapter = display_device();
+        let adapter_found = unsafe {
+            EnumDisplayDevicesW(PCWSTR::null(), adapter_index, &mut adapter, 0).as_bool()
+        };
+        if !adapter_found {
+            break;
+        }
+
+        let display_name = wide_array_to_string(&adapter.DeviceName);
+        if !display_name.is_empty() {
+            if let Some(name) = friendly_name_for_display(&display_name) {
+                names.insert(display_name.to_ascii_uppercase(), name);
+            }
+        }
+
+        adapter_index += 1;
+    }
+
+    names
+}
+
+#[cfg(windows)]
+fn friendly_name_for_display(display_name: &str) -> Option<String> {
+    let display_name_wide = to_wide(display_name);
+    let mut monitor = display_device();
+    let found = unsafe {
+        EnumDisplayDevicesW(
+            PCWSTR(display_name_wide.as_ptr()),
+            0,
+            &mut monitor,
+            EDD_GET_DEVICE_INTERFACE_NAME,
+        )
+        .as_bool()
+    };
+    if !found {
+        return None;
+    }
+
+    let device_id = wide_array_to_string(&monitor.DeviceID);
+    let registry_path = monitor_registry_path(&device_id)?;
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm.open_subkey(format!(r"SYSTEM\CurrentControlSet\Enum\DISPLAY\{registry_path}\Device Parameters")).ok()?;
+    let edid = key.get_raw_value("EDID").ok()?;
+    parse_edid_name(&edid.bytes)
+}
+
+#[cfg(windows)]
+fn monitor_registry_path(device_id: &str) -> Option<String> {
+    let parts = device_id.split('#').collect::<Vec<_>>();
+    if parts.len() < 3 || !parts.get(0)?.ends_with(r"DISPLAY") {
+        return None;
+    }
+    Some(format!(r"{}\{}", parts[1], parts[2]))
+}
+
+#[cfg(windows)]
+fn parse_edid_name(edid: &[u8]) -> Option<String> {
+    for offset in [54, 72, 90, 108] {
+        if edid.len() < offset + 18 {
+            continue;
+        }
+        let descriptor = &edid[offset..offset + 18];
+        if descriptor[0..5] == [0, 0, 0, 0xfc, 0] {
+            let name = descriptor[5..18]
+                .iter()
+                .copied()
+                .take_while(|byte| *byte != b'\n' && *byte != b'\r' && *byte != 0)
+                .collect::<Vec<_>>();
+            let name = String::from_utf8_lossy(&name).trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn display_device() -> DISPLAY_DEVICEW {
+    DISPLAY_DEVICEW {
+        cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+        ..Default::default()
+    }
+}
+
+#[cfg(windows)]
+fn to_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn wide_array_to_string(value: &[u16]) -> String {
+    let len = value.iter().position(|item| *item == 0).unwrap_or(value.len());
+    String::from_utf16_lossy(&value[..len]).trim().to_string()
 }
 
 fn castboard_status() -> &'static Mutex<CastBoardStatus> {
