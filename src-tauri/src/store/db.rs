@@ -19,7 +19,7 @@ const SESSION_KEY: &str = "session";
 const DEVICE_IDENTITY_KEY: &str = "device_identity";
 const DEVICE_CACHE_KEY: &str = "device_cache";
 const LAN_TRUST_KEY: &str = "lan_trust";
-const MAX_LOG_ENTRIES: i64 = 300;
+const MAX_LOG_ENTRIES: i64 = 1000;
 
 type MigrationFn = fn(&Transaction<'_>) -> AppResult<()>;
 
@@ -604,6 +604,18 @@ impl Database {
     }
 
     pub fn load_logs(&self, limit: usize) -> AppResult<Vec<AppLogEntry>> {
+        self.load_logs_page(limit, 0)
+    }
+
+    pub fn count_logs(&self) -> AppResult<usize> {
+        let connection = self.open()?;
+        let total = connection.query_row("SELECT COUNT(*) FROM app_logs", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        Ok(total.max(0) as usize)
+    }
+
+    pub fn load_logs_page(&self, limit: usize, offset: usize) -> AppResult<Vec<AppLogEntry>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "
@@ -616,10 +628,11 @@ impl Database {
             FROM app_logs
             ORDER BY created_at DESC
             LIMIT ?1
+            OFFSET ?2
             ",
         )?;
 
-        let rows = statement.query_map(params![limit as i64], |row| {
+        let rows = statement.query_map(params![limit as i64, offset as i64], |row| {
             Ok(AppLogEntry {
                 id: row.get(0)?,
                 level: row.get(1)?,
@@ -1533,6 +1546,41 @@ mod tests {
             })
             .expect("save log");
         assert_eq!(database.load_logs(10).expect("logs").len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn paginates_logs_and_keeps_latest_thousand_entries() {
+        let path = std::env::temp_dir().join(format!("colink-db-{}.sqlite", Uuid::new_v4()));
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        for index in 0..1005 {
+            database
+                .append_log(&AppLogEntry {
+                    id: format!("l{index}"),
+                    level: "info".to_string(),
+                    source: "test".to_string(),
+                    message: format!("log {index}"),
+                    created_at: index,
+                })
+                .expect("save log");
+        }
+
+        assert_eq!(database.count_logs().expect("count logs"), 1000);
+        let first_page = database.load_logs_page(20, 0).expect("first page");
+        assert_eq!(first_page.len(), 20);
+        assert_eq!(first_page[0].id, "l1004");
+        assert_eq!(first_page[19].id, "l985");
+
+        let second_page = database.load_logs_page(20, 20).expect("second page");
+        assert_eq!(second_page.len(), 20);
+        assert_eq!(second_page[0].id, "l984");
+
+        let last_page = database.load_logs_page(20, 980).expect("last page");
+        assert_eq!(last_page.len(), 20);
+        assert_eq!(last_page[19].id, "l5");
 
         let _ = fs::remove_file(path);
     }

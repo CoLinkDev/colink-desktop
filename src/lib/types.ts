@@ -171,6 +171,11 @@ export interface AppLogEntry {
   createdAt: number
 }
 
+export interface LogPageResult {
+  logs: AppLogEntry[]
+  total: number
+}
+
 export interface MusicProviderConfig {
   id: string
   enabled: boolean

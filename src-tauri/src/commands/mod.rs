@@ -1,6 +1,7 @@
 mod app;
 mod auth;
 mod device;
+mod logs;
 mod message;
 mod music;
 mod settings;
@@ -14,6 +15,7 @@ pub use device::{
     delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,
 };
+pub use logs::list_logs;
 pub use message::{
     cancel_transfer, clear_transfers, pending_file_offers, pick_files, respond_file_offer,
     send_files, send_text,

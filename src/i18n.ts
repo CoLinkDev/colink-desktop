@@ -226,6 +226,9 @@ const resources = {
       logs: {
         title: '日志',
         empty: '暂无日志',
+        pageStatus: '第 {{page}} / {{total}} 页',
+        previousPage: '上一页',
+        nextPage: '下一页',
         loadingState: '正在加载本地状态',
         preparingState: '正在准备桌面端',
       },
@@ -525,6 +528,9 @@ const resources = {
       logs: {
         title: 'Logs',
         empty: 'No logs',
+        pageStatus: 'Page {{page}} of {{total}}',
+        previousPage: 'Previous page',
+        nextPage: 'Next page',
         loadingState: 'Loading local state',
         preparingState: 'Preparing desktop runtime',
       },
@@ -824,6 +830,9 @@ const resources = {
       logs: {
         title: '日誌',
         empty: '暫無日誌',
+        pageStatus: '第 {{page}} / {{total}} 頁',
+        previousPage: '上一頁',
+        nextPage: '下一頁',
         loadingState: '正在載入本機狀態',
         preparingState: '正在準備桌面端',
       },
@@ -1123,6 +1132,9 @@ const resources = {
       logs: {
         title: 'ログ',
         empty: 'ログはありません',
+        pageStatus: '{{page}} / {{total}} ページ',
+        previousPage: '前のページ',
+        nextPage: '次のページ',
         loadingState: 'ローカル状態を読み込み中',
         preparingState: 'デスクトップランタイムを準備中',
       },
@@ -1422,6 +1434,9 @@ const resources = {
       logs: {
         title: '로그',
         empty: '로그가 없습니다',
+        pageStatus: '{{page}} / {{total}} 페이지',
+        previousPage: '이전 페이지',
+        nextPage: '다음 페이지',
         loadingState: '로컬 상태 로드 중',
         preparingState: '데스크톱 런타임 준비 중',
       },
@@ -1721,6 +1736,9 @@ const resources = {
       logs: {
         title: 'Registros',
         empty: 'No hay registros',
+        pageStatus: 'Página {{page}} de {{total}}',
+        previousPage: 'Página anterior',
+        nextPage: 'Página siguiente',
         loadingState: 'Cargando estado local',
         preparingState: 'Preparando entorno de escritorio',
       },
@@ -2020,6 +2038,9 @@ const resources = {
       logs: {
         title: 'Protokolle',
         empty: 'Keine Protokolle',
+        pageStatus: 'Seite {{page}} von {{total}}',
+        previousPage: 'Vorherige Seite',
+        nextPage: 'Nächste Seite',
         loadingState: 'Lokaler Zustand wird geladen',
         preparingState: 'Desktop-Runtime wird vorbereitet',
       },
@@ -2319,6 +2340,9 @@ const resources = {
       logs: {
         title: 'Логи',
         empty: 'Логов нет',
+        pageStatus: 'Страница {{page}} из {{total}}',
+        previousPage: 'Предыдущая страница',
+        nextPage: 'Следующая страница',
         loadingState: 'Загрузка локального состояния',
         preparingState: 'Подготовка окружения',
       },

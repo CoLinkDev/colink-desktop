@@ -25,8 +25,8 @@ mod sync;
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,
     delete_device, forget_lan_trust, get_music_providers, get_saved_login, get_settings,
-    list_available_music_providers, list_devices, list_lan_pairing_candidates, login, logout,
-    open_update_download, pending_file_offers, pick_download_directory, pick_files,
+    list_available_music_providers, list_devices, list_lan_pairing_candidates, list_logs, login,
+    logout, open_update_download, pending_file_offers, pick_download_directory, pick_files,
     register_account, respond_file_offer, respond_lan_pairing, rotate_device_key, save_saved_login,
     send_files, send_text, start_lan_pairing, update_device_name, update_music_providers,
     update_settings,
@@ -79,6 +79,7 @@ fn main() {
             get_saved_login,
             save_saved_login,
             clear_saved_login,
+            list_logs,
             list_devices,
             update_device_name,
             delete_device,
