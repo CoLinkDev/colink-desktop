@@ -186,17 +186,17 @@ export function CastBoardPage() {
         </div>
       )}
 
-      <div className="flex justify-end gap-2">
+      <div className="flex justify-start gap-2">
+        <Button disabled={!selectedMonitor || opening || status.state === 'opening'} onClick={handleOpen}>
+          <Play className="h-4 w-4" />
+          {opening || status.state === 'opening' ? t('castboard.starting') : t('castboard.start')}
+        </Button>
         {(status.state === 'open' || status.state === 'closing') && (
           <Button disabled={stopping || status.state === 'closing'} onClick={handleStop} variant="secondary">
             <Square className="h-4 w-4" />
             {stopping || status.state === 'closing' ? t('castboard.stopping') : t('castboard.stop')}
           </Button>
         )}
-        <Button disabled={!selectedMonitor || opening || status.state === 'opening'} onClick={handleOpen}>
-          <Play className="h-4 w-4" />
-          {opening || status.state === 'opening' ? t('castboard.starting') : t('castboard.start')}
-        </Button>
       </div>
     </div>
   )

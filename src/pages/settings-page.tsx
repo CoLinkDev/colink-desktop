@@ -329,7 +329,7 @@ function NcmHelpDialog({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
-      <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+      <div className="w-full max-w-lg rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex items-center justify-between gap-3">
           <div className="text-[16px] font-semibold text-[hsl(var(--text))]">
             {t('nowPlaying.ncmHelpTitle')}
@@ -343,7 +343,7 @@ function NcmHelpDialog({ onClose }: { onClose: () => void }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <p className="mt-4 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+        <p className="mt-4 whitespace-pre-line break-words text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
           {t('nowPlaying.ncmHelpMessage')}
         </p>
         <div className="mt-6 flex justify-end">
@@ -399,30 +399,24 @@ function ProviderRow({
         <GripVertical className="h-4 w-4" />
       </button>
 
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">
             {t(providerNameKey(item.id), { defaultValue: item.name })}
           </span>
+          {item.id === 'ncm' && (
+            <button
+              className="shrink-0 text-[11px] text-[hsl(var(--muted))] underline underline-offset-2 hover:text-[hsl(var(--text))]"
+              onClick={onShowNcmHelp}
+              type="button"
+            >
+              {t('nowPlaying.ncmHelpTitle')}
+            </button>
+          )}
           {!item.implemented && (
             <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--muted))]">
               {t('nowPlaying.comingSoon')}
             </span>
-          )}
-        </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[hsl(var(--muted))]">
-          <span>{item.id}</span>
-          {item.id === 'ncm' && (
-            <>
-              <span aria-hidden="true">·</span>
-              <button
-                className="truncate underline underline-offset-2 hover:text-[hsl(var(--text))]"
-                onClick={onShowNcmHelp}
-                type="button"
-              >
-                {t('nowPlaying.ncmHelpTitle')}
-              </button>
-            </>
           )}
         </div>
       </div>
