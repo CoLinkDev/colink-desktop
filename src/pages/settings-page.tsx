@@ -166,7 +166,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
         setProviderItems(nextItems)
         setInitialProviderItems(nextItems)
       }
-      toast.success(t('settings.saveSuccess'))
+      toast.success(i18n.t('settings.saveSuccess'))
     } catch (e) {
       toast.error(readErrorMessage(e))
     }
