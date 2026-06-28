@@ -5,6 +5,17 @@
 - `.colink/protocol/version.yml` records the existing Business and P2P protocol versions with which this project is currently aligned.
 - When the implementation changes to align with a different published protocol version, update the corresponding value in this file in the same change.
 
+## Build Variants
+
+| Configuration | Release Variant | Debug Variant |
+| :--- | :--- | :--- |
+| **Build Mode** | Release build | Development or debug build (`debug_assertions`) |
+| **Application Identifier** | `dev.colink.desktop` | `dev.colink.desktop` |
+| **Application Name** | `CoLink Desktop` | `CoLink Desktop` |
+| **Application Data Directory (Windows)** | `%APPDATA%\dev.colink.desktop` | `%APPDATA%\dev.colink.desktop.debug` |
+| **Database** | `%APPDATA%\dev.colink.desktop\colink.db` | `%APPDATA%\dev.colink.desktop.debug\colink.db` |
+| **Logs** | `%APPDATA%\dev.colink.desktop\logs` | `%APPDATA%\dev.colink.desktop.debug\logs` |
+
 ## Database Migrations
 
 - Every persistent database change must add an explicit migration and bump the migration version.
