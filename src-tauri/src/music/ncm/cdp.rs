@@ -93,15 +93,115 @@ const STATE_EXPRESSION: &str = r#"
     };
   };
 
-  const requireFromWebpack = (id) => {
-    let value;
+  const getWebpackRequire = () => {
+    if (window.__NCM_WEBPACK_REQUIRE) return window.__NCM_WEBPACK_REQUIRE;
+    let webpackRequire;
     const moduleId = 900000 + Math.floor(Math.random() * 100000);
     window.webpackJsonp.push([[moduleId], {
       [moduleId]: function(module, exports, require) {
-        value = require(id);
+        webpackRequire = require;
       }
     }, [[moduleId]]]);
-    return value;
+    window.__NCM_WEBPACK_REQUIRE = webpackRequire;
+    return webpackRequire;
+  };
+
+  const isProgressSnapshot = (value) => value
+    && typeof value === "object"
+    && typeof value.current === "number"
+    && ("cacheProgress" in value || "playId" in value);
+
+  const isDvaInstance = (value) => {
+    if (!value
+      || typeof value !== "object"
+      || typeof value.getStore !== "function"
+      || typeof value.getDispatch !== "function") {
+      return false;
+    }
+    try {
+      const store = value.getStore();
+      return store && typeof store === "object";
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const resolveDva = (webpackRequire) => {
+    const cached = window.__NCM_DVA;
+    if (isDvaInstance(cached)) return cached;
+    window.__NCM_DVA = null;
+
+    // The application store is initialized before this detector runs, so scan
+    // only loaded modules. Requiring arbitrary modules during discovery can
+    // execute unrelated application code and cause side effects.
+    for (const module of Object.values(webpackRequire.c || {})) {
+      let moduleExports;
+      try {
+        moduleExports = module && module.exports;
+      } catch (_) {
+        continue;
+      }
+
+      const candidates = [moduleExports];
+      if (moduleExports && (typeof moduleExports === "object" || typeof moduleExports === "function")) {
+        try {
+          candidates.push(...Object.values(moduleExports));
+        } catch (_) {
+          // Some module export objects contain getters that may throw.
+        }
+      }
+
+      for (const candidate of candidates) {
+        if (isDvaInstance(candidate)) {
+          window.__NCM_DVA = candidate;
+          return candidate;
+        }
+      }
+    }
+    return null;
+  };
+
+  const resolveProgressAccessor = (webpackRequire) => {
+    const cached = window.__NCM_PROGRESS_ACCESSOR;
+    if (typeof cached === "function") {
+      try {
+        if (isProgressSnapshot(cached())) return cached;
+      } catch (_) {
+        window.__NCM_PROGRESS_ACCESSOR = null;
+      }
+    }
+
+    // Webpack module IDs change between NetEase Cloud Music releases. Locate
+    // the module by the stable player subscription and snapshot fields instead.
+    const candidateIds = Object.entries(webpackRequire.m || {})
+      .filter(([, factory]) => {
+        const source = String(factory);
+        return source.includes("playprogress")
+          && source.includes("cacheProgress")
+          && source.includes("subscribePlayStatus");
+      })
+      .map(([id]) => id);
+
+    for (const id of candidateIds) {
+      let moduleExports;
+      try {
+        moduleExports = webpackRequire(id);
+      } catch (_) {
+        continue;
+      }
+      for (const value of Object.values(moduleExports || {})) {
+        if (typeof value !== "function" || value.length !== 0) continue;
+        try {
+          if (isProgressSnapshot(value())) {
+            window.__NCM_PROGRESS_ACCESSOR = value;
+            return value;
+          }
+        } catch (_) {
+          // This export is not the progress snapshot accessor.
+        }
+      }
+    }
+    return null;
   };
 
   const stateNames = {
@@ -112,17 +212,12 @@ const STATE_EXPRESSION: &str = r#"
   };
 
   let dva = window.__NCM_DVA;
-  let progressModule = window.__NCM_PROGRESS_MODULE;
+  let progressAccessor = window.__NCM_PROGRESS_ACCESSOR;
   let injectError = null;
   try {
-    if (!dva) {
-      dva = requireFromWebpack(11).a;
-      window.__NCM_DVA = dva;
-    }
-    if (!progressModule) {
-      progressModule = requireFromWebpack(125);
-      window.__NCM_PROGRESS_MODULE = progressModule;
-    }
+    const webpackRequire = getWebpackRequire();
+    dva = resolveDva(webpackRequire);
+    progressAccessor = resolveProgressAccessor(webpackRequire);
   } catch (error) {
     injectError = String(error && (error.stack || error.message) || error);
   }
@@ -138,7 +233,7 @@ const STATE_EXPRESSION: &str = r#"
 
   let progress = null;
   try {
-    progress = progressModule && progressModule.b ? progressModule.b() : null;
+    progress = progressAccessor ? progressAccessor() : null;
   } catch (error) {
     progress = { error: String(error && (error.stack || error.message) || error) };
   }
@@ -152,7 +247,7 @@ const STATE_EXPRESSION: &str = r#"
     source: "debugger",
     href: location.href,
     documentTitle: document.title,
-    injected: Boolean(dva && progressModule),
+    injected: Boolean(dva && progressAccessor),
     injectError,
     playing: playing ? {
       state: playing.playingState,
