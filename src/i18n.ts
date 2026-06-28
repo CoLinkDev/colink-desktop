@@ -252,7 +252,7 @@ const resources = {
         title: '音乐源',
         description: '配置桌面端读取正在播放信息时使用的音乐源顺序。',
         ncmHelpTitle: '网易云音乐配置',
-        ncmHelpMessage: '网易云音乐需带 --remote-debugging-port=9223 命令行启动。',
+        ncmHelpMessage: 'CoLink 通过网易云音乐的远程调试接口读取播放信息。启动网易云音乐时，必须添加 <code>--remote-debugging-port=9223</code> 参数。\n\n适用于 Windows 的简单配置步骤：\n1. 完全退出网易云音乐，并确认系统托盘中没有仍在运行的网易云音乐进程。\n2. 创建现有网易云音乐快捷方式的副本。若快捷方式位于开始菜单，请搜索“网易云音乐”，右键选择“打开文件所在的位置”，然后将快捷方式复制到桌面；若快捷方式位于桌面，复制该快捷方式并在桌面上直接粘贴。\n3. 右键该快捷方式副本，选择“属性”，在“目标”字段末尾添加一个空格及 <code>--remote-debugging-port=9223</code>，然后保存更改。\n4. 将快捷方式副本重命名为“网易云音乐（Debug）”（或任何名字）。后续请通过该快捷方式启动网易云音乐。\n5. 如需固定该入口，请固定新创建的快捷方式。Windows 11 用户可右键选择“显示更多选项”，然后选择“固定到开始屏幕”或“固定到任务栏”。请勿固定原始快捷方式，否则启动参数不会生效。',
         comingSoon: '即将推出',
         empty: '暂无可用音乐源',
         providers: {
@@ -572,7 +572,7 @@ const resources = {
         title: 'Music Providers',
         description: 'Configure the provider order used to read desktop now-playing information.',
         ncmHelpTitle: 'NetEase Cloud Music setup',
-        ncmHelpMessage: 'NetEase Cloud Music must be started from the command line with --remote-debugging-port=9223.',
+        ncmHelpMessage: 'CoLink reads playback information through the NetEase Cloud Music remote debugging interface. NetEase Cloud Music must be started with the <code>--remote-debugging-port=9223</code> argument.\n\nSimple setup steps for Windows:\n1. Fully exit NetEase Cloud Music and confirm that no NetEase Cloud Music process remains in the system tray.\n2. Create a copy of an existing NetEase Cloud Music shortcut. If the shortcut is in the Start menu, search for “NetEase Cloud Music”, right-click it, select “Open file location”, and copy the shortcut to the desktop. If it is already on the desktop, copy and paste it there.\n3. Right-click the shortcut copy and select “Properties”. In the “Target” field, append a space followed by <code>--remote-debugging-port=9223</code>, then save the changes.\n4. Rename the shortcut copy to “NetEase Cloud Music (Debug)” (or any name you prefer). Use this shortcut to start NetEase Cloud Music from now on.\n5. To keep this entry readily available, pin the newly created shortcut. On Windows 11, right-click it, select “Show more options”, then choose “Pin to Start” or “Pin to taskbar”. Do not pin the original shortcut, because the startup argument will not be applied.',
         comingSoon: 'Coming soon',
         empty: 'No music providers available',
         providers: {
@@ -892,7 +892,7 @@ const resources = {
         title: '音樂源',
         description: '設定桌面端讀取正在播放資訊時使用的音樂源順序。',
         ncmHelpTitle: '網易雲音樂設定',
-        ncmHelpMessage: '網易雲音樂需帶 --remote-debugging-port=9223 命令列啟動。',
+        ncmHelpMessage: 'CoLink 透過網易雲音樂的遠端偵錯介面讀取播放資訊。啟動網易雲音樂時，必須加入 <code>--remote-debugging-port=9223</code> 參數。\n\n適用於 Windows 的簡易設定步驟：\n1. 完全結束網易雲音樂，並確認系統匣中沒有仍在執行的網易雲音樂程序。\n2. 建立現有網易雲音樂捷徑的副本。若捷徑位於開始功能表，請搜尋「網易雲音樂」，按一下滑鼠右鍵並選擇「開啟檔案位置」，再將捷徑複製到桌面；若捷徑已位於桌面，請直接複製並貼到桌面。\n3. 在捷徑副本上按一下滑鼠右鍵並選擇「內容」，於「目標」欄位末尾加入一個空格及 <code>--remote-debugging-port=9223</code>，然後儲存變更。\n4. 將捷徑副本重新命名為「網易雲音樂（Debug）」（或任何名稱）。後續請透過此捷徑啟動網易雲音樂。\n5. 如需固定此入口，請固定新建立的捷徑。Windows 11 使用者可按一下滑鼠右鍵，選擇「顯示其他選項」，再選擇「釘選到開始畫面」或「釘選到工作列」。請勿固定原始捷徑，否則啟動參數不會生效。',
         comingSoon: '即將推出',
         empty: '暫無可用音樂源',
         providers: {
@@ -1212,7 +1212,7 @@ const resources = {
         title: '音楽プロバイダー',
         description: 'デスクトップの再生中情報を読み取る音楽ソースの順序を設定します。',
         ncmHelpTitle: 'NetEase Cloud Music の設定',
-        ncmHelpMessage: 'NetEase Cloud Music は --remote-debugging-port=9223 を付けてコマンドラインから起動する必要があります。',
+        ncmHelpMessage: 'CoLink は NetEase Cloud Music のリモートデバッグインターフェースを通じて再生情報を取得します。NetEase Cloud Music を起動する際は、<code>--remote-debugging-port=9223</code> 引数を追加する必要があります。\n\nWindows での簡単な設定手順：\n1. NetEase Cloud Music を完全に終了し、システムトレイにもプロセスが残っていないことを確認します。\n2. 既存の NetEase Cloud Music ショートカットを複製します。スタートメニューにある場合は「NetEase Cloud Music」を検索し、右クリックして「ファイルの場所を開く」を選択してから、ショートカットをデスクトップへコピーします。デスクトップにある場合は、その場でコピーして貼り付けます。\n3. 複製したショートカットを右クリックして「プロパティ」を開き、「リンク先」欄の末尾に半角スペースと <code>--remote-debugging-port=9223</code> を追加して保存します。\n4. ショートカットを「NetEase Cloud Music（Debug）」（または任意の名前）に変更します。以後はこのショートカットから NetEase Cloud Music を起動してください。\n5. 常用する場合は、新しく作成したショートカットをピン留めしてください。Windows 11 では右クリックして「その他のオプションを表示」を選び、「スタートにピン留めする」または「タスク バーにピン留めする」を選択します。起動引数が適用されないため、元のショートカットはピン留めしないでください。',
         comingSoon: '近日対応',
         empty: '利用可能な音楽プロバイダーがありません',
         providers: {
@@ -1532,7 +1532,7 @@ const resources = {
         title: '음악 제공자',
         description: '데스크톱 재생 정보를 읽을 때 사용할 음악 소스 순서를 설정합니다.',
         ncmHelpTitle: 'NetEase Cloud Music 설정',
-        ncmHelpMessage: 'NetEase Cloud Music은 --remote-debugging-port=9223 옵션을 붙여 명령줄에서 시작해야 합니다.',
+        ncmHelpMessage: 'CoLink는 NetEase Cloud Music의 원격 디버깅 인터페이스를 통해 재생 정보를 읽습니다. NetEase Cloud Music을 시작할 때 <code>--remote-debugging-port=9223</code> 인수를 추가해야 합니다.\n\nWindows 간단 설정 절차:\n1. NetEase Cloud Music을 완전히 종료하고 시스템 트레이에도 실행 중인 프로세스가 남아 있지 않은지 확인합니다.\n2. 기존 NetEase Cloud Music 바로 가기의 복사본을 만듭니다. 시작 메뉴에 있는 경우 “NetEase Cloud Music”을 검색하고 마우스 오른쪽 버튼으로 클릭한 다음 “파일 위치 열기”를 선택하여 바로 가기를 바탕 화면에 복사합니다. 이미 바탕 화면에 있다면 해당 바로 가기를 복사하여 바탕 화면에 붙여넣습니다.\n3. 복사한 바로 가기를 마우스 오른쪽 버튼으로 클릭하고 “속성”을 선택합니다. “대상” 필드 끝에 공백 하나와 <code>--remote-debugging-port=9223</code>을 추가한 후 변경 사항을 저장합니다.\n4. 바로 가기 복사본의 이름을 “NetEase Cloud Music (Debug)” 또는 원하는 이름으로 변경합니다. 이후에는 이 바로 가기를 통해 NetEase Cloud Music을 시작하십시오.\n5. 이 실행 항목을 고정하려면 새로 만든 바로 가기를 고정하십시오. Windows 11에서는 마우스 오른쪽 버튼으로 클릭하고 “더 많은 옵션 표시”를 선택한 다음 “시작 화면에 고정” 또는 “작업 표시줄에 고정”을 선택합니다. 시작 인수가 적용되지 않으므로 원래 바로 가기는 고정하지 마십시오.',
         comingSoon: '준비 중',
         empty: '사용 가능한 음악 제공자가 없습니다',
         providers: {
@@ -1852,7 +1852,7 @@ const resources = {
         title: 'Proveedores de música',
         description: 'Configura el orden de fuentes usado para leer la reproducción actual del escritorio.',
         ncmHelpTitle: 'Configuración de NetEase Cloud Music',
-        ncmHelpMessage: 'NetEase Cloud Music debe iniciarse desde la línea de comandos con --remote-debugging-port=9223.',
+        ncmHelpMessage: 'CoLink obtiene la información de reproducción mediante la interfaz de depuración remota de NetEase Cloud Music. Al iniciar NetEase Cloud Music, es necesario añadir el argumento <code>--remote-debugging-port=9223</code>.\n\nConfiguración sencilla para Windows:\n1. Cierra NetEase Cloud Music por completo y comprueba que no quede ningún proceso en la bandeja del sistema.\n2. Crea una copia de un acceso directo existente de NetEase Cloud Music. Si está en el menú Inicio, busca “NetEase Cloud Music”, haz clic con el botón derecho, selecciona “Abrir ubicación del archivo” y copia el acceso directo al escritorio. Si ya está en el escritorio, cópialo y pégalo allí.\n3. Haz clic con el botón derecho en la copia y selecciona “Propiedades”. En el campo “Destino”, añade al final un espacio seguido de <code>--remote-debugging-port=9223</code> y guarda los cambios.\n4. Cambia el nombre de la copia a “NetEase Cloud Music (Debug)” o al nombre que prefieras. A partir de entonces, inicia NetEase Cloud Music mediante este acceso directo.\n5. Para mantener esta entrada accesible, fija el acceso directo nuevo. En Windows 11, haz clic con el botón derecho, selecciona “Mostrar más opciones” y, a continuación, “Anclar a Inicio” o “Anclar a la barra de tareas”. No fijes el acceso directo original, ya que el argumento de inicio no se aplicará.',
         comingSoon: 'Próximamente',
         empty: 'No hay proveedores de música disponibles',
         providers: {
@@ -2172,7 +2172,7 @@ const resources = {
         title: 'Musikanbieter',
         description: 'Konfigurieren Sie die Reihenfolge der Quellen für Desktop-Wiedergabeinformationen.',
         ncmHelpTitle: 'NetEase Cloud Music einrichten',
-        ncmHelpMessage: 'NetEase Cloud Music muss über die Befehlszeile mit --remote-debugging-port=9223 gestartet werden.',
+        ncmHelpMessage: 'CoLink liest Wiedergabeinformationen über die Remote-Debugging-Schnittstelle von NetEase Cloud Music. NetEase Cloud Music muss mit dem Argument <code>--remote-debugging-port=9223</code> gestartet werden.\n\nEinfache Einrichtung unter Windows:\n1. Beenden Sie NetEase Cloud Music vollständig und stellen Sie sicher, dass auch im Infobereich kein Prozess mehr ausgeführt wird.\n2. Erstellen Sie eine Kopie einer vorhandenen NetEase-Cloud-Music-Verknüpfung. Befindet sie sich im Startmenü, suchen Sie nach „NetEase Cloud Music“, klicken Sie mit der rechten Maustaste darauf, wählen Sie „Dateispeicherort öffnen“ und kopieren Sie die Verknüpfung auf den Desktop. Befindet sie sich bereits auf dem Desktop, kopieren Sie sie dort und fügen Sie sie wieder ein.\n3. Klicken Sie mit der rechten Maustaste auf die Kopie und wählen Sie „Eigenschaften“. Ergänzen Sie im Feld „Ziel“ am Ende ein Leerzeichen und <code>--remote-debugging-port=9223</code> und speichern Sie die Änderung.\n4. Benennen Sie die Kopie in „NetEase Cloud Music (Debug)“ oder einen beliebigen Namen um. Starten Sie NetEase Cloud Music künftig über diese Verknüpfung.\n5. Um diesen Eintrag dauerhaft verfügbar zu halten, heften Sie die neu erstellte Verknüpfung an. Unter Windows 11 wählen Sie nach einem Rechtsklick „Weitere Optionen anzeigen“ und anschließend „An Start anheften“ oder „An Taskleiste anheften“. Heften Sie nicht die ursprüngliche Verknüpfung an, da das Startargument sonst nicht angewendet wird.',
         comingSoon: 'Demnächst',
         empty: 'Keine Musikanbieter verfügbar',
         providers: {
@@ -2492,7 +2492,7 @@ const resources = {
         title: 'Музыкальные провайдеры',
         description: 'Настройте порядок источников для чтения информации о текущем воспроизведении.',
         ncmHelpTitle: 'Настройка NetEase Cloud Music',
-        ncmHelpMessage: 'NetEase Cloud Music нужно запускать из командной строки с --remote-debugging-port=9223.',
+        ncmHelpMessage: 'CoLink получает сведения о воспроизведении через интерфейс удалённой отладки NetEase Cloud Music. При запуске NetEase Cloud Music необходимо добавить аргумент <code>--remote-debugging-port=9223</code>.\n\nПростая настройка для Windows:\n1. Полностью закройте NetEase Cloud Music и убедитесь, что в области уведомлений не осталось запущенного процесса приложения.\n2. Создайте копию существующего ярлыка NetEase Cloud Music. Если ярлык находится в меню «Пуск», найдите NetEase Cloud Music, щёлкните правой кнопкой мыши, выберите «Перейти к расположению файла» и скопируйте ярлык на рабочий стол. Если ярлык уже находится на рабочем столе, скопируйте и вставьте его там же.\n3. Щёлкните правой кнопкой мыши копию ярлыка и выберите «Свойства». В конце поля «Объект» добавьте пробел и <code>--remote-debugging-port=9223</code>, затем сохраните изменения.\n4. Переименуйте копию ярлыка в «NetEase Cloud Music (Debug)» или выберите любое другое имя. В дальнейшем запускайте NetEase Cloud Music с помощью этого ярлыка.\n5. Чтобы закрепить этот способ запуска, закрепите новый ярлык. В Windows 11 щёлкните его правой кнопкой мыши, выберите «Показать дополнительные параметры», затем «Закрепить на начальном экране» или «Закрепить на панели задач». Не закрепляйте исходный ярлык, иначе аргумент запуска применяться не будет.',
         comingSoon: 'Скоро',
         empty: 'Нет доступных музыкальных провайдеров',
         providers: {

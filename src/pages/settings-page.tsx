@@ -6,7 +6,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from '@dnd-kit/utilities'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { GripVertical, RefreshCw, X } from 'lucide-react'
 
 import { UpdateDialog } from '../components/update-dialog'
@@ -344,7 +344,12 @@ function NcmHelpDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <p className="mt-4 whitespace-pre-line break-words text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
-          {t('nowPlaying.ncmHelpMessage')}
+          <Trans
+            components={{
+              code: <code className="rounded bg-[hsl(var(--panel-2))] px-1.5 py-0.5 font-mono text-[12px] text-[hsl(var(--text))]" />,
+            }}
+            i18nKey="nowPlaying.ncmHelpMessage"
+          />
         </p>
         <div className="mt-6 flex justify-end">
           <Button onClick={onClose} variant="primary">
