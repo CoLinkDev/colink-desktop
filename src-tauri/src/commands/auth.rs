@@ -42,9 +42,7 @@ pub fn get_saved_login() -> Result<Option<SavedLoginCredentials>, String> {
         .map_err(|error| error.to_string())?;
 
     match entry.get_password() {
-        Ok(value) => serde_json::from_str(&value)
-            .map(Some)
-            .map_err(|error| error.to_string()),
+        Ok(value) => decode_saved_login(&value).map(Some),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error.to_string()),
     }
@@ -54,11 +52,46 @@ pub fn get_saved_login() -> Result<Option<SavedLoginCredentials>, String> {
 pub fn save_saved_login(payload: SavedLoginCredentials) -> Result<(), String> {
     let entry = keyring::Entry::new(SAVED_LOGIN_SERVICE, SAVED_LOGIN_ACCOUNT)
         .map_err(|error| error.to_string())?;
-    let value = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    let value = encode_saved_login(&payload)?;
 
     entry
         .set_password(&value)
         .map_err(|error| error.to_string())
+}
+
+fn encode_saved_login(payload: &SavedLoginCredentials) -> Result<String, String> {
+    serde_json::to_string(payload).map_err(|error| error.to_string())
+}
+
+fn decode_saved_login(value: &str) -> Result<SavedLoginCredentials, String> {
+    serde_json::from_str(value).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_saved_login, encode_saved_login};
+    use crate::models::SavedLoginCredentials;
+
+    #[test]
+    fn saved_login_command_round_trips_credentials() {
+        let credentials = SavedLoginCredentials {
+            identifier: "alice@example.test".to_string(),
+            password: "quoted \" password".to_string(),
+        };
+
+        let encoded = encode_saved_login(&credentials).expect("encode credentials");
+        let decoded = decode_saved_login(&encoded).expect("decode credentials");
+
+        assert_eq!(decoded.identifier, credentials.identifier);
+        assert_eq!(decoded.password, credentials.password);
+    }
+
+    #[test]
+    fn saved_login_command_rejects_corrupt_keyring_value() {
+        let error = decode_saved_login(r#"{"identifier":42}"#).expect_err("invalid credentials");
+
+        assert!(error.contains("invalid type") || error.contains("missing field"));
+    }
 }
 
 #[tauri::command]

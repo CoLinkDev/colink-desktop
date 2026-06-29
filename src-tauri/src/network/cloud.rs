@@ -9,10 +9,15 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::{
+    net::TcpStream,
     sync::{mpsc, watch},
     time::{interval, sleep, timeout, MissedTickBehavior},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{handshake::client::Response, Message},
+    MaybeTlsStream, WebSocketStream,
+};
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
@@ -507,15 +512,9 @@ impl CloudConnectionManager {
         )
         .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         debug!(url = %ws_url, "connecting cloud websocket");
-        let (stream, _) = timeout(WS_CONNECT_TIMEOUT, connect_async(ws_url.as_str()))
+        let (stream, _) = open_websocket(ws_url.as_str(), WS_CONNECT_TIMEOUT)
             .await
-            .map_err(|_| {
-                ConnectionFailure::Retryable(format!(
-                    "cloud websocket connect timed out after {} seconds",
-                    WS_CONNECT_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
+            .map_err(ConnectionFailure::Retryable)?;
         let connected_at = Instant::now();
 
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
@@ -838,6 +837,21 @@ impl CloudConnectionManager {
     }
 }
 
+async fn open_websocket(
+    url: &str,
+    connect_timeout: Duration,
+) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, Response), String> {
+    timeout(connect_timeout, connect_async(url))
+        .await
+        .map_err(|_| {
+            format!(
+                "cloud websocket connect timed out after {} seconds",
+                connect_timeout.as_secs()
+            )
+        })?
+        .map_err(|error| error.to_string())
+}
+
 impl CloudConnectionManager {
     fn user_text(&self, key: TextKey) -> String {
         let language = self
@@ -934,7 +948,18 @@ where
 mod tests {
     use std::time::Duration;
 
-    use super::{backoff_delay, build_ws_url, WS_CONNECT_PATH};
+    use futures_util::SinkExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{
+        accept_hdr_async,
+        tungstenite::{
+            handshake::server::{ErrorResponse, Request, Response},
+            http::StatusCode,
+            Message,
+        },
+    };
+
+    use super::{backoff_delay, build_ws_url, open_websocket, WS_CONNECT_PATH};
 
     #[test]
     fn builds_websocket_url_from_http_base_url() {
@@ -948,7 +973,10 @@ mod tests {
         assert_eq!(url.scheme(), "ws");
         assert_eq!(url.host_str(), Some("example.com"));
         assert_eq!(url.path(), WS_CONNECT_PATH);
-        assert_eq!(url.query(), Some("ticket=ticket+value&businessVersion=business.v1"));
+        assert_eq!(
+            url.query(),
+            Some("ticket=ticket+value&businessVersion=business.v1")
+        );
     }
 
     #[test]
@@ -965,5 +993,67 @@ mod tests {
         assert_eq!(backoff_delay(2), Duration::from_secs(2));
         assert_eq!(backoff_delay(6), Duration::from_secs(30));
         assert_eq!(backoff_delay(99), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn websocket_handshake_sends_ticket_and_business_version() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let address = listener.local_addr().expect("mock server address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let mut websocket =
+                accept_hdr_async(stream, |request: &Request, response: Response| {
+                    assert_eq!(request.uri().path(), WS_CONNECT_PATH);
+                    assert_eq!(
+                        request.uri().query(),
+                        Some("ticket=test-ticket&businessVersion=business.v1"),
+                    );
+                    Ok(response)
+                })
+                .await
+                .expect("complete websocket handshake");
+            websocket
+                .send(Message::Close(None))
+                .await
+                .expect("close websocket");
+        });
+
+        let url = format!(
+            "ws://{address}{WS_CONNECT_PATH}?ticket=test-ticket&businessVersion=business.v1"
+        );
+        let (_websocket, response) = open_websocket(&url, Duration::from_secs(2))
+            .await
+            .expect("client handshake");
+
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        server.await.expect("mock server task");
+    }
+
+    #[tokio::test]
+    async fn websocket_handshake_surfaces_server_rejection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let address = listener.local_addr().expect("mock server address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let result = accept_hdr_async(stream, |_request: &Request, _response: Response| {
+                let mut rejection = ErrorResponse::new(Some("invalid ticket".to_string()));
+                *rejection.status_mut() = StatusCode::UNAUTHORIZED;
+                Err(rejection)
+            })
+            .await;
+            assert!(result.is_err());
+        });
+
+        let url = format!("ws://{address}{WS_CONNECT_PATH}?ticket=invalid");
+        let error = open_websocket(&url, Duration::from_secs(2))
+            .await
+            .expect_err("server must reject handshake");
+
+        assert!(error.contains("401"));
+        server.await.expect("mock server task");
     }
 }
