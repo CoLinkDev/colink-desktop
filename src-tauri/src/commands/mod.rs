@@ -22,8 +22,8 @@ pub use device::{
 };
 pub use logs::list_logs;
 pub use message::{
-    cancel_transfer, clear_transfers, pending_file_offers, pick_files, respond_file_offer,
-    send_files, send_text,
+    cancel_transfer, clear_transfers, open_received_file, pending_file_offers, pick_files,
+    respond_file_offer, reveal_received_file, send_files, send_text,
 };
 pub use music::{get_music_providers, list_available_music_providers, update_music_providers};
 pub use settings::{get_settings, pick_download_directory, update_settings};

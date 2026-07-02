@@ -1,4 +1,4 @@
-import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2 } from 'lucide-react'
+import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2, ExternalLink, FolderOpen } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { openReceivedFile, revealReceivedFile } from '../lib/api'
 import { cn, formatBytes, formatPlatformName } from '../lib/utils'
 import type { TransferPreparingPayload } from '../lib/types'
 
@@ -150,6 +151,24 @@ export function TransfersPage() {
     finally { setSubmitting(false); setPreparing(null) }
   }
 
+  async function handleOpenReceivedFile(fileId: string) {
+    setError(null)
+    try {
+      await openReceivedFile(fileId)
+    } catch (e) {
+      setError(readErrorMessage(e))
+    }
+  }
+
+  async function handleRevealReceivedFile(fileId: string) {
+    setError(null)
+    try {
+      await revealReceivedFile(fileId)
+    } catch (e) {
+      setError(readErrorMessage(e))
+    }
+  }
+
   return (
     <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] gap-6 animate-fade-in overflow-hidden">
       {/* Device List Sidebar */}
@@ -260,6 +279,7 @@ export function TransfersPage() {
                   const inFlight = item.status === 'sending' || item.status === 'receiving'
                   const isDone = item.status === 'completed'
                   const isFailed = item.status === 'failed' || item.status === 'cancelled'
+                  const canOpenReceivedFile = item.direction === 'inbound' && isDone && Boolean(item.finalPath)
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
                   const speed = inFlight ? transferSpeeds[item.fileId] : null
                   const routeLabel = item.route === 'lan'
@@ -320,7 +340,31 @@ export function TransfersPage() {
                       </div>
 
                       {/* Right side: Actions & indicators */}
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+                      <div className="flex shrink-0 items-center justify-end gap-2">
+                        {canOpenReceivedFile && (
+                          <>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => void handleOpenReceivedFile(item.fileId)}
+                              title={t('transfers.openFile')}
+                              className="h-7 px-2 text-[11px]"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {t('transfers.openFile')}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => void handleRevealReceivedFile(item.fileId)}
+                              title={t('transfers.revealFile')}
+                              className="h-7 px-2 text-[11px]"
+                            >
+                              <FolderOpen className="h-3.5 w-3.5" />
+                              {t('transfers.revealFile')}
+                            </Button>
+                          </>
+                        )}
                         {active ? (
                           <button
                             className="rounded-md p-1.5 text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"

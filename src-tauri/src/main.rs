@@ -27,10 +27,11 @@ use commands::{
     delete_device, forget_lan_trust, get_castboard_status, get_music_providers, get_saved_login,
     get_settings, handle_castboard_window_event, list_available_music_providers,
     list_castboard_monitors, list_devices, list_lan_pairing_candidates, list_logs, login, logout,
-    open_castboard_on_monitor, open_update_download, pending_file_offers, pick_download_directory,
-    pick_files, register_account, respond_file_offer, respond_lan_pairing, rotate_device_key,
-    save_saved_login, send_files, send_text, start_lan_pairing, stop_castboard, update_device_name,
-    update_music_providers, update_settings,
+    open_castboard_on_monitor, open_received_file, open_update_download, pending_file_offers,
+    pick_download_directory, pick_files, register_account, respond_file_offer,
+    respond_lan_pairing, reveal_received_file, rotate_device_key, save_saved_login, send_files,
+    send_text, start_lan_pairing, stop_castboard, update_device_name, update_music_providers,
+    update_settings,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -111,6 +112,8 @@ fn main() {
             pick_files,
             send_files,
             cancel_transfer,
+            open_received_file,
+            reveal_received_file,
             pending_file_offers,
             respond_file_offer,
             clear_transfers

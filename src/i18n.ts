@@ -212,6 +212,8 @@ const resources = {
         directionReceive: '接收',
         routeLan: '通过局域网传输',
         routeCloud: '通过云端中继传输',
+        openFile: '打开',
+        revealFile: '在文件夹中定位',
         cancelTitle: '取消传输',
         clearBtn: '清空已完成',
         status: {
@@ -532,6 +534,8 @@ const resources = {
         directionReceive: 'Receive',
         routeLan: 'Transferred via LAN',
         routeCloud: 'Transferred via Cloud relay',
+        openFile: 'Open',
+        revealFile: 'Show in Folder',
         cancelTitle: 'Cancel Transfer',
         clearBtn: 'Clear Completed',
         status: {
@@ -852,6 +856,8 @@ const resources = {
         directionReceive: '接收',
         routeLan: '通過區域網路傳輸',
         routeCloud: '通過雲端中繼傳輸',
+        openFile: '開啟',
+        revealFile: '在資料夾中定位',
         cancelTitle: '取消傳輸',
         clearBtn: '清空已完成',
         status: {
@@ -1172,6 +1178,8 @@ const resources = {
         directionReceive: '受信',
         routeLan: 'ローカルネットワーク経由で転送',
         routeCloud: 'クラウド中継経由で転送',
+        openFile: '開く',
+        revealFile: 'フォルダで表示',
         cancelTitle: '転送をキャンセル',
         clearBtn: '完了をクリア',
         status: {
@@ -1492,6 +1500,8 @@ const resources = {
         directionReceive: '받기',
         routeLan: '로컬 네트워크를 통해 전송됨',
         routeCloud: '클라우드 릴레이를 통해 전송됨',
+        openFile: '열기',
+        revealFile: '폴더에서 보기',
         cancelTitle: '전송 취소',
         clearBtn: '완료 항목 지우기',
         status: {
@@ -1812,6 +1822,8 @@ const resources = {
         directionReceive: 'Recibir',
         routeLan: 'Transferido a través de red local',
         routeCloud: 'Transferido a través de retransmisión en la nube',
+        openFile: 'Abrir',
+        revealFile: 'Mostrar en carpeta',
         cancelTitle: 'Cancelar transferencia',
         clearBtn: 'Limpiar completados',
         status: {
@@ -2132,6 +2144,8 @@ const resources = {
         directionReceive: 'Empfangen',
         routeLan: 'Übertragen über lokales Netzwerk',
         routeCloud: 'Übertragen über Cloud-Relais',
+        openFile: 'Öffnen',
+        revealFile: 'Im Ordner anzeigen',
         cancelTitle: 'Übertragung abbrechen',
         clearBtn: 'Abgeschlossene leeren',
         status: {
@@ -2452,6 +2466,8 @@ const resources = {
         directionReceive: 'Получить',
         routeLan: 'Передано через локальную сеть',
         routeCloud: 'Передано через облачный ретранслятор',
+        openFile: 'Открыть',
+        revealFile: 'Показать в папке',
         cancelTitle: 'Отменить передачу',
         clearBtn: 'Очистить завершенные',
         status: {

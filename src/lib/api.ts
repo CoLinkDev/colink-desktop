@@ -173,6 +173,14 @@ export function cancelTransfer(fileId: string) {
   return invoke<void>('cancel_transfer', { fileId })
 }
 
+export function openReceivedFile(fileId: string) {
+  return invoke<void>('open_received_file', { fileId })
+}
+
+export function revealReceivedFile(fileId: string) {
+  return invoke<void>('reveal_received_file', { fileId })
+}
+
 export function clearTransfers() {
   return invoke<void>('clear_transfers')
 }

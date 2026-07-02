@@ -1090,6 +1090,17 @@ impl AppRuntime {
     pub(super) fn handle_file_cancel(&self, file_id: &str, reason: String) -> AppResult<()> {
         warn!(%file_id, %reason, "file transfer cancelled by peer");
         self.inner.lan.unregister_transfer(file_id);
+        if matches!(
+            self.inner
+                .database
+                .load_transfer(file_id)?
+                .as_ref()
+                .map(|record| record.status.as_str()),
+            Some("completed")
+        ) {
+            debug!(%file_id, "ignored file cancel after transfer completion");
+            return Ok(());
+        }
         if let Some(incoming) = self
             .inner
             .state
@@ -1099,6 +1110,24 @@ impl AppRuntime {
         {
             if let Some(temp_path) = incoming.record.temp_path.as_ref() {
                 let _ = fs::remove_file(temp_path);
+            }
+            let mut record = incoming.record;
+            record.status = "cancelled".to_string();
+            record.error = Some(reason);
+            record.temp_path = None;
+            record.updated_at = unix_now_millis();
+            self.inner.database.save_transfer(&record)?;
+            self.emit_transfers()?;
+            return Ok(());
+        }
+        if let Some(mut record) = self.inner.database.load_transfer(file_id)? {
+            if record.direction == "inbound" {
+                record.status = "cancelled".to_string();
+                record.error = Some(reason);
+                record.updated_at = unix_now_millis();
+                self.inner.database.save_transfer(&record)?;
+                self.emit_transfers()?;
+                return Ok(());
             }
         }
         self.finish_outgoing_transfer(file_id, "cancelled", Some(reason), None)
@@ -1119,6 +1148,11 @@ impl AppRuntime {
         }
 
         if let Some(incoming) = incoming {
+            let record = self.inner.database.load_transfer(file_id)?;
+            if matches!(record.as_ref().map(|item| item.status.as_str()), Some("completed")) {
+                debug!(%file_id, "ignored lan transfer close after incoming completion");
+                return Ok(());
+            }
             warn!(%file_id, "incoming lan transfer closed before completion");
             if let Some(temp_path) = incoming.record.temp_path.as_ref() {
                 let _ = fs::remove_file(temp_path);
