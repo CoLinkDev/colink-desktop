@@ -5,9 +5,10 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
-use rand::seq::SliceRandom;
+use rand::{rngs::OsRng, seq::SliceRandom, RngCore};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -43,7 +44,8 @@ use crate::{
     },
     protocol::{
         check_business_protocol_version, check_lan_protocol_version, negotiated_lan_protocol_version,
-        supports_lan_key_exchange, AuthChallengePayload, AuthResponsePayload, BusinessEnvelope,
+        supports_lan_key_exchange, supports_lan_key_exchange_nonce, AuthChallengePayload,
+        AuthResponsePayload, BusinessEnvelope, BusinessKeyExchangeNoncePayload,
         BusinessKeyExchangePayload, BusinessNegotiatePayload, BusinessVersionAckPayload,
         BusinessVersionPayload, EmptyPayload, EncryptedBusinessPayload, FileDataFrame, LanEnvelope,
         LanRejectPayload, PairingIdentityPayload, ProtocolHelloAckEnvelope, ProtocolHelloEnvelope,
@@ -3213,6 +3215,7 @@ where
                 context,
                 peer_public_key,
                 peer_device_id,
+                peer_protocol_version,
                 outbound_seq,
             )
             .await?,
@@ -3281,6 +3284,7 @@ async fn exchange_ephemeral_keys<S>(
     context: &LanContext,
     peer_identity_public_key: &str,
     peer_device_id: &str,
+    peer_protocol_version: &str,
     outbound_seq: &mut u64,
 ) -> AppResult<EphemeralKeyExchange>
 where
@@ -3288,18 +3292,30 @@ where
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
+    let nonce_exchange = if supports_lan_key_exchange_nonce(peer_protocol_version) {
+        Some(exchange_key_exchange_nonces(stream, context, peer_device_id, outbound_seq).await?)
+    } else {
+        None
+    };
     let local = LanEphemeralKeyPair::generate();
     let timestamp = unix_now_millis();
-    let signature = sign_payload(
-        &context.device.private_key,
+    let signature_input = if let Some(nonces) = nonce_exchange.as_ref() {
+        key_exchange_signature_input_v2(
+            &context.device.device_id,
+            peer_device_id,
+            &local.public_key,
+            &nonces.local,
+            &nonces.peer,
+        )
+    } else {
         key_exchange_signature_input(
             &context.device.device_id,
             peer_device_id,
             &local.public_key,
             timestamp,
         )
-        .as_bytes(),
-    )?;
+    };
+    let signature = sign_payload(&context.device.private_key, signature_input.as_bytes())?;
     write_lan_message_with_timestamp(
         stream,
         context,
@@ -3339,8 +3355,7 @@ where
                     .await?;
                     return Err(AppError::message(MESSAGE_KEY_EXCHANGE_GENERIC));
                 };
-                let now = unix_now_millis();
-                if (now - message.timestamp).abs() > 30_000 {
+                if nonce_exchange.is_none() && (unix_now_millis() - message.timestamp).abs() > 30_000 {
                     reject_key_exchange(
                         stream,
                         context,
@@ -3353,17 +3368,23 @@ where
                     .await?;
                     return Err(AppError::message(MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED));
                 }
-                let valid = verify_signature(
-                    peer_identity_public_key,
+                let signature_input = if let Some(nonces) = nonce_exchange.as_ref() {
+                    key_exchange_signature_input_v2(
+                        &message.from,
+                        &message.to,
+                        &payload.ephemeral_public_key,
+                        &nonces.peer,
+                        &nonces.local,
+                    )
+                } else {
                     key_exchange_signature_input(
                         &message.from,
                         &message.to,
                         &payload.ephemeral_public_key,
                         message.timestamp,
                     )
-                    .as_bytes(),
-                    &payload.signature,
-                )?;
+                };
+                let valid = verify_signature(peer_identity_public_key, signature_input.as_bytes(), &payload.signature)?;
                 if !valid {
                     reject_key_exchange(
                         stream,
@@ -3391,6 +3412,62 @@ where
             _ => {}
         }
     }
+}
+
+struct KeyExchangeNonces {
+    local: String,
+    peer: String,
+}
+
+async fn exchange_key_exchange_nonces<S>(
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    peer_device_id: &str,
+    outbound_seq: &mut u64,
+) -> AppResult<KeyExchangeNonces>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let local = random_key_exchange_nonce();
+    write_lan_message(
+        stream,
+        context,
+        peer_device_id,
+        "business.v1.key-exchange-nonce",
+        None,
+        outbound_seq,
+        &BusinessKeyExchangeNoncePayload {
+            nonce: local.clone(),
+        },
+    )
+    .await?;
+
+    loop {
+        let message = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
+            .await
+            .map_err(|_| AppError::message("LAN key exchange nonce timed out"))??;
+        if message.to != context.device.device_id || message.from != peer_device_id {
+            continue;
+        }
+        if message.message_type != "business.v1.key-exchange-nonce" {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_value::<BusinessKeyExchangeNoncePayload>(message.payload) else {
+            continue;
+        };
+        return Ok(KeyExchangeNonces {
+            local,
+            peer: payload.nonce,
+        });
+    }
+}
+
+fn random_key_exchange_nonce() -> String {
+    let mut nonce = [0_u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    STANDARD.encode(nonce)
 }
 
 async fn reject_key_exchange<S>(
@@ -3552,6 +3629,18 @@ fn auth_signature_input(from: &str, timestamp: i64, nonce: &str) -> String {
 fn key_exchange_signature_input(from: &str, to: &str, ephemeral_public_key: &str, timestamp: i64) -> String {
     format!(
         "domain=colink-lan-key-exchange\nfrom={from}\nto={to}\nephemeralPublicKey={ephemeral_public_key}\ntimestamp={timestamp}"
+    )
+}
+
+fn key_exchange_signature_input_v2(
+    from: &str,
+    to: &str,
+    ephemeral_public_key: &str,
+    local_nonce: &str,
+    peer_nonce: &str,
+) -> String {
+    format!(
+        "domain=colink-lan-key-exchange-v2\nfrom={from}\nto={to}\nephemeralPublicKey={ephemeral_public_key}\nlocalNonce={local_nonce}\npeerNonce={peer_nonce}"
     )
 }
 

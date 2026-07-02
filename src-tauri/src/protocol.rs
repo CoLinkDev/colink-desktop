@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const LAN_PROTOCOL_VERSION: &str = "1.1.0";
+pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
 pub const BUSINESS_PROTOCOL_VERSION: &str = "1.2.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
@@ -453,6 +453,12 @@ pub struct BusinessKeyExchangePayload {
     pub signature: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessKeyExchangeNoncePayload {
+    pub nonce: String,
+}
+
 pub fn check_lan_protocol_version(peer_version: &str) -> VersionCompatibility {
     check_semantic_major(
         LAN_PROTOCOL_VERSION,
@@ -467,6 +473,15 @@ pub fn supports_lan_key_exchange(peer_version: &str) -> bool {
     match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
         (Some(local), Some(peer)) => {
             local.major == peer.major && local >= Semver::new(1, 1, 0) && peer >= Semver::new(1, 1, 0)
+        }
+        _ => false,
+    }
+}
+
+pub fn supports_lan_key_exchange_nonce(peer_version: &str) -> bool {
+    match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
+        (Some(local), Some(peer)) => {
+            local.major == peer.major && local >= Semver::new(1, 2, 0) && peer >= Semver::new(1, 2, 0)
         }
         _ => false,
     }
