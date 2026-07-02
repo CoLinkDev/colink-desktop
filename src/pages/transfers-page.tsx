@@ -341,30 +341,26 @@ export function TransfersPage() {
 
                       {/* Right side: Actions & indicators */}
                       <div className="flex shrink-0 items-center justify-end gap-2">
-                        {canOpenReceivedFile && (
-                          <>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => void handleOpenReceivedFile(item.fileId)}
-                              title={t('transfers.openFile')}
-                              className="h-7 px-2 text-[11px]"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              {t('transfers.openFile')}
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => void handleRevealReceivedFile(item.fileId)}
-                              title={t('transfers.revealFile')}
-                              className="h-7 px-2 text-[11px]"
-                            >
-                              <FolderOpen className="h-3.5 w-3.5" />
-                              {t('transfers.revealFile')}
-                            </Button>
-                          </>
-                        )}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={!canOpenReceivedFile}
+                          onClick={() => void handleOpenReceivedFile(item.fileId)}
+                          title={t('transfers.openFile')}
+                          className="h-7 w-7 px-0"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={!canOpenReceivedFile}
+                          onClick={() => void handleRevealReceivedFile(item.fileId)}
+                          title={t('transfers.revealFile')}
+                          className="h-7 w-7 px-0"
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                        </Button>
                         {active ? (
                           <button
                             className="rounded-md p-1.5 text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
