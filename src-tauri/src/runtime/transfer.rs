@@ -279,7 +279,10 @@ impl AppRuntime {
                 },
             );
         self.expire_pending_file_offer(session_id);
-        let _ = crate::shell::show_main_window(&self.inner.app, Some("/transfers"));
+        let _ = crate::shell::show_main_window(
+            &self.inner.app,
+            Some(&self.device_route("/transfers", from)),
+        );
         let _ = self.inner.app.emit(FILE_OFFER_REQUESTED_EVENT, request);
         Ok(())
     }
@@ -468,6 +471,10 @@ impl AppRuntime {
             "file offer accepted"
         );
         self.emit_transfers()?;
+        let _ = crate::shell::show_main_window(
+            &self.inner.app,
+            Some(&self.device_route("/transfers", &from)),
+        );
         self.notify(
             TextKey::FileReceiveTitle,
             &[],
@@ -1007,6 +1014,10 @@ impl AppRuntime {
         )?;
         let _ = self.send_business_message(&record.device_id, done).await?;
         self.inner.lan.unregister_transfer(file_id);
+        let _ = crate::shell::show_main_window(
+            &self.inner.app,
+            Some(&self.device_route("/transfers", &record.device_id)),
+        );
 
         if success {
             self.notify(

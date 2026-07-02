@@ -592,6 +592,10 @@ impl AppRuntime {
                         &[("name", sender_name.clone())],
                         &payload.text,
                     );
+                    let _ = crate::shell::show_main_window(
+                        &self.inner.app,
+                        Some(&self.device_route("/messages", from)),
+                    );
                     let _ = self.append_log(
                         "info",
                         "message",
@@ -829,6 +833,13 @@ impl AppRuntime {
             .body(body)
             .show()
             .map_err(|error| AppError::message(error.to_string()))
+    }
+
+    fn device_route(&self, path: &str, device_id: &str) -> String {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("deviceId", device_id)
+            .finish();
+        format!("{path}?{query}")
     }
 
     fn append_log(&self, level: &str, source: &str, message: String) -> AppResult<()> {
