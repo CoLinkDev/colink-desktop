@@ -132,6 +132,7 @@ struct PeerConnection {
     connection_id: Uuid,
     sender: mpsc::UnboundedSender<PendingBusinessMessage>,
     initiated_by_local: bool,
+    business_version: String,
 }
 
 struct PendingLanSend {
@@ -203,6 +204,7 @@ struct HandshakeResult<S> {
     stream: WebSocketStream<S>,
     peer_device_id: String,
     crypto: LanSessionCrypto,
+    business_version: String,
     outbound_seq: u64,
 }
 
@@ -407,6 +409,17 @@ impl LanManager {
         self.is_swim_alive(device_id)
             && self.is_lan_authorized(device_id)
             && self.peer_endpoint(device_id).is_some()
+    }
+
+    pub fn peer_business_version(&self, device_id: &str) -> Option<String> {
+        self.inner
+            .lock_unpoisoned()
+            .peers
+            .get(device_id)
+            .and_then(|entry| match entry {
+                PeerEntry::Connected(peer) => Some(peer.business_version.clone()),
+                PeerEntry::Connecting(_) => None,
+            })
     }
 
     pub async fn send(
@@ -1055,6 +1068,7 @@ impl LanManager {
                     connection_id,
                     sender: tx.clone(),
                     initiated_by_local,
+                    business_version: session.business_version.clone(),
                 }),
             );
             inner.pairing_candidates.remove(&peer_device_id);
@@ -2400,7 +2414,7 @@ async fn perform_outbound_handshake(
         .await?
     };
 
-    let crypto = negotiate_business_crypto(
+    let (crypto, business_version) = negotiate_business_crypto(
         &mut stream,
         context,
         &session.peer_public_key,
@@ -2415,6 +2429,7 @@ async fn perform_outbound_handshake(
         stream,
         peer_device_id: session.peer_device_id,
         crypto,
+        business_version,
         outbound_seq,
     })
 }
@@ -2446,7 +2461,7 @@ async fn perform_inbound_handshake(
         .await?
     };
 
-    let crypto = negotiate_business_crypto(
+    let (crypto, business_version) = negotiate_business_crypto(
         &mut stream,
         context,
         &session.peer_public_key,
@@ -2461,6 +2476,7 @@ async fn perform_inbound_handshake(
         stream,
         peer_device_id: session.peer_device_id,
         crypto,
+        business_version,
         outbound_seq,
     })
 }
@@ -3201,13 +3217,14 @@ async fn negotiate_business_crypto<S>(
     peer_protocol_version: &str,
     local_is_initiator: bool,
     outbound_seq: &mut u64,
-) -> AppResult<LanSessionCrypto>
+) -> AppResult<(LanSessionCrypto, String)>
 where
     WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
-    exchange_business_version(stream, context, peer_device_id, outbound_seq).await?;
+    let peer_business_version =
+        exchange_business_version(stream, context, peer_device_id, outbound_seq).await?;
     let key_exchange = if supports_lan_key_exchange(peer_protocol_version) {
         Some(
             exchange_ephemeral_keys(
@@ -3253,7 +3270,7 @@ where
         };
         let suite = choose_suite(&local_supported, &peer.supported, local_is_initiator)
             .ok_or_else(|| AppError::message("no compatible LAN encryption suite is available"))?;
-        return if let Some(key_exchange) = key_exchange.as_ref() {
+        let crypto = if let Some(key_exchange) = key_exchange.as_ref() {
             LanSessionCrypto::new_with_ephemeral_keys(
                 suite,
                 &key_exchange.local,
@@ -3270,7 +3287,8 @@ where
                 peer_public_key,
                 local_is_initiator,
             )
-        };
+        }?;
+        return Ok((crypto, peer_business_version));
     }
 }
 
@@ -3504,7 +3522,7 @@ async fn exchange_business_version<S>(
     context: &LanContext,
     peer_device_id: &str,
     outbound_seq: &mut u64,
-) -> AppResult<()>
+) -> AppResult<String>
 where
     WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
         + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -3525,6 +3543,7 @@ where
 
     let mut peer_version_received = false;
     let mut ack_received = false;
+    let mut peer_business_version = None;
     while !peer_version_received || !ack_received {
         let message = timeout(HANDSHAKE_TIMEOUT, read_lan_message(stream))
             .await
@@ -3534,10 +3553,11 @@ where
         }
         match message.message_type.as_str() {
             "business.v1.version" => {
-                let compatibility =
-                    serde_json::from_value::<BusinessVersionPayload>(message.payload)
-                        .map(|payload| check_business_protocol_version(&payload.business_version))
-                        .unwrap_or_else(|_| check_business_protocol_version(""));
+                let payload = serde_json::from_value::<BusinessVersionPayload>(message.payload);
+                let compatibility = payload
+                    .as_ref()
+                    .map(|payload| check_business_protocol_version(&payload.business_version))
+                    .unwrap_or_else(|_| check_business_protocol_version(""));
                 write_lan_message(
                     stream,
                     context,
@@ -3559,9 +3579,10 @@ where
                             .or(compatibility.reason)
                             .unwrap_or_else(|| {
                                 "business protocol version incompatible".to_string()
-                            }),
+                        }),
                     ));
                 }
+                peer_business_version = payload.ok().map(|payload| payload.business_version);
                 peer_version_received = true;
             }
             "business.v1.version-ack" => {
@@ -3581,7 +3602,7 @@ where
             _ => {}
         }
     }
-    Ok(())
+    peer_business_version.ok_or_else(|| AppError::message("business protocol version missing"))
 }
 
 async fn send_auth_response<S>(

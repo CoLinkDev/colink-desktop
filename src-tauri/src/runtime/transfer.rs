@@ -19,11 +19,11 @@ use crate::{
         SendFilePayload, FILE_CHUNK_SIZE,
     },
     protocol::{
-        BusinessEnvelope, FileAcceptPayload, FileAckPayload, FileCancelPayload, FileChunkPayload,
-        FileDataFrame, FileDataFrameKind, FileDonePayload, FileOfferPayload, FileReadyPayload,
-        FileRejectPayload, FileRetransmitPayload, FILE_ACCEPT_TYPE, FILE_ACK_TYPE,
-        FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE, FILE_OFFER_TYPE, FILE_READY_TYPE,
-        FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE,
+        supports_business_protocol_at_least, BusinessEnvelope, FileAcceptPayload, FileAckPayload,
+        FileCancelPayload, FileChunkPayload, FileDataFrame, FileDataFrameKind, FileDonePayload,
+        FileOfferPayload, FileReadyPayload, FileRejectPayload, FileRetransmitPayload,
+        FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
+        FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE,
     },
     sync::MutexExt,
 };
@@ -242,6 +242,21 @@ impl AppRuntime {
             route = %route,
             "received file offer"
         );
+        if !self.file_checksum_allowed_for_peer(&payload.checksum, from) {
+            let envelope = BusinessEnvelope::from_payload(
+                FILE_REJECT_TYPE,
+                FileRejectPayload {
+                    session_id: payload.session_id,
+                    reason: REASON_TRANSFER_GENERIC.to_string(),
+                    message: "Unsupported file checksum algorithm".to_string(),
+                    details: None,
+                },
+            )?;
+            let _ = self
+                .send_business_message_with_correlation(from, envelope, envelope_id)
+                .await?;
+            return Ok(());
+        }
         let request = FileOfferRequest {
             session_id: payload.session_id.clone(),
             device_id: from.to_string(),
@@ -267,6 +282,27 @@ impl AppRuntime {
         let _ = crate::shell::show_main_window(&self.inner.app, Some("/transfers"));
         let _ = self.inner.app.emit(FILE_OFFER_REQUESTED_EVENT, request);
         Ok(())
+    }
+
+    fn file_checksum_allowed_for_peer(&self, checksum: &str, device_id: &str) -> bool {
+        if FileChecksumVerifier::new(checksum).is_err() {
+            return false;
+        }
+        let algorithm = checksum
+            .split_once(':')
+            .map(|(algorithm, _)| algorithm.to_ascii_lowercase())
+            .unwrap_or_default();
+        algorithm != "none"
+            || self
+                .peer_business_version(device_id)
+                .is_some_and(|version| supports_business_protocol_at_least(&version, 1, 3, 0))
+    }
+
+    fn peer_business_version(&self, device_id: &str) -> Option<String> {
+        self.inner
+            .lan
+            .peer_business_version(device_id)
+            .or_else(|| self.inner.cloud.business_version(device_id))
     }
 
     fn expire_pending_file_offer(&self, session_id: String) {

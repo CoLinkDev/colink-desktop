@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.2.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.3.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -502,6 +502,21 @@ pub fn check_business_protocol_version(peer_version: &str) -> VersionCompatibili
         "colink:business.major_mismatch.v1",
         "Business protocol",
     )
+}
+
+pub fn supports_business_protocol_at_least(
+    peer_version: &str,
+    major: u64,
+    minor: u64,
+    patch: u64,
+) -> bool {
+    match (semver(BUSINESS_PROTOCOL_VERSION), semver(peer_version)) {
+        (Some(local), Some(peer)) => {
+            let required = Semver::new(major, minor, patch);
+            local.major == peer.major && local >= required && peer >= required
+        }
+        _ => false,
+    }
 }
 
 fn check_semantic_major(

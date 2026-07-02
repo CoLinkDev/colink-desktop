@@ -202,6 +202,14 @@ impl CloudConnectionManager {
         Ok(())
     }
 
+    pub fn business_version(&self, device_id: &str) -> Option<String> {
+        self.inner
+            .lock_unpoisoned()
+            .business_versions
+            .get(device_id)
+            .cloned()
+    }
+
     pub fn start(&self) {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let generation = {

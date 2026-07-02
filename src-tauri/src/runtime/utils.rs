@@ -17,6 +17,7 @@ const FILE_HASH_BUFFER_SIZE: usize = 1_048_576;
 pub(super) enum FileChecksumAlgorithm {
     Sha256,
     Blake3,
+    None,
 }
 
 impl FileChecksumAlgorithm {
@@ -24,6 +25,7 @@ impl FileChecksumAlgorithm {
         match name.to_ascii_lowercase().as_str() {
             "sha256" => Ok(Self::Sha256),
             "blake3" => Ok(Self::Blake3),
+            "none" => Ok(Self::None),
             _ => Err(AppError::message(format!(
                 "unsupported checksum algorithm: {name}"
             ))),
@@ -34,6 +36,7 @@ impl FileChecksumAlgorithm {
         match self {
             Self::Sha256 => "sha256",
             Self::Blake3 => "blake3",
+            Self::None => "none",
         }
     }
 }
@@ -46,6 +49,9 @@ pub(super) struct FileChecksumVerifier {
 impl FileChecksumVerifier {
     pub(super) fn new(checksum: &str) -> AppResult<Self> {
         let (algorithm, expected) = split_checksum(checksum)?;
+        if algorithm == FileChecksumAlgorithm::None && expected != "none" {
+            return Err(AppError::message("none checksum must use none:none"));
+        }
         Ok(Self {
             expected: expected.to_string(),
             hasher: FileChecksumHasher::new(algorithm),
@@ -71,6 +77,7 @@ struct FileChecksumHasher {
 enum FileChecksumHasherKind {
     Sha256(Sha256),
     Blake3(blake3::Hasher),
+    None,
 }
 
 impl FileChecksumHasher {
@@ -78,6 +85,7 @@ impl FileChecksumHasher {
         let inner = match algorithm {
             FileChecksumAlgorithm::Sha256 => FileChecksumHasherKind::Sha256(Sha256::new()),
             FileChecksumAlgorithm::Blake3 => FileChecksumHasherKind::Blake3(blake3::Hasher::new()),
+            FileChecksumAlgorithm::None => FileChecksumHasherKind::None,
         };
         Self { inner }
     }
@@ -88,6 +96,7 @@ impl FileChecksumHasher {
             FileChecksumHasherKind::Blake3(hasher) => {
                 hasher.update(bytes);
             }
+            FileChecksumHasherKind::None => {}
         }
     }
 
@@ -95,6 +104,7 @@ impl FileChecksumHasher {
         match self.inner.clone() {
             FileChecksumHasherKind::Sha256(hasher) => format!("{:x}", hasher.finalize()),
             FileChecksumHasherKind::Blake3(hasher) => hasher.finalize().to_hex().to_string(),
+            FileChecksumHasherKind::None => "none".to_string(),
         }
     }
 }
@@ -171,6 +181,7 @@ fn hash_file_by_algorithm(path: &Path, algorithm: FileChecksumAlgorithm) -> AppR
             }
             Ok(format!("{:x}", hasher.finalize()))
         }
+        FileChecksumAlgorithm::None => Ok("none".to_string()),
         FileChecksumAlgorithm::Blake3 => unreachable!("blake3 uses the parallel file path"),
     }
 }
@@ -205,6 +216,19 @@ mod tests {
     fn rejects_checksum_without_supported_algorithm_prefix() {
         assert!(split_checksum("abc123").is_err());
         assert!(FileChecksumVerifier::new("md5:abc123").is_err());
+    }
+
+    #[test]
+    fn verifies_none_checksum_without_hashing_content() {
+        let mut verifier = FileChecksumVerifier::new("none:none").expect("verifier");
+        verifier.update(b"payload");
+
+        assert!(verifier.verify());
+    }
+
+    #[test]
+    fn rejects_malformed_none_checksum() {
+        assert!(FileChecksumVerifier::new("none:abc123").is_err());
     }
 
     #[test]
