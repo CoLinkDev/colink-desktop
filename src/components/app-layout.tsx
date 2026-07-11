@@ -122,15 +122,12 @@ export function AppLayout({ children }: PropsWithChildren) {
               <span className="text-[12px] font-medium text-[hsl(var(--muted))] truncate max-w-[140px]">
                 {session ? session.username || session.userId : t('devices.lan')}
               </span>
-              <span className="relative flex h-2 w-2 shrink-0">
-                {cloud.connected && (
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[hsl(var(--success))] opacity-75" />
-                )}
-                <span className={cn(
-                  "relative inline-flex h-2 w-2 rounded-full transition-colors duration-300",
+              <span
+                className={cn(
+                  "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
                   cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
-                )} />
-              </span>
+                )}
+              />
             </div>
           </div>
 
