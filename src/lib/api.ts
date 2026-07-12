@@ -189,8 +189,8 @@ export function pendingFileOffers() {
   return invoke<FileOfferRequest[]>('pending_file_offers')
 }
 
-export function respondFileOffer(sessionId: string, accepted: boolean) {
+export function respondFileOffer(sessionId: string, accepted: boolean, destinationPath?: string) {
   return invoke<void>('respond_file_offer', {
-    payload: { sessionId, accepted },
+    payload: { sessionId, accepted, destinationPath },
   })
 }

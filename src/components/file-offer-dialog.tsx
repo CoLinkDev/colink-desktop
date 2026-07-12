@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { pendingFileOffers, respondFileOffer } from '../lib/api'
+import { useAppState } from '../hooks/use-app-state'
 import type { FileOfferRequest } from '../lib/types'
 import { Button } from './ui/button'
 
@@ -22,11 +23,17 @@ function formatBytes(value: number) {
 
 export function FileOfferDialog() {
   const { t } = useTranslation()
+  const { settings, pickDownloadDirectory } = useAppState()
   const [requests, setRequests] = useState<FileOfferRequest[]>([])
   const [acting, setActing] = useState(false)
+  const [destinationPath, setDestinationPath] = useState('')
   const request = requests[0] ?? null
   const currentSessionIdRef = useRef<string | null>(null)
   currentSessionIdRef.current = request?.sessionId ?? null
+
+  useEffect(() => {
+    setDestinationPath(settings.downloadPath)
+  }, [request?.sessionId, settings.downloadPath])
 
   useEffect(() => {
     const unlisteners: Array<() => void> = []
@@ -72,7 +79,7 @@ export function FileOfferDialog() {
     if (!request) return
     setActing(true)
     try {
-      await respondFileOffer(request.sessionId, accepted)
+      await respondFileOffer(request.sessionId, accepted, accepted ? destinationPath : undefined)
       setRequests((current) => current.filter((item) => item.sessionId !== request.sessionId))
       setActing(false)
     } catch (error) {
@@ -116,11 +123,31 @@ export function FileOfferDialog() {
           {t('fileOffers.description', { name: request.deviceName || request.deviceId })}
         </p>
 
+        <div className="mt-4">
+          <div className="text-[12px] font-medium text-[hsl(var(--text-secondary))]">{t('fileOffers.destination')}</div>
+          <div className="mt-1.5 flex gap-2">
+            <div className="min-w-0 flex-1 truncate rounded-md border bg-[hsl(var(--panel-2))] px-3 py-2 text-[12px] text-[hsl(var(--text))]" title={destinationPath}>
+              {destinationPath}
+            </div>
+            <Button
+              disabled={acting}
+              onClick={async () => {
+                const path = await pickDownloadDirectory()
+                if (path) setDestinationPath(path)
+              }}
+              type="button"
+              variant="secondary"
+            >
+              {t('fileOffers.changeDestination')}
+            </Button>
+          </div>
+        </div>
+
         <div className="mt-6 flex justify-end gap-2">
           <Button disabled={acting} onClick={() => respond(false)} variant="secondary">
             {t('common.cancel')}
           </Button>
-          <Button disabled={acting} onClick={() => respond(true)} variant="primary">
+          <Button disabled={acting || !destinationPath.trim()} onClick={() => respond(true)} variant="primary">
             {acting ? t('common.loading') : t('fileOffers.accept')}
           </Button>
         </div>

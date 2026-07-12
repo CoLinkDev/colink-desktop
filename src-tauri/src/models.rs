@@ -321,6 +321,7 @@ pub struct FileOfferRequest {
 pub struct FileOfferDecisionPayload {
     pub session_id: String,
     pub accepted: bool,
+    pub destination_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -192,6 +192,8 @@ const resources = {
       fileOffers: {
         title: '接收文件',
         description: '{{name}} 想发送这个文件。',
+        destination: '接收目录',
+        changeDestination: '修改',
         accept: '接收',
       },
       transfers: {
@@ -325,7 +327,7 @@ const resources = {
         about: '关于',
         serverUrl: '服务器地址',
         serverTip: '桌面端请求 API 的地址',
-        downloadPath: '下载路径',
+        downloadPath: '文件接收路径',
         downloadPathTip: '接收文件时使用的本地目录',
         select: '选择',
         autoStart: '开机启动',
@@ -338,7 +340,7 @@ const resources = {
         saveError: '设置保存失败',
         validation: {
           serverUrl: '服务器地址不合法',
-          downloadPath: '下载路径不能为空',
+          downloadPath: '文件接收路径不能为空',
           incomplete: '设置不完整',
         },
         language: '语言',
@@ -514,6 +516,8 @@ const resources = {
       fileOffers: {
         title: 'Receive file',
         description: '{{name}} wants to send this file.',
+        destination: 'Receiving directory',
+        changeDestination: 'Change',
         accept: 'Receive',
       },
       transfers: {
@@ -647,7 +651,7 @@ const resources = {
         about: 'About',
         serverUrl: 'Server address',
         serverTip: 'Desktop API server address',
-        downloadPath: 'Download Path',
+        downloadPath: 'File Receiving Path',
         downloadPathTip: 'Local directory for received files',
         select: 'Choose',
         autoStart: 'Start on boot',
@@ -660,7 +664,7 @@ const resources = {
         saveError: 'Failed to save settings',
         validation: {
           serverUrl: 'Invalid server address',
-          downloadPath: 'Download path cannot be empty',
+          downloadPath: 'File receiving path cannot be empty',
           incomplete: 'Settings incomplete',
         },
         language: 'Language',
@@ -836,6 +840,8 @@ const resources = {
       fileOffers: {
         title: '接收檔案',
         description: '{{name}} 想傳送這個檔案。',
+        destination: '接收目錄',
+        changeDestination: '修改',
         accept: '接收',
       },
       transfers: {
@@ -969,7 +975,7 @@ const resources = {
         about: '關於',
         serverUrl: '伺服器地址',
         serverTip: '桌面端請求 API 的地址',
-        downloadPath: '下載路徑',
+        downloadPath: '檔案接收路徑',
         downloadPathTip: '接收檔案時使用的本地目錄',
         select: '選擇',
         autoStart: '開機啟動',
@@ -982,7 +988,7 @@ const resources = {
         saveError: '設定儲存失敗',
         validation: {
           serverUrl: '伺服器地址不合法',
-          downloadPath: '下載路徑不能為空',
+          downloadPath: '檔案接收路徑不能為空',
           incomplete: '設定不完整',
         },
         language: '語言',
@@ -1158,6 +1164,8 @@ const resources = {
       fileOffers: {
         title: 'ファイルを受信',
         description: '{{name}} がこのファイルを送信しようとしています。',
+        destination: '受信先フォルダー',
+        changeDestination: '変更',
         accept: '受信',
       },
       transfers: {
@@ -1291,7 +1299,7 @@ const resources = {
         about: '情報',
         serverUrl: 'サーバーアドレス',
         serverTip: 'デスクトップのAPIサーバーアドレス',
-        downloadPath: 'ダウンロードパス',
+        downloadPath: 'ファイル受信先',
         downloadPathTip: '受信したファイルの保存先ディレクトリ',
         select: '選択',
         autoStart: 'ログイン時に起動',
@@ -1304,7 +1312,7 @@ const resources = {
         saveError: '設定の保存に失敗しました',
         validation: {
           serverUrl: 'サーバーアドレスが正しくありません',
-          downloadPath: 'ダウンロードパスは必須です',
+          downloadPath: 'ファイル受信先は必須です',
           incomplete: '設定が不十分です',
         },
         language: '言語',
@@ -1480,6 +1488,8 @@ const resources = {
       fileOffers: {
         title: '파일 받기',
         description: '{{name}} 님이 이 파일을 보내려고 합니다.',
+        destination: '수신 폴더',
+        changeDestination: '변경',
         accept: '받기',
       },
       transfers: {
@@ -1613,7 +1623,7 @@ const resources = {
         about: '정보',
         serverUrl: '서버 주소',
         serverTip: '데스크톱 API 서버 주소',
-        downloadPath: '다운로드 경로',
+        downloadPath: '파일 수신 경로',
         downloadPathTip: '파일을 수신할 로컬 디렉토리',
         select: '선택',
         autoStart: '시스템 시작 시 자동 실행',
@@ -1626,7 +1636,7 @@ const resources = {
         saveError: '설정 저장 실패',
         validation: {
           serverUrl: '유효하지 않은 서버 주소입니다',
-          downloadPath: '다운로드 경로는 필수입니다',
+          downloadPath: '파일 수신 경로는 필수입니다',
           incomplete: '설정이 완료되지 않았습니다',
         },
         language: '언어',
@@ -1802,6 +1812,8 @@ const resources = {
       fileOffers: {
         title: 'Recibir archivo',
         description: '{{name}} quiere enviar este archivo.',
+        destination: 'Carpeta de recepción',
+        changeDestination: 'Cambiar',
         accept: 'Recibir',
       },
       transfers: {
@@ -1935,7 +1947,7 @@ const resources = {
         about: 'Acerca de',
         serverUrl: 'Dirección del servidor',
         serverTip: 'Dirección del servidor API',
-        downloadPath: 'Ruta de descarga',
+        downloadPath: 'Ruta de recepción de archivos',
         downloadPathTip: 'Directorio local para archivos recibidos',
         select: 'Seleccionar',
         autoStart: 'Iniciar al encender',
@@ -1948,7 +1960,7 @@ const resources = {
         saveError: 'Error al guardar ajustes',
         validation: {
           serverUrl: 'Dirección de servidor inválida',
-          downloadPath: 'La ruta de descarga no puede estar vacía',
+          downloadPath: 'La ruta de recepción de archivos no puede estar vacía',
           incomplete: 'Ajustes incompletos',
         },
         language: 'Idioma',
@@ -2124,6 +2136,8 @@ const resources = {
       fileOffers: {
         title: 'Datei empfangen',
         description: '{{name}} möchte diese Datei senden.',
+        destination: 'Empfangsordner',
+        changeDestination: 'Ändern',
         accept: 'Empfangen',
       },
       transfers: {
@@ -2257,7 +2271,7 @@ const resources = {
         about: 'Über',
         serverUrl: 'Serveradresse',
         serverTip: 'Adresse des Desktop-API-Servers',
-        downloadPath: 'Download-Pfad',
+        downloadPath: 'Dateiempfangspfad',
         downloadPathTip: 'Lokales Verzeichnis für empfangene Dateien',
         select: 'Auswählen',
         autoStart: 'Beim Systemstart ausführen',
@@ -2270,7 +2284,7 @@ const resources = {
         saveError: 'Fehler beim Speichern der Einstellungen',
         validation: {
           serverUrl: 'Ungültige Serveradresse',
-          downloadPath: 'Download-Pfad darf nicht leer sein',
+          downloadPath: 'Dateiempfangspfad darf nicht leer sein',
           incomplete: 'Einstellungen unvollständig',
         },
         language: 'Sprache',
@@ -2446,6 +2460,8 @@ const resources = {
       fileOffers: {
         title: 'Получить файл',
         description: '{{name}} хочет отправить этот файл.',
+        destination: 'Папка для получения',
+        changeDestination: 'Изменить',
         accept: 'Получить',
       },
       transfers: {
@@ -2579,7 +2595,7 @@ const resources = {
         about: 'О программе',
         serverUrl: 'Адрес сервера',
         serverTip: 'Адрес API-сервера',
-        downloadPath: 'Путь для загрузки',
+        downloadPath: 'Путь для получения файлов',
         downloadPathTip: 'Папка для сохранения принятых файлов',
         select: 'Выбрать',
         autoStart: 'Автозапуск при старте',
@@ -2592,7 +2608,7 @@ const resources = {
         saveError: 'Не удалось сохранить настройки',
         validation: {
           serverUrl: 'Неверный адрес сервера',
-          downloadPath: 'Путь для загрузки не может быть пустым',
+          downloadPath: 'Путь для получения файлов не может быть пустым',
           incomplete: 'Заполнены не все настройки',
         },
         language: 'Язык',

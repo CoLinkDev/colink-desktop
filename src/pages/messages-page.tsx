@@ -1,5 +1,5 @@
 import { Send } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -44,6 +44,12 @@ export function MessagesPage() {
     }
   }
 
+  function handleTextKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey) return
+    event.preventDefault()
+    void handleSendText()
+  }
+
   return (
     <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] gap-6 animate-fade-in overflow-hidden">
       <aside className="h-full overflow-y-auto py-6 pl-8 pr-1.5 space-y-1 scrollbar-thin">
@@ -77,7 +83,7 @@ export function MessagesPage() {
             <div className="text-[14px] font-medium">{selectedDevice?.name ?? t('messages.notSelected')}</div>
           </div>
           <div className="mt-4 rounded-lg bg-[hsl(var(--panel-2)/0.6)] p-3">
-            <textarea className="min-h-20 w-full resize-none bg-transparent text-[13px] outline-none placeholder:text-[hsl(var(--muted))]" onChange={(e) => setText(e.target.value)} placeholder={t('messages.inputPlaceholder')} value={text} />
+            <textarea className="min-h-20 w-full resize-none bg-transparent text-[13px] outline-none placeholder:text-[hsl(var(--muted))]" onChange={(e) => setText(e.target.value)} onKeyDown={handleTextKeyDown} placeholder={t('messages.inputPlaceholder')} value={text} />
             <div className="mt-3 flex items-center justify-between">
               <span className="text-[11px] text-[hsl(var(--muted))]">{text.length}</span>
               <Button disabled={submitting || !selectedDeviceId} onClick={() => void handleSendText()} size="sm">

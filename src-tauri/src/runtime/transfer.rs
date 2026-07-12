@@ -332,22 +332,27 @@ impl AppRuntime {
     }
 
     pub async fn respond_file_offer(&self, decision: FileOfferDecisionPayload) -> AppResult<()> {
+        let FileOfferDecisionPayload {
+            session_id,
+            accepted,
+            destination_path,
+        } = decision;
         let Some(pending) = self
             .inner
             .state
             .lock_unpoisoned()
             .pending_file_offers
-            .remove(&decision.session_id)
+            .remove(&session_id)
         else {
             return Ok(());
         };
         let _ = self
             .inner
             .app
-            .emit(FILE_OFFER_ENDED_EVENT, &decision.session_id);
+            .emit(FILE_OFFER_ENDED_EVENT, &session_id);
 
-        if decision.accepted {
-            self.accept_file_offer(pending).await
+        if accepted {
+            self.accept_file_offer(pending, destination_path.as_deref()).await
         } else {
             self.reject_file_offer(&pending.from, pending.payload.session_id, pending.envelope_id)
                 .await
@@ -398,7 +403,11 @@ impl AppRuntime {
         Ok(())
     }
 
-    async fn accept_file_offer(&self, pending: PendingFileOfferState) -> AppResult<()> {
+    async fn accept_file_offer(
+        &self,
+        pending: PendingFileOfferState,
+        destination_path: Option<&str>,
+    ) -> AppResult<()> {
         let PendingFileOfferState {
             from,
             route,
@@ -409,8 +418,9 @@ impl AppRuntime {
             self.inner.database.load_settings()?.ok_or_else(|| {
                 AppError::message(self.user_text(TextKey::SettingsNotInitialized))
             })?;
-        let download_path = PathBuf::from(&settings.download_path);
-        fs::create_dir_all(&download_path)?;
+        let download_path = crate::service::validate_receive_directory(
+            destination_path.unwrap_or(&settings.download_path),
+        )?;
         let verifier = Arc::new(AsyncMutex::new(FileChecksumVerifier::new(
             &payload.checksum,
         )?));
@@ -950,18 +960,16 @@ impl AppRuntime {
             writer.flush().await?;
         }
 
-        let settings =
-            self.inner.database.load_settings()?.ok_or_else(|| {
-                AppError::message(self.user_text(TextKey::SettingsNotInitialized))
-            })?;
-        let download_dir = PathBuf::from(settings.download_path);
-        fs::create_dir_all(&download_dir)?;
         let temp_path = incoming
             .record
             .temp_path
             .as_deref()
             .map(PathBuf::from)
             .ok_or_else(|| AppError::message("temporary file path does not exist"))?;
+        let download_dir = temp_path
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::message("temporary file directory does not exist"))?;
 
         let success = {
             let verifier = incoming.verifier.lock().await;

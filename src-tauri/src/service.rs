@@ -1,3 +1,5 @@
+use std::{fs, path::{Path, PathBuf}};
+
 use hostname::get;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -301,8 +303,15 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
             TextKey::DownloadPathEmpty,
         )));
     }
+    if !Path::new(&normalized.download_path).is_absolute() {
+        return Err(AppError::message(user_text(
+            state,
+            TextKey::DownloadPathMustBeAbsolute,
+        )));
+    }
 
     Url::parse(&normalized.server_url)?;
+    validate_receive_directory(&normalized.download_path)?;
 
     state.database.save_settings(&normalized)?;
     shell::apply_auto_start(normalized.auto_start)?;
@@ -316,6 +325,33 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     shell::refresh_tray(&state.app)?;
 
     Ok(normalized)
+}
+
+pub(crate) fn validate_receive_directory(path: &str) -> AppResult<PathBuf> {
+    let directory = PathBuf::from(path.trim());
+    if directory.as_os_str().is_empty() {
+        return Err(AppError::message("File receiving path cannot be empty"));
+    }
+    if !directory.is_absolute() {
+        return Err(AppError::message("File receiving path must be an absolute path"));
+    }
+
+    fs::create_dir_all(&directory)?;
+    if !fs::metadata(&directory)?.is_dir() {
+        return Err(AppError::message("File receiving path is not a directory"));
+    }
+
+    let probe = directory.join(format!(
+        ".colink-write-check-{}-{}",
+        std::process::id(),
+        crate::models::unix_now_millis(),
+    ));
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe)?;
+    fs::remove_file(probe)?;
+    Ok(directory)
 }
 
 pub fn get_music_providers(state: &AppState) -> AppResult<Vec<MusicProviderConfig>> {
@@ -729,7 +765,7 @@ fn user_text(state: &AppState, key: TextKey) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_device_name_from;
+    use super::{detect_device_name_from, validate_receive_directory};
 
     #[test]
     fn appends_debug_suffix_in_debug_builds() {
@@ -741,6 +777,11 @@ mod tests {
     fn falls_back_to_default_name_and_applies_suffix() {
         let name = detect_device_name_from(None, true);
         assert_eq!(name, "CoLink DesktopDebug");
+    }
+
+    #[test]
+    fn rejects_relative_receive_directory() {
+        assert!(validate_receive_directory("1321123321").is_err());
     }
 }
 
