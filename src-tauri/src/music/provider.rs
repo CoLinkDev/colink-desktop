@@ -45,17 +45,17 @@ pub const KNOWN_PROVIDERS: &[KnownProvider] = &[
     KnownProvider {
         id: "qqmusic",
         name: "QQ Music",
-        implemented: true,
+        implemented: !cfg!(target_os = "linux"),
     },
     KnownProvider {
         id: "kugou",
         name: "Kugou Music",
-        implemented: true,
+        implemented: !cfg!(target_os = "linux"),
     },
     KnownProvider {
         id: "ncm",
         name: "NetEase Cloud Music",
-        implemented: true,
+        implemented: !cfg!(target_os = "linux"),
     },
     KnownProvider {
         id: "spotify",

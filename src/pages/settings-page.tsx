@@ -409,7 +409,7 @@ function ProviderRow({
           <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">
             {t(providerNameKey(item.id), { defaultValue: item.name })}
           </span>
-          {item.id === 'ncm' && (
+          {item.id === 'ncm' && item.implemented && (
             <button
               className="shrink-0 text-[11px] text-[hsl(var(--muted))] underline underline-offset-2 hover:text-[hsl(var(--text))]"
               onClick={onShowNcmHelp}
@@ -420,7 +420,7 @@ function ProviderRow({
           )}
           {!item.implemented && (
             <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--muted))]">
-              {t('nowPlaying.comingSoon')}
+              {t('nowPlaying.unsupportedSystem')}
             </span>
           )}
         </div>

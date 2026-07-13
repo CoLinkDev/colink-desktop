@@ -381,7 +381,7 @@ pub fn list_available_music_providers() -> Vec<MusicProviderMeta> {
 pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease>> {
     let settings = load_settings(state)?;
     let query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("platform", "windows")
+        .append_pair("platform", update_platform())
         .append_pair("version", env!("CARGO_PKG_VERSION"))
         .finish();
     let path = format!("{UPDATE_CHECK_PATH}?{query}");
@@ -398,6 +398,14 @@ pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease
         asset.download_url = absolute_url(&settings.server_url, &asset.download_url)?;
     }
     Ok(Some(release))
+}
+
+fn update_platform() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "windows"
+    }
 }
 
 pub fn open_update_download_url(url: &str) -> AppResult<()> {

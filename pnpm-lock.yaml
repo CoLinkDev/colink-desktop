@@ -20,6 +20,12 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.6)
+      '@fontsource-variable/google-sans-flex':
+        specifier: 5.2.3
+        version: 5.2.3
+      '@fontsource-variable/inter':
+        specifier: 5.2.8
+        version: 5.2.8
       '@tanstack/react-query':
         specifier: ^5.100.13
         version: 5.100.13(react@19.2.6)
@@ -272,6 +278,12 @@ packages:
   '@eslint/plugin-kit@0.7.1':
     resolution: {integrity: sha512-rZAP3aVgB9ds9KOeUSL+zZ21hPmo8dh6fnIFwRQj5EAZl9gzR7wxYbYXYysAM8CTqGmUGyp2S4kUdV17MnGuWQ==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24}
+
+  '@fontsource-variable/google-sans-flex@5.2.3':
+    resolution: {integrity: sha512-g5z9WANJW56gZTWJvu7mIHOiHJaffkk/dhOKqEiK4Nxnsk8lnGnijvGt4vF4KD2KWzscXBOB9XR2sfvTPSi5hA==}
+
+  '@fontsource-variable/inter@5.2.8':
+    resolution: {integrity: sha512-kOfP2D+ykbcX/P3IFnokOhVRNoTozo5/JxhAIVYLpea/UBmCQ/YWPBfWIDuBImXX/15KH+eKh4xpEUyS2sQQGQ==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -1636,6 +1648,10 @@ snapshots:
     dependencies:
       '@eslint/core': 1.2.1
       levn: 0.4.1
+
+  '@fontsource-variable/google-sans-flex@5.2.3': {}
+
+  '@fontsource-variable/inter@5.2.8': {}
 
   '@humanfs/core@0.19.2':
     dependencies:

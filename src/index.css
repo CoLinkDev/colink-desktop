@@ -1,3 +1,6 @@
+@import '@fontsource-variable/google-sans-flex';
+@import '@fontsource-variable/inter';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -62,7 +65,7 @@
       -apple-system,
       BlinkMacSystemFont,
       'SF Pro Text',
-      'Inter',
+      'Inter Variable',
       'Microsoft YaHei UI',
       'PingFang SC',
       system-ui,
@@ -109,7 +112,7 @@
   }
 
   .font-google-sans {
-    font-family: 'Google Sans Flex', 'Google Sans', 'Product Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+    font-family: 'Google Sans Flex Variable', 'Google Sans', 'Product Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter Variable', system-ui, sans-serif;
   }
 }
 

@@ -3,6 +3,13 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
+
 use image::ImageReader;
 use tauri::{
     image::Image,
@@ -18,12 +25,18 @@ use crate::{
     state::AppState,
 };
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use crate::error::AppError;
+
 pub const SHELL_NAVIGATE_EVENT: &str = "shell-navigate";
 
 const TRAY_ID: &str = "main-tray";
 const MENU_OPEN: &str = "tray-open";
 const MENU_SETTINGS: &str = "tray-settings";
 const MENU_QUIT: &str = "tray-quit";
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const LINUX_AUTOSTART_FILE: &str = "dev.colink.desktop.desktop";
 
 pub struct ShellState {
     allow_exit: AtomicBool,
@@ -149,10 +162,86 @@ pub fn apply_auto_start(enabled: bool) -> AppResult<()> {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    apply_linux_auto_start(enabled)?;
+
+    #[cfg(any(target_os = "macos", not(any(windows, unix))))]
     let _ = enabled;
 
     Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn apply_linux_auto_start(enabled: bool) -> AppResult<()> {
+    let path = linux_autostart_path()?;
+
+    if !enabled {
+        return match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        };
+    }
+
+    let executable = std::env::current_exe()?;
+    let entry = linux_autostart_entry(&executable)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| AppError::message("Linux autostart path has no parent directory"))?;
+    fs::create_dir_all(directory)?;
+    fs::write(path, entry)?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_autostart_path() -> AppResult<PathBuf> {
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| AppError::message("Unable to resolve the XDG config directory"))?;
+    Ok(config_dir.join("autostart").join(LINUX_AUTOSTART_FILE))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_autostart_entry(executable: &Path) -> AppResult<String> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| AppError::message("Autostart executable path is not valid UTF-8"))?;
+    let executable = desktop_entry_exec_value(executable);
+    Ok(format!(
+        "[Desktop Entry]\nType=Application\nName=CoLink Desktop\nExec={executable}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+    ))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_entry_exec_value(value: &str) -> String {
+    if !value
+        .chars()
+        .any(|character| matches!(character, ' ' | '\t' | '\n' | '"' | '\\' | '%'))
+    {
+        return value.to_string();
+    }
+
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    format!("\"{escaped}\"")
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod linux_autostart_tests {
+    use std::path::Path;
+
+    use super::linux_autostart_entry;
+
+    #[test]
+    fn creates_a_desktop_entry_for_an_executable_path_with_spaces() {
+        let entry = linux_autostart_entry(Path::new("/opt/CoLink Desktop/colink-desktop"))
+            .expect("create autostart entry");
+
+        assert!(entry.contains("Type=Application\n"));
+        assert!(entry.contains("Exec=\"/opt/CoLink Desktop/colink-desktop\"\n"));
+        assert!(entry.contains("X-GNOME-Autostart-enabled=true\n"));
+    }
 }
 
 pub fn open_external_url(url: &str) -> AppResult<()> {
