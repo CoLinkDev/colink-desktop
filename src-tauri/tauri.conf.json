@@ -29,6 +29,7 @@
     "targets": ["nsis"],
     "windows": {
       "nsis": {
+        "template": "windows/installer.nsi",
         "languages": [
           "SimpChinese",
           "English",
