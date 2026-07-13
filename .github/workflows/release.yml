@@ -19,11 +19,9 @@ jobs:
             artifact-name: windows
             artifact-path: colink-desktop/src-tauri/target/release/bundle/nsis/*.exe
           - os: ubuntu-24.04
-            bundle: deb,appimage
+            bundle: deb
             artifact-name: linux
-            artifact-path: |
-              colink-desktop/src-tauri/target/release/bundle/deb/*.deb
-              colink-desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            artifact-path: colink-desktop/src-tauri/target/release/bundle/deb/*.deb
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Desktop

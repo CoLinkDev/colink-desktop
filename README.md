@@ -25,13 +25,12 @@ Vite serves the frontend on port 1420; Tauri connects to it automatically.
 # Unpackaged debug binary
 pnpm tauri:debug-build
 
-# Production packages
+# Production installers
 pnpm tauri build
 ```
 
 - Windows: NSIS installer (`.exe`).
 - Ubuntu and Debian: Debian package (`.deb`), installed through the system package manager.
-- Other Linux distributions: AppImage (`.AppImage`), a portable executable that does not require installation.
 
 ## Architecture
 
