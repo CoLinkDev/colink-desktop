@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 #[cfg(windows)]
@@ -133,6 +134,7 @@ fn useful_timespan_ms(value: Option<windows::Foundation::TimeSpan>) -> Option<i6
         .filter(|value| *value > 0)
 }
 
+#[cfg(windows)]
 fn album_from_album_artist(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     value
@@ -143,6 +145,7 @@ fn album_from_album_artist(value: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+#[cfg(windows)]
 fn split_artists(value: Option<&str>) -> Vec<String> {
     let Some(value) = value else {
         return Vec::new();
@@ -165,6 +168,7 @@ fn split_artists(value: Option<&str>) -> Vec<String> {
     }
 }
 
+#[cfg(windows)]
 fn stable_track_id(
     title: Option<&str>,
     artist: Option<&str>,

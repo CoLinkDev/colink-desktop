@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 #[cfg(windows)]
@@ -130,6 +131,7 @@ fn timespan_ms(value: Option<windows::Foundation::TimeSpan>) -> Option<i64> {
     value.map(|item| item.Duration / 10_000)
 }
 
+#[cfg(windows)]
 fn split_artists(value: Option<&str>) -> Vec<String> {
     let Some(value) = value else {
         return Vec::new();
@@ -152,6 +154,7 @@ fn split_artists(value: Option<&str>) -> Vec<String> {
     }
 }
 
+#[cfg(windows)]
 fn stable_track_id(
     title: Option<&str>,
     artist: Option<&str>,

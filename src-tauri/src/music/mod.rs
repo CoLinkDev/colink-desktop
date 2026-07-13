@@ -1,6 +1,8 @@
 mod ncm;
 pub mod provider;
 mod kugou;
+#[cfg(target_os = "linux")]
+mod mpris;
 mod qqmusic;
 mod spotify;
 
@@ -474,7 +476,11 @@ impl MusicService {
         match self.database.load_music_providers() {
             Ok(providers) => providers
                 .into_iter()
-                .filter(|provider| provider.enabled)
+                .filter(|provider| {
+                    provider.enabled
+                        && provider::known_provider(&provider.id)
+                            .is_some_and(|meta| meta.implemented)
+                })
                 .map(|provider| provider.id)
                 .collect(),
             Err(error) => {

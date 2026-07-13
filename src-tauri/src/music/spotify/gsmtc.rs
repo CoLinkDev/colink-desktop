@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 #[cfg(windows)]
@@ -72,7 +73,22 @@ pub fn fetch_current_track() -> Option<GsmTrack> {
     read_session(&session)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn fetch_current_track() -> Option<GsmTrack> {
+    crate::music::mpris::fetch_spotify_track().map(|track| GsmTrack {
+        fallback_track_id: track.fallback_track_id,
+        title: track.title,
+        artist: track.artist,
+        artists: track.artists,
+        album: track.album,
+        cover_data: None,
+        duration_ms: track.duration_ms,
+        progress_ms: track.progress_ms,
+        paused: track.paused,
+    })
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn fetch_current_track() -> Option<GsmTrack> {
     None
 }
@@ -167,6 +183,7 @@ fn read_thumbnail_base64(thumbnail: &IRandomAccessStreamReference) -> Option<Str
     Some(STANDARD.encode(bytes))
 }
 
+#[cfg(windows)]
 fn split_artists(value: Option<&str>) -> Vec<String> {
     let Some(value) = value else {
         return Vec::new();
@@ -189,6 +206,7 @@ fn split_artists(value: Option<&str>) -> Vec<String> {
     }
 }
 
+#[cfg(windows)]
 fn stable_track_id(
     title: Option<&str>,
     artist: Option<&str>,
