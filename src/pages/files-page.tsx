@@ -618,7 +618,7 @@ function FileEntryRow({
             <EntryIcon entry={entry} />
           </div>
           <div className="min-w-0">
-            <div className={cn('truncate text-[13px]', isDirectory ? 'font-medium text-[hsl(var(--text))]' : 'text-[hsl(var(--text-secondary))]')} title={entry.name}>
+            <div className={cn('truncate text-[13px] text-[hsl(var(--text))]', isDirectory && 'font-medium')} title={entry.name}>
               {entry.name}
             </div>
             <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[hsl(var(--muted))]">
