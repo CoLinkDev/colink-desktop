@@ -65,7 +65,7 @@ function UpdateNotification() {
   const required = update ? isReleaseBuild && update.assets.length > 0 && isBreakingVersionUpdate(update.version, version) : false
 
   useEffect(() => {
-    if (status !== 'ready' || checkedRef.current) {
+    if (!isReleaseBuild || status !== 'ready' || checkedRef.current) {
       return
     }
     checkedRef.current = true

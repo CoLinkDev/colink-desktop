@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { clearSavedLogin, getSavedLogin, saveSavedLogin } from '../lib/api'
+import { normalizeServerUrl } from '../lib/server-url'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 
@@ -125,12 +126,17 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
       setError(t('auth.serverRequired'))
       return
     }
+    const normalizedServerUrl = normalizeServerUrl(serverUrl)
+    if (!normalizedServerUrl) {
+      setError(t('settings.validation.serverUrl'))
+      return
+    }
 
     setSubmitting(true)
     try {
       await saveSettings({
         ...settings,
-        serverUrl: serverUrl.trim(),
+        serverUrl: normalizedServerUrl,
       })
 
       if (mode === 'login') {

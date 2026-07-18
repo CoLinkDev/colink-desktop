@@ -18,6 +18,7 @@ import { buildTime, fallbackVersion, formatBuildTime, isReleaseBuild, projectUrl
 import { checkUpdate, getMusicProviders, listAvailableMusicProviders, updateMusicProviders } from '../lib/api'
 import type { AppSettings, AppUpdateRelease, MusicProviderConfig, MusicProviderMeta } from '../lib/types'
 import { isBreakingVersionUpdate } from '../lib/update-policy'
+import { isValidServerUrl } from '../lib/server-url'
 import { cn } from '../lib/utils'
 import { resolveLanguage } from '../i18n'
 
@@ -81,7 +82,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     isBreakingVersionUpdate(availableUpdate.version, version)
 
   const settingsSchema = useMemo(() => z.object({
-    serverUrl: z.string().url(t('settings.validation.serverUrl')),
+    serverUrl: z.string().refine(isValidServerUrl, { message: t('settings.validation.serverUrl') }),
     autoStart: z.boolean(),
     startMinimized: z.boolean(),
     downloadPath: z.string().min(1, t('settings.validation.downloadPath')),
@@ -230,7 +231,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
       <form id="settings-form" className="space-y-6" onSubmit={handleSubmit}>
         <Section title={t('settings.general')}>
           <Field label={t('settings.serverUrl')} tip={t('settings.serverTip')}>
-            <Input onChange={(e) => setForm((c) => ({ ...c, serverUrl: e.target.value }))} value={form.serverUrl} />
+            <Input onChange={(event) => setForm((current) => ({ ...current, serverUrl: event.target.value }))} value={form.serverUrl} />
           </Field>
           <Field label={t('settings.downloadPath')} tip={t('settings.downloadPathTip')}>
             <div className="flex gap-2">
