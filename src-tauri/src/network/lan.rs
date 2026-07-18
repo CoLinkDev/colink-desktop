@@ -137,12 +137,14 @@ struct PeerConnection {
 
 struct PendingLanSend {
     message: BusinessEnvelope,
+    envelope_id: Option<String>,
     correlation_id: Option<String>,
     result_tx: oneshot::Sender<AppResult<()>>,
 }
 
 struct PendingBusinessMessage {
     message: BusinessEnvelope,
+    envelope_id: Option<String>,
     correlation_id: Option<String>,
 }
 
@@ -426,6 +428,7 @@ impl LanManager {
         &self,
         device_id: &str,
         message: BusinessEnvelope,
+        envelope_id: Option<String>,
         correlation_id: Option<String>,
     ) -> AppResult<()> {
         if !self.is_available(device_id) {
@@ -445,6 +448,7 @@ impl LanManager {
 
         let mut outbound = PendingBusinessMessage {
             message,
+            envelope_id,
             correlation_id,
         };
         loop {
@@ -473,6 +477,7 @@ impl LanManager {
                         let (tx, rx) = oneshot::channel();
                         queue.push_back(PendingLanSend {
                             message: outbound.message,
+                            envelope_id: outbound.envelope_id.clone(),
                             correlation_id: outbound.correlation_id.clone(),
                             result_tx: tx,
                         });
@@ -483,6 +488,7 @@ impl LanManager {
                         let mut queue = VecDeque::new();
                         queue.push_back(PendingLanSend {
                             message: outbound.message,
+                            envelope_id: outbound.envelope_id.clone(),
                             correlation_id: outbound.correlation_id.clone(),
                             result_tx: tx,
                         });
@@ -1079,6 +1085,7 @@ impl LanManager {
             let result = tx
                 .send(PendingBusinessMessage {
                     message: pending.message,
+                    envelope_id: pending.envelope_id,
                     correlation_id: pending.correlation_id,
                 })
                 .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)));
@@ -1120,19 +1127,21 @@ impl LanManager {
                             break;
                         };
                         let message = outbound.message;
+                        let envelope_id = outbound.envelope_id;
                         let correlation_id = outbound.correlation_id;
                         let encrypted = match crypto.encrypt(&message) {
                             Ok(payload) => payload,
                             Err(_) => {
                                 failed_outbound = Some(CorrelatedBusinessMessage {
                                     message,
+                                    envelope_id,
                                     correlation_id,
                                 });
                                 break;
                             }
                         };
                         let envelope = LanEnvelope {
-                            id: Uuid::new_v4().to_string(),
+                            id: envelope_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string()),
                             message_type: "business.v1.message".to_string(),
                             from: local_device_id.clone(),
                             to: peer_device_id.clone(),
@@ -1144,6 +1153,7 @@ impl LanManager {
                                 Err(_) => {
                                     failed_outbound = Some(CorrelatedBusinessMessage {
                                         message,
+                                        envelope_id,
                                         correlation_id,
                                     });
                                     break;
@@ -1155,6 +1165,7 @@ impl LanManager {
                             Err(_) => {
                                 failed_outbound = Some(CorrelatedBusinessMessage {
                                     message,
+                                    envelope_id,
                                     correlation_id,
                                 });
                                 break;
@@ -1163,6 +1174,7 @@ impl LanManager {
                         if writer.send(Message::Text(text.into())).await.is_err() {
                             failed_outbound = Some(CorrelatedBusinessMessage {
                                 message,
+                                envelope_id,
                                 correlation_id,
                             });
                             break;
@@ -1245,6 +1257,7 @@ impl LanManager {
                                         let _ = manager.event_tx.send(RuntimeEvent::LanMessage {
                                             from: peer_device_id.clone(),
                                             envelope_id: envelope.id,
+                                            correlation_id: envelope.correlation_id,
                                             message,
                                         });
                                     }
@@ -1265,6 +1278,7 @@ impl LanManager {
             while let Ok(message) = rx.try_recv() {
                 undelivered.push(CorrelatedBusinessMessage {
                     message: message.message,
+                    envelope_id: message.envelope_id,
                     correlation_id: message.correlation_id,
                 });
             }

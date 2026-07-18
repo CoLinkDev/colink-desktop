@@ -216,6 +216,44 @@ export interface SendFilePayload {
   paths: string[]
 }
 
+export interface RemoteFilesystemRoot {
+  path: string
+  label?: string | null
+  totalBytes?: number | null
+  freeBytes?: number | null
+}
+
+export interface RemoteFilesystemEntry {
+  name: string
+  kind: 'directory' | 'file' | 'symlink' | 'other'
+  size?: number | null
+  modified?: number | null
+  created?: number | null
+  readonly: boolean
+  hidden: boolean
+}
+
+export interface RemoteFilesystemRootsResult {
+  roots: RemoteFilesystemRoot[]
+}
+
+export interface RemoteFilesystemListResult {
+  path: string
+  entries: RemoteFilesystemEntry[]
+  total: number
+  offset: number
+  hasMore: boolean
+}
+
+export interface RemoteFilesystemDownload {
+  requestId: string
+  deviceId: string
+  remotePath: string
+  requestedAt: number
+  sessionId: string | null
+  error: string | null
+}
+
 export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',
   autoStart: true,

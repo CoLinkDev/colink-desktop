@@ -6,25 +6,37 @@ use std::{
 };
 
 use serde::{de::DeserializeOwned, Serialize};
+use tauri::Emitter;
+use tokio::{
+    sync::oneshot,
+    time::{sleep, timeout},
+};
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 #[cfg(windows)]
 use windows::{core::PCWSTR, Win32::Storage::FileSystem::GetVolumeInformationW};
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
+    models::{unix_now_millis, RemoteFilesystemDownload},
     protocol::{
         BusinessEnvelope, FsDownloadPayload, FsEntry, FsErrorPayload, FsListPayload,
         FsListResultPayload, FsRootEntry, FsRootsPayload, FsRootsResultPayload, FsStatPayload,
         FsStatResultPayload, FS_DOWNLOAD_TYPE, FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE,
         FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE, FS_STAT_RESULT_TYPE, FS_STAT_TYPE,
     },
+    sync::MutexExt,
 };
 
-use super::AppRuntime;
+use super::{
+    AppRuntime, PendingFilesystemRequest, FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT,
+    FILESYSTEM_REQUEST_TIMEOUT, REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT,
+};
 
 const DEFAULT_LIST_LIMIT: i64 = 200;
 const MAX_LIST_LIMIT: i64 = 1_000;
+pub const REMOTE_FILESYSTEM_UNSUPPORTED_ERROR: &str = "colink:filesystem.unsupported.v1";
 
 #[derive(Debug)]
 struct FilesystemError {
@@ -54,6 +66,98 @@ impl FilesystemError {
 }
 
 impl AppRuntime {
+    pub async fn list_remote_filesystem_roots(
+        &self,
+        device_id: &str,
+    ) -> AppResult<FsRootsResultPayload> {
+        self.require_remote_filesystem_support(device_id)?;
+        let response = self
+            .request_remote_filesystem(
+                device_id,
+                BusinessEnvelope::from_payload(FS_ROOTS_TYPE, FsRootsPayload {})?,
+                FS_ROOTS_RESULT_TYPE,
+            )
+            .await?;
+        serde_json::from_value(response.payload).map_err(AppError::from)
+    }
+
+    pub async fn list_remote_filesystem(
+        &self,
+        device_id: &str,
+        path: String,
+        offset: Option<i64>,
+    ) -> AppResult<FsListResultPayload> {
+        self.require_remote_filesystem_support(device_id)?;
+        let response = self
+            .request_remote_filesystem(
+                device_id,
+                BusinessEnvelope::from_payload(
+                    FS_LIST_TYPE,
+                    FsListPayload {
+                        path,
+                        offset,
+                        limit: None,
+                    },
+                )?,
+                FS_LIST_RESULT_TYPE,
+            )
+            .await?;
+        serde_json::from_value(response.payload).map_err(AppError::from)
+    }
+
+    pub async fn download_remote_filesystem_file(
+        &self,
+        device_id: &str,
+        path: String,
+    ) -> AppResult<RemoteFilesystemDownload> {
+        self.require_remote_filesystem_support(device_id)?;
+
+        let download = RemoteFilesystemDownload {
+            request_id: Uuid::new_v4().to_string(),
+            device_id: device_id.to_string(),
+            remote_path: path.clone(),
+            requested_at: unix_now_millis(),
+            session_id: None,
+            error: None,
+        };
+        self.remember_remote_filesystem_download(download.clone());
+
+        let envelope = BusinessEnvelope::from_payload(FS_DOWNLOAD_TYPE, FsDownloadPayload { path })?;
+        if let Err(error) = self
+            .send_business_message_with_envelope_id(device_id, envelope, download.request_id.clone())
+            .await
+        {
+            self.remove_remote_filesystem_download(&download.request_id);
+            return Err(error);
+        }
+
+        let runtime = self.clone();
+        let request_id = download.request_id.clone();
+        tauri::async_runtime::spawn(async move {
+            sleep(FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT).await;
+            runtime.expire_remote_filesystem_download(&request_id);
+        });
+        let _ = self.append_log(
+            "info",
+            "filesystem",
+            format!("requested remote file download from {device_id}"),
+        );
+        Ok(download)
+    }
+
+    pub fn remote_filesystem_downloads(&self) -> Vec<RemoteFilesystemDownload> {
+        let mut downloads = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .remote_filesystem_downloads
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        downloads.sort_by(|left, right| right.requested_at.cmp(&left.requested_at));
+        downloads
+    }
+
     pub(super) async fn handle_filesystem_message(
         &self,
         from: &str,
@@ -196,6 +300,228 @@ impl AppRuntime {
             },
         )
         .await;
+    }
+
+    pub(super) fn associate_remote_filesystem_file_offer(
+        &self,
+        device_id: &str,
+        correlation_id: Option<&str>,
+        session_id: &str,
+    ) -> Option<String> {
+        let request_id = correlation_id?;
+        let matched = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(download) = state.remote_filesystem_downloads.get_mut(request_id) else {
+                return None;
+            };
+            if download.device_id != device_id || download.session_id.is_some() || download.error.is_some() {
+                return None;
+            }
+            download.session_id = Some(session_id.to_string());
+            true
+        };
+        if matched {
+            self.emit_remote_filesystem_downloads();
+            Some(request_id.to_string())
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn fail_remote_filesystem_download(&self, request_id: &str, message: String) {
+        let updated = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(download) = state.remote_filesystem_downloads.get_mut(request_id) else {
+                return;
+            };
+            if download.error.is_some() {
+                return;
+            }
+            download.error = Some(message);
+            true
+        };
+        if updated {
+            self.emit_remote_filesystem_downloads();
+        }
+    }
+
+    pub(super) fn complete_filesystem_request(
+        &self,
+        device_id: &str,
+        correlation_id: Option<&str>,
+        message: &BusinessEnvelope,
+    ) {
+        let Some(request_id) = correlation_id else {
+            debug!(%device_id, message_type = %message.message_type, "ignored filesystem response without correlation id");
+            return;
+        };
+        let pending = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(pending) = state.pending_filesystem_requests.get(request_id) else {
+                debug!(%device_id, %request_id, message_type = %message.message_type, "ignored filesystem response without pending request");
+                return;
+            };
+            if pending.device_id != device_id
+                || (message.message_type != FS_ERROR_TYPE
+                    && message.message_type != pending.expected_response_type)
+            {
+                warn!(%device_id, %request_id, message_type = %message.message_type, expected_response_type = pending.expected_response_type, "ignored mismatched filesystem response");
+                return;
+            }
+            state.pending_filesystem_requests.remove(request_id)
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let result = if message.message_type == FS_ERROR_TYPE {
+            let error = serde_json::from_value::<FsErrorPayload>(message.payload.clone())
+                .map(|payload| payload.message)
+                .unwrap_or_else(|_| "Remote filesystem request failed".to_string());
+            Err(AppError::message(error))
+        } else {
+            Ok(message.clone())
+        };
+        debug!(%device_id, %request_id, message_type = %message.message_type, "completed remote filesystem request");
+        let _ = pending.sender.send(result);
+    }
+
+    pub(super) fn complete_remote_filesystem_download_error(
+        &self,
+        device_id: &str,
+        correlation_id: Option<&str>,
+        message: &BusinessEnvelope,
+    ) {
+        let Some(request_id) = correlation_id else {
+            return;
+        };
+        let error = serde_json::from_value::<FsErrorPayload>(message.payload.clone())
+            .map(|payload| payload.message)
+            .unwrap_or_else(|_| "Remote filesystem request failed".to_string());
+        let matched = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .remote_filesystem_downloads
+            .get(request_id)
+            .is_some_and(|download| download.device_id == device_id);
+        if matched {
+            self.fail_remote_filesystem_download(request_id, error);
+        }
+    }
+
+    fn require_remote_filesystem_support(&self, device_id: &str) -> AppResult<()> {
+        if self
+            .peer_business_version(device_id)
+            .is_some_and(|version| !crate::protocol::supports_business_protocol_at_least(&version, 1, 4, 0))
+        {
+            return Err(AppError::message(
+                REMOTE_FILESYSTEM_UNSUPPORTED_ERROR,
+            ));
+        }
+        Ok(())
+    }
+
+    async fn request_remote_filesystem(
+        &self,
+        device_id: &str,
+        request: BusinessEnvelope,
+        expected_response_type: &'static str,
+    ) -> AppResult<BusinessEnvelope> {
+        let request_id = Uuid::new_v4().to_string();
+        debug!(%device_id, %request_id, request_type = %request.message_type, %expected_response_type, "sending remote filesystem request");
+        let (sender, receiver) = oneshot::channel();
+        self.inner.state.lock_unpoisoned().pending_filesystem_requests.insert(
+            request_id.clone(),
+            PendingFilesystemRequest {
+                device_id: device_id.to_string(),
+                expected_response_type,
+                sender,
+            },
+        );
+
+        if let Err(error) = self
+            .send_business_message_with_envelope_id(device_id, request, request_id.clone())
+            .await
+        {
+            self.inner
+                .state
+                .lock_unpoisoned()
+                .pending_filesystem_requests
+                .remove(&request_id);
+            return Err(error);
+        }
+
+        let result = match timeout(FILESYSTEM_REQUEST_TIMEOUT, receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::message("Remote filesystem request ended unexpectedly")),
+            Err(_) => Err(AppError::message("Remote device did not respond in time")),
+        };
+        if let Err(error) = &result {
+            warn!(%device_id, %request_id, error = %error, "remote filesystem request failed");
+        }
+        self.inner
+            .state
+            .lock_unpoisoned()
+            .pending_filesystem_requests
+            .remove(&request_id);
+        result
+    }
+
+    fn remember_remote_filesystem_download(&self, download: RemoteFilesystemDownload) {
+        {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state
+                .remote_filesystem_downloads
+                .insert(download.request_id.clone(), download);
+            if state.remote_filesystem_downloads.len() > 100 {
+                let mut stale = state
+                    .remote_filesystem_downloads
+                    .values()
+                    .map(|item| (item.request_id.clone(), item.requested_at))
+                    .collect::<Vec<_>>();
+                stale.sort_by(|left, right| right.1.cmp(&left.1));
+                for (request_id, _) in stale.into_iter().skip(100) {
+                    state.remote_filesystem_downloads.remove(&request_id);
+                }
+            }
+        }
+        self.emit_remote_filesystem_downloads();
+    }
+
+    fn remove_remote_filesystem_download(&self, request_id: &str) {
+        if self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .remote_filesystem_downloads
+            .remove(request_id)
+            .is_some()
+        {
+            self.emit_remote_filesystem_downloads();
+        }
+    }
+
+    fn expire_remote_filesystem_download(&self, request_id: &str) {
+        let waiting = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .remote_filesystem_downloads
+            .get(request_id)
+            .is_some_and(|download| download.session_id.is_none() && download.error.is_none());
+        if waiting {
+            self.fail_remote_filesystem_download(
+                request_id,
+                "Remote device did not start the download".to_string(),
+            );
+        }
+    }
+
+    fn emit_remote_filesystem_downloads(&self) {
+        let _ = self
+            .inner
+            .app
+            .emit(REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT, self.remote_filesystem_downloads());
     }
 }
 

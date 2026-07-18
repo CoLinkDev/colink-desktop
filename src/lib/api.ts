@@ -15,6 +15,9 @@ import type {
   CastBoardMonitor,
   CastBoardStatus,
   RegisterPayload,
+  RemoteFilesystemDownload,
+  RemoteFilesystemListResult,
+  RemoteFilesystemRootsResult,
   SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
@@ -167,6 +170,26 @@ export function pickFiles(multiple = true) {
 
 export function sendFiles(payload: SendFilePayload) {
   return invoke<FileTransferRecord[]>('send_files', { payload })
+}
+
+export function listRemoteFilesystemRoots(deviceId: string) {
+  return invoke<RemoteFilesystemRootsResult>('list_remote_filesystem_roots', { deviceId })
+}
+
+export function listRemoteFilesystem(deviceId: string, path: string, offset?: number) {
+  return invoke<RemoteFilesystemListResult>('list_remote_filesystem', {
+    payload: { deviceId, path, offset },
+  })
+}
+
+export function downloadRemoteFilesystemFile(deviceId: string, path: string) {
+  return invoke<RemoteFilesystemDownload>('download_remote_filesystem_file', {
+    payload: { deviceId, path },
+  })
+}
+
+export function listRemoteFilesystemDownloads() {
+  return invoke<RemoteFilesystemDownload[]>('list_remote_filesystem_downloads')
 }
 
 export function cancelTransfer(fileId: string) {

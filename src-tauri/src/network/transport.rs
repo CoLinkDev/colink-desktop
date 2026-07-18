@@ -26,12 +26,18 @@ impl TransportManager {
         &self,
         device_id: &str,
         message: BusinessEnvelope,
+        envelope_id: Option<String>,
         correlation_id: Option<String>,
     ) -> AppResult<String> {
         if self.lan.is_available(device_id) {
             match self
                 .lan
-                .send(device_id, message.clone(), correlation_id.clone())
+                .send(
+                    device_id,
+                    message.clone(),
+                    envelope_id.clone(),
+                    correlation_id.clone(),
+                )
                 .await
             {
                 Ok(()) => return Ok("lan".to_string()),
@@ -43,7 +49,9 @@ impl TransportManager {
 
         if self.cloud.is_connected() {
             self.cloud.ensure_business_compatible(device_id)?;
-            self.cloud.send_relay(device_id, message, correlation_id)?;
+            self
+                .cloud
+                .send_relay(device_id, message, envelope_id, correlation_id)?;
             return Ok("cloud".to_string());
         }
 
@@ -59,7 +67,7 @@ impl TransportManager {
         message: BusinessEnvelope,
     ) -> AppResult<String> {
         if self.lan.is_available(device_id) {
-            self.lan.send(device_id, message, None).await?;
+            self.lan.send(device_id, message, None, None).await?;
             return Ok("lan".to_string());
         }
 

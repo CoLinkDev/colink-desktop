@@ -253,6 +253,7 @@ impl AppRuntime {
         from: &str,
         route: &str,
         envelope_id: Option<String>,
+        correlation_id: Option<String>,
         payload: FileOfferPayload,
     ) -> AppResult<()> {
         info!(
@@ -263,7 +264,18 @@ impl AppRuntime {
             route = %route,
             "received file offer"
         );
+        let filesystem_download_id = self.associate_remote_filesystem_file_offer(
+            from,
+            correlation_id.as_deref().or(envelope_id.as_deref()),
+            &payload.session_id,
+        );
         if !self.file_checksum_allowed_for_peer(&payload.checksum, from) {
+            if let Some(request_id) = filesystem_download_id.as_deref() {
+                self.fail_remote_filesystem_download(
+                    request_id,
+                    "Unsupported file checksum algorithm".to_string(),
+                );
+            }
             let envelope = BusinessEnvelope::from_payload(
                 FILE_REJECT_TYPE,
                 FileRejectPayload {
@@ -296,14 +308,17 @@ impl AppRuntime {
                     from: from.to_string(),
                     route: route.to_string(),
                     envelope_id,
+                    filesystem_download_id: filesystem_download_id.clone(),
                     payload,
                 },
             );
         self.expire_pending_file_offer(session_id);
-        let _ = crate::shell::show_main_window(
-            &self.inner.app,
-            Some(&self.device_route("/transfers", from)),
-        );
+        let destination = if filesystem_download_id.is_some() {
+            self.device_route("/files", from)
+        } else {
+            self.device_route("/transfers", from)
+        };
+        let _ = crate::shell::show_main_window(&self.inner.app, Some(&destination));
         let _ = self.inner.app.emit(FILE_OFFER_REQUESTED_EVENT, request);
         Ok(())
     }
@@ -322,7 +337,7 @@ impl AppRuntime {
                 .is_some_and(|version| supports_business_protocol_at_least(&version, 1, 3, 0))
     }
 
-    fn peer_business_version(&self, device_id: &str) -> Option<String> {
+    pub(super) fn peer_business_version(&self, device_id: &str) -> Option<String> {
         self.inner
             .lan
             .peer_business_version(device_id)
@@ -341,6 +356,12 @@ impl AppRuntime {
                 .remove(&session_id);
             if let Some(pending) = expired {
                 let _ = runtime.inner.app.emit(FILE_OFFER_ENDED_EVENT, &session_id);
+                if let Some(request_id) = pending.filesystem_download_id.as_deref() {
+                    runtime.fail_remote_filesystem_download(
+                        request_id,
+                        "The file download request expired before it was accepted".to_string(),
+                    );
+                }
                 let _ = runtime
                     .reject_file_offer(
                         &pending.from,
@@ -373,8 +394,22 @@ impl AppRuntime {
             .emit(FILE_OFFER_ENDED_EVENT, &session_id);
 
         if accepted {
-            self.accept_file_offer(pending, destination_path.as_deref()).await
+            let filesystem_download_id = pending.filesystem_download_id.clone();
+            let result = self.accept_file_offer(pending, destination_path.as_deref()).await;
+            if let Err(error) = result {
+                if let Some(request_id) = filesystem_download_id.as_deref() {
+                    self.fail_remote_filesystem_download(request_id, error.to_string());
+                }
+                return Err(error);
+            }
+            Ok(())
         } else {
+            if let Some(request_id) = pending.filesystem_download_id.as_deref() {
+                self.fail_remote_filesystem_download(
+                    request_id,
+                    "The file download was declined".to_string(),
+                );
+            }
             self.reject_file_offer(&pending.from, pending.payload.session_id, pending.envelope_id)
                 .await
         }
@@ -433,6 +468,7 @@ impl AppRuntime {
             from,
             route,
             envelope_id,
+            filesystem_download_id,
             payload,
         } = pending;
         let settings =
@@ -502,10 +538,12 @@ impl AppRuntime {
             "file offer accepted"
         );
         self.emit_transfers()?;
-        let _ = crate::shell::show_main_window(
-            &self.inner.app,
-            Some(&self.device_route("/transfers", &from)),
-        );
+        let destination = if filesystem_download_id.is_some() {
+            self.device_route("/files", &from)
+        } else {
+            self.device_route("/transfers", &from)
+        };
+        let _ = crate::shell::show_main_window(&self.inner.app, Some(&destination));
         self.notify(
             TextKey::FileReceiveTitle,
             &[],

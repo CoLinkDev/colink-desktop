@@ -201,7 +201,7 @@ impl SysInfoService {
         let Ok(envelope) = BusinessEnvelope::from_payload(SYSINFO_STATS_TYPE, snapshot.clone()) else {
             return;
         };
-        let _ = self.transport.send(device_id, envelope, None).await;
+        let _ = self.transport.send(device_id, envelope, None, None).await;
     }
 
     fn prune_active_receivers(&self) -> Vec<String> {

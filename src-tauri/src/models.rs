@@ -433,6 +433,32 @@ pub struct SendFilePayload {
     pub paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFilesystemListPayload {
+    pub device_id: String,
+    pub path: String,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFilesystemDownloadPayload {
+    pub device_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFilesystemDownload {
+    pub request_id: String,
+    pub device_id: String,
+    pub remote_path: String,
+    pub requested_at: i64,
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+}
+
 pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

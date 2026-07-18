@@ -12,7 +12,10 @@ use clipboard_rs::{
 use rfd::FileDialog;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
-use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tokio::{
+    sync::{mpsc, oneshot, Mutex as AsyncMutex, Notify},
+    time::Duration,
+};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -35,7 +38,7 @@ use crate::{
     models::{
         unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, LanPairingCandidate,
         LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
-        MAX_TEXT_LENGTH,
+        RemoteFilesystemDownload, MAX_TEXT_LENGTH,
     },
     music::MusicService,
     network::{
@@ -49,7 +52,8 @@ use crate::{
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
-        FS_LIST_TYPE, FS_ROOTS_TYPE, FS_STAT_TYPE,
+        FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
+        FS_STAT_RESULT_TYPE, FS_STAT_TYPE,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -68,10 +72,13 @@ pub const LAN_PAIRING_FAILED_EVENT: &str = "lan-pairing-failed";
 pub const LAN_PAIRING_CANDIDATES_UPDATED_EVENT: &str = "lan-pairing-candidates-updated";
 pub const FILE_OFFER_REQUESTED_EVENT: &str = "file-offer-requested";
 pub const FILE_OFFER_ENDED_EVENT: &str = "file-offer-ended";
+pub const REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT: &str = "remote-filesystem-downloads-updated";
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
 const RELAY_SEND_WINDOW_CHUNKS: i64 = FILE_ACK_INTERVAL_CHUNKS;
+pub(super) const FILESYSTEM_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -95,6 +102,8 @@ struct RuntimeState {
     outgoing_files: HashMap<String, OutgoingFileState>,
     incoming_files: HashMap<String, IncomingFileState>,
     pending_file_offers: HashMap<String, PendingFileOfferState>,
+    pending_filesystem_requests: HashMap<String, PendingFilesystemRequest>,
+    remote_filesystem_downloads: HashMap<String, RemoteFilesystemDownload>,
     cancelled_files: HashSet<String>,
     clipboard_suppressed_hash: Option<String>,
     clipboard_last_sent_hash: Option<String>,
@@ -125,7 +134,14 @@ pub(super) struct PendingFileOfferState {
     from: String,
     route: String,
     envelope_id: Option<String>,
+    filesystem_download_id: Option<String>,
     payload: FileOfferPayload,
+}
+
+pub(super) struct PendingFilesystemRequest {
+    pub(super) device_id: String,
+    pub(super) expected_response_type: &'static str,
+    pub(super) sender: oneshot::Sender<AppResult<BusinessEnvelope>>,
 }
 
 impl AppRuntime {
@@ -165,6 +181,8 @@ impl AppRuntime {
                     outgoing_files: HashMap::new(),
                     incoming_files: HashMap::new(),
                     pending_file_offers: HashMap::new(),
+                    pending_filesystem_requests: HashMap::new(),
+                    remote_filesystem_downloads: HashMap::new(),
                     cancelled_files: HashSet::new(),
                     clipboard_suppressed_hash: None,
                     clipboard_last_sent_hash: None,
@@ -198,6 +216,8 @@ impl AppRuntime {
         state.outgoing_files.clear();
         state.incoming_files.clear();
         state.pending_file_offers.clear();
+        state.pending_filesystem_requests.clear();
+        state.remote_filesystem_downloads.clear();
         drop(state);
         for notify in notifiers {
             notify.notify_one();
@@ -369,10 +389,13 @@ impl AppRuntime {
             RuntimeEvent::CloudRelay {
                 from,
                 envelope_id,
+                correlation_id,
                 message,
             } => {
                 debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
-                self.handle_business_message(&from, "cloud", envelope_id, message).await;
+                self
+                    .handle_business_message(&from, "cloud", envelope_id, correlation_id, message)
+                    .await;
             }
             RuntimeEvent::DevicePresence {
                 device_id,
@@ -494,6 +517,7 @@ impl AppRuntime {
                         let _ = self.inner.cloud.send_relay(
                             &device_id,
                             message.message,
+                            message.envelope_id,
                             message.correlation_id,
                         );
                     }
@@ -502,10 +526,19 @@ impl AppRuntime {
             RuntimeEvent::LanMessage {
                 from,
                 envelope_id,
+                correlation_id,
                 message,
             } => {
                 debug!(%from, message_type = %message.message_type, "runtime received lan message");
-                self.handle_business_message(&from, "lan", Some(envelope_id), message).await;
+                self
+                    .handle_business_message(
+                        &from,
+                        "lan",
+                        Some(envelope_id),
+                        correlation_id,
+                        message,
+                    )
+                    .await;
             }
             RuntimeEvent::LanTransferFrame { session_id, frame } => {
                 debug!(%session_id, "runtime received lan transfer frame");
@@ -573,6 +606,7 @@ impl AppRuntime {
         from: &str,
         route: &str,
         envelope_id: Option<String>,
+        correlation_id: Option<String>,
         message: BusinessEnvelope,
     ) {
         match message.message_type.as_str() {
@@ -607,7 +641,9 @@ impl AppRuntime {
             }
             FILE_OFFER_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileOfferPayload>(message.payload) {
-                    let _ = self.handle_file_offer(from, route, envelope_id, payload).await;
+                    let _ = self
+                        .handle_file_offer(from, route, envelope_id, correlation_id, payload)
+                        .await;
                 }
             }
             FILE_ACCEPT_TYPE => {
@@ -703,7 +739,25 @@ impl AppRuntime {
                 });
             }
             FS_ROOTS_TYPE | FS_LIST_TYPE | FS_STAT_TYPE | FS_DOWNLOAD_TYPE => {
-                self.handle_filesystem_message(from, envelope_id, message).await;
+                self
+                    .handle_filesystem_message(
+                        from,
+                        envelope_id.or(correlation_id),
+                        message,
+                    )
+                    .await;
+            }
+            FS_ROOTS_RESULT_TYPE | FS_LIST_RESULT_TYPE | FS_STAT_RESULT_TYPE => {
+                self.complete_filesystem_request(
+                    from,
+                    correlation_id.as_deref().or(envelope_id.as_deref()),
+                    &message,
+                );
+            }
+            FS_ERROR_TYPE => {
+                let request_id = correlation_id.as_deref().or(envelope_id.as_deref());
+                self.complete_filesystem_request(from, request_id, &message);
+                self.complete_remote_filesystem_download_error(from, request_id, &message);
             }
             _ => {}
         }
@@ -882,7 +936,7 @@ impl AppRuntime {
         device_id: &str,
         message: BusinessEnvelope,
     ) -> AppResult<String> {
-        self.send_business_message_with_correlation(device_id, message, None)
+        self.send_business_message_with_ids(device_id, message, None, None)
             .await
     }
 
@@ -892,9 +946,32 @@ impl AppRuntime {
         message: BusinessEnvelope,
         correlation_id: Option<String>,
     ) -> AppResult<String> {
-        self.inner
+        self.send_business_message_with_ids(device_id, message, None, correlation_id)
+            .await
+    }
+
+    pub(super) async fn send_business_message_with_envelope_id(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        envelope_id: String,
+    ) -> AppResult<String> {
+        self
+            .send_business_message_with_ids(device_id, message, Some(envelope_id), None)
+            .await
+    }
+
+    async fn send_business_message_with_ids(
+        &self,
+        device_id: &str,
+        message: BusinessEnvelope,
+        envelope_id: Option<String>,
+        correlation_id: Option<String>,
+    ) -> AppResult<String> {
+        self
+            .inner
             .transport
-            .send(device_id, message, correlation_id)
+            .send(device_id, message, envelope_id, correlation_id)
             .await
     }
 

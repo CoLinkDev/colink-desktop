@@ -8,6 +8,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CorrelatedBusinessMessage {
     pub message: BusinessEnvelope,
+    pub envelope_id: Option<String>,
     pub correlation_id: Option<String>,
 }
 
@@ -20,6 +21,7 @@ pub enum RuntimeEvent {
     CloudRelay {
         from: String,
         envelope_id: Option<String>,
+        correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
     DevicePresence {
@@ -60,6 +62,7 @@ pub enum RuntimeEvent {
     LanMessage {
         from: String,
         envelope_id: String,
+        correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
     LanTransferFrame {

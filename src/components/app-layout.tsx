@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay } from 'lucide-react'
+import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -75,6 +75,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.messages')
       case '/transfers':
         return t('nav.transfers')
+      case '/files':
+        return t('nav.files')
       case '/logs':
         return t('nav.logs')
       case '/settings':
@@ -105,6 +107,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={Computer} label={t('nav.devices')} to="/devices" />
           <SidebarLink icon={MessagesSquare} label={t('nav.messages')} to="/messages" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
+          <SidebarLink icon={FolderOpen} label={t('nav.files')} to="/files" />
           <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
           <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
@@ -202,7 +205,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
         <main className={cn(
           "flex-1 min-h-0",
-          (location.pathname === '/messages' || location.pathname === '/transfers')
+          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files')
             ? "overflow-hidden"
             : "overflow-y-auto px-8 py-6"
         )}>

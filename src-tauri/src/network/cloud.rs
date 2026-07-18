@@ -89,6 +89,7 @@ enum ConnectionExit {
 enum CloudCommand {
     Relay {
         to: String,
+        envelope_id: Option<String>,
         correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
@@ -279,11 +280,13 @@ impl CloudConnectionManager {
         &self,
         to: &str,
         message: BusinessEnvelope,
+        envelope_id: Option<String>,
         correlation_id: Option<String>,
     ) -> AppResult<()> {
         debug!(to, message_type = %message.message_type, "queueing cloud relay");
         self.send_command(CloudCommand::Relay {
             to: to.to_string(),
+            envelope_id,
             correlation_id,
             message,
         })
@@ -572,10 +575,10 @@ impl CloudConnectionManager {
                     };
 
                     let outbound = match command {
-                        CloudCommand::Relay { to, correlation_id, message } => {
+                        CloudCommand::Relay { to, envelope_id, correlation_id, message } => {
                             debug!(to, message_type = %message.message_type, "sending cloud relay");
                             CloudClientEnvelope {
-                                id: Uuid::new_v4().to_string(),
+                                id: envelope_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
                                 message_type: "relay".to_string(),
                                 to: Some(to),
                                 correlation_id,
@@ -701,6 +704,7 @@ impl CloudConnectionManager {
                 let _ = self.event_tx.send(RuntimeEvent::CloudRelay {
                     from,
                     envelope_id: message.id,
+                    correlation_id: message.correlation_id,
                     message: business,
                 });
             }

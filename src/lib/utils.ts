@@ -36,7 +36,11 @@ export function formatTimestamp(value: number, language?: string) {
   }).format(value)
 }
 
-export function formatBytes(value: number) {
+export function formatBytes(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return '—'
+  }
+
   if (value < 1024) {
     return `${value} B`
   }

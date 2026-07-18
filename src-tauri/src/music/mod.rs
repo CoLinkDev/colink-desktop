@@ -934,7 +934,7 @@ fn spawn_music_sender(
     tauri::async_runtime::spawn(async move {
         while let Some(job) = send_rx.recv().await {
             if let Err(error) = transport
-                .send(&job.device_id, job.envelope, job.correlation_id)
+                .send(&job.device_id, job.envelope, None, job.correlation_id)
                 .await
             {
                 emit_music_log(
