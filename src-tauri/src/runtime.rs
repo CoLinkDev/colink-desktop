@@ -53,11 +53,13 @@ use crate::{
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
-        FS_STAT_RESULT_TYPE, FS_STAT_TYPE,
+        FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE,
+        SystemControlAction, SystemControlCommandPayload,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
     sysinfo::SysInfoService,
+    system_control::execute_system_control,
     sync::MutexExt,
 };
 
@@ -758,6 +760,35 @@ impl AppRuntime {
                 let request_id = correlation_id.as_deref().or(envelope_id.as_deref());
                 self.complete_filesystem_request(from, request_id, &message);
                 self.complete_remote_filesystem_download_error(from, request_id, &message);
+            }
+            SYSTEM_CONTROL_COMMAND_TYPE => {
+                let Ok(payload) = serde_json::from_value::<SystemControlCommandPayload>(message.payload)
+                else {
+                    return;
+                };
+                let Some(action) = SystemControlAction::parse(&payload.action) else {
+                    return;
+                };
+                let runtime = self.clone();
+                let from = from.to_string();
+                tauri::async_runtime::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || execute_system_control(action)).await;
+                    match result {
+                        Ok(Ok(())) => {
+                            let _ = runtime.append_log(
+                                "info",
+                                "system-control",
+                                format!("executed {} command from {from}", action.as_str()),
+                            );
+                        }
+                        Ok(Err(error)) => {
+                            warn!(%from, action = action.as_str(), %error, "system control command failed");
+                        }
+                        Err(error) => {
+                            warn!(%from, action = action.as_str(), %error, "system control task failed");
+                        }
+                    }
+                });
             }
             _ => {}
         }

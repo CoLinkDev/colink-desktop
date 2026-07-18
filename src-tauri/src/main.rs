@@ -21,6 +21,7 @@ mod shell;
 mod state;
 mod store;
 mod sync;
+mod system_control;
 
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,

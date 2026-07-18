@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.4.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.5.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -29,6 +29,7 @@ pub const FS_STAT_TYPE: &str = "fs.v1.stat";
 pub const FS_STAT_RESULT_TYPE: &str = "fs.v1.stat-result";
 pub const FS_DOWNLOAD_TYPE: &str = "fs.v1.download";
 pub const FS_ERROR_TYPE: &str = "fs.v1.error";
+pub const SYSTEM_CONTROL_COMMAND_TYPE: &str = "system-control.v1.command";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -459,6 +460,38 @@ pub struct VersionCompatibility {
 pub struct BusinessKeyExchangePayload {
     pub ephemeral_public_key: String,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemControlCommandPayload {
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemControlAction {
+    Sleep,
+    Shutdown,
+    Lock,
+}
+
+impl SystemControlAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sleep" => Some(Self::Sleep),
+            "shutdown" => Some(Self::Shutdown),
+            "lock" => Some(Self::Lock),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sleep => "sleep",
+            Self::Shutdown => "shutdown",
+            Self::Lock => "lock",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
