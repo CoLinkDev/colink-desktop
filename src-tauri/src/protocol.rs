@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.3.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.4.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -21,6 +21,14 @@ pub const MUSIC_ALIVE_TYPE: &str = "music.v1.alive";
 pub const MUSIC_REQUEST_TYPE: &str = "music.v1.request";
 pub const SYSINFO_STATS_TYPE: &str = "sysinfo.v1.stats";
 pub const SYSINFO_ALIVE_TYPE: &str = "sysinfo.v1.alive";
+pub const FS_ROOTS_TYPE: &str = "fs.v1.roots";
+pub const FS_ROOTS_RESULT_TYPE: &str = "fs.v1.roots-result";
+pub const FS_LIST_TYPE: &str = "fs.v1.list";
+pub const FS_LIST_RESULT_TYPE: &str = "fs.v1.list-result";
+pub const FS_STAT_TYPE: &str = "fs.v1.stat";
+pub const FS_STAT_RESULT_TYPE: &str = "fs.v1.stat-result";
+pub const FS_DOWNLOAD_TYPE: &str = "fs.v1.download";
+pub const FS_ERROR_TYPE: &str = "fs.v1.error";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -451,6 +459,102 @@ pub struct VersionCompatibility {
 pub struct BusinessKeyExchangePayload {
     pub ephemeral_public_key: String,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsRootsPayload {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsRootsResultPayload {
+    pub roots: Vec<FsRootEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsRootEntry {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsListPayload {
+    pub path: String,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsListResultPayload {
+    pub path: String,
+    pub entries: Vec<FsEntry>,
+    pub total: i64,
+    pub offset: i64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsEntry {
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<i64>,
+    pub readonly: bool,
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsStatPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsStatResultPayload {
+    pub path: String,
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDownloadPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsErrorPayload {
+    pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

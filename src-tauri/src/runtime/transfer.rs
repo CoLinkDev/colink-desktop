@@ -79,74 +79,10 @@ impl AppRuntime {
                 ));
             }
             self.emit_transfer_preparing(index + 1, total);
-
-            let metadata = fs::metadata(&source_path)?;
-            let file_size = metadata.len() as i64;
-            let chunk_size = FILE_CHUNK_SIZE as i64;
-            let total_chunks = if file_size == 0 {
-                0
-            } else {
-                (file_size + chunk_size - 1) / chunk_size
-            };
-            let checksum = build_file_checksum(&source_path)?;
-            let file_name = source_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| AppError::message(self.user_text(TextKey::InvalidFileName)))?
-                .to_string();
-            let file_id = Uuid::new_v4().to_string();
-            let created_at = unix_now_millis();
-            debug!(
-                device_id = %payload.device_id,
-                path = %source_path.display(),
-                file_size = file_size,
-                "preparing outgoing file transfer"
+            records.push(
+                self.send_file_offer_from_path(&payload.device_id, source_path, None)
+                    .await?,
             );
-
-            let envelope = BusinessEnvelope::from_payload(
-                FILE_OFFER_TYPE,
-                FileOfferPayload {
-                    session_id: file_id.clone(),
-                    file_name: file_name.clone(),
-                    file_size,
-                    total_chunks,
-                    chunk_size,
-                    checksum: checksum.clone(),
-                },
-            )?;
-            let route = self
-                .send_business_message(&payload.device_id, envelope)
-                .await?;
-            let record = FileTransferRecord {
-                file_id: file_id.clone(),
-                device_id: payload.device_id.clone(),
-                direction: "outbound".to_string(),
-                file_name: file_name.clone(),
-                file_size,
-                transferred_bytes: 0,
-                total_chunks,
-                status: "offered".to_string(),
-                checksum: checksum.clone(),
-                route,
-                temp_path: None,
-                final_path: Some(source_path.to_string_lossy().to_string()),
-                error: None,
-                created_at,
-                updated_at: created_at,
-            };
-            self.inner.database.save_transfer(&record)?;
-            self.inner.state.lock_unpoisoned().outgoing_files.insert(
-                file_id,
-                OutgoingFileState {
-                    source_path: source_path.clone(),
-                    record: record.clone(),
-                    ack_notify: Arc::new(Notify::new()),
-                    acknowledged_chunks: 0,
-                    last_reported_bytes: 0,
-                    last_progress_at: created_at,
-                },
-            );
-            records.push(record);
         }
 
         self.emit_transfers()?;
@@ -156,6 +92,91 @@ impl AppRuntime {
             format!("sent {} file offer(s)", records.len()),
         )?;
         Ok(records)
+    }
+
+    pub(super) async fn send_file_offer_from_path(
+        &self,
+        device_id: &str,
+        source_path: PathBuf,
+        correlation_id: Option<String>,
+    ) -> AppResult<FileTransferRecord> {
+        if !source_path.is_file() {
+            return Err(AppError::message(
+                self.user_message(
+                    TextKey::FileNotFound,
+                    &[("path", source_path.to_string_lossy().to_string())],
+                ),
+            ));
+        }
+
+        let metadata = fs::metadata(&source_path)?;
+        let file_size = i64::try_from(metadata.len())
+            .map_err(|_| AppError::message("file is too large to transfer"))?;
+        let chunk_size = FILE_CHUNK_SIZE as i64;
+        let total_chunks = if file_size == 0 {
+            0
+        } else {
+            (file_size + chunk_size - 1) / chunk_size
+        };
+        let checksum = build_file_checksum(&source_path)?;
+        let file_name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::InvalidFileName)))?
+            .to_string();
+        let file_id = Uuid::new_v4().to_string();
+        let created_at = unix_now_millis();
+        debug!(
+            %device_id,
+            path = %source_path.display(),
+            file_size,
+            "preparing outgoing file transfer"
+        );
+
+        let envelope = BusinessEnvelope::from_payload(
+            FILE_OFFER_TYPE,
+            FileOfferPayload {
+                session_id: file_id.clone(),
+                file_name: file_name.clone(),
+                file_size,
+                total_chunks,
+                chunk_size,
+                checksum: checksum.clone(),
+            },
+        )?;
+        let route = self
+            .send_business_message_with_correlation(device_id, envelope, correlation_id)
+            .await?;
+        let record = FileTransferRecord {
+            file_id: file_id.clone(),
+            device_id: device_id.to_string(),
+            direction: "outbound".to_string(),
+            file_name,
+            file_size,
+            transferred_bytes: 0,
+            total_chunks,
+            status: "offered".to_string(),
+            checksum,
+            route,
+            temp_path: None,
+            final_path: Some(source_path.to_string_lossy().to_string()),
+            error: None,
+            created_at,
+            updated_at: created_at,
+        };
+        self.inner.database.save_transfer(&record)?;
+        self.inner.state.lock_unpoisoned().outgoing_files.insert(
+            file_id,
+            OutgoingFileState {
+                source_path,
+                record: record.clone(),
+                ack_notify: Arc::new(Notify::new()),
+                acknowledged_chunks: 0,
+                last_reported_bytes: 0,
+                last_progress_at: created_at,
+            },
+        );
+        Ok(record)
     }
 
     pub fn cancel_transfer(&self, file_id: &str) -> AppResult<()> {

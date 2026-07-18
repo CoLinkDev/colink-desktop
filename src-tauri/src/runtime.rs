@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 mod clipboard;
+mod filesystem;
 mod progress;
 mod route;
 mod transfer;
@@ -47,7 +48,8 @@ use crate::{
         FileRejectPayload, FileRetransmitPayload, TextMessagePayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
-        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE,
+        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
+        FS_LIST_TYPE, FS_ROOTS_TYPE, FS_STAT_TYPE,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -699,6 +701,9 @@ impl AppRuntime {
                 tauri::async_runtime::spawn(async move {
                     sysinfo.handle_alive(&from).await;
                 });
+            }
+            FS_ROOTS_TYPE | FS_LIST_TYPE | FS_STAT_TYPE | FS_DOWNLOAD_TYPE => {
+                self.handle_filesystem_message(from, envelope_id, message).await;
             }
             _ => {}
         }
