@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.6.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.7.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -30,6 +30,9 @@ pub const FS_STAT_RESULT_TYPE: &str = "fs.v1.stat-result";
 pub const FS_DOWNLOAD_TYPE: &str = "fs.v1.download";
 pub const FS_ERROR_TYPE: &str = "fs.v1.error";
 pub const SYSTEM_CONTROL_COMMAND_TYPE: &str = "system-control.v1.command";
+pub const SYSTEM_CONTROL_QUERY_TYPE: &str = "system-control.v1.query";
+pub const SYSTEM_CONTROL_RESULT_TYPE: &str = "system-control.v1.result";
+pub const SYSTEM_CONTROL_ERROR_TYPE: &str = "system-control.v1.error";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -468,6 +471,32 @@ pub struct SystemControlCommandPayload {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemControlQueryPayload {
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemControlResultPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<Option<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub muted: Option<Option<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemControlErrorPayload {
+    pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

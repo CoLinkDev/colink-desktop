@@ -53,13 +53,14 @@ use crate::{
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
-        FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE,
-        SystemControlAction, SystemControlCommandPayload,
+        FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
+        SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, SystemControlAction,
+        SystemControlCommandPayload, SystemControlErrorPayload, SystemControlQueryPayload,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
     sysinfo::SysInfoService,
-    system_control::{execute_system_control, SystemControlExecution},
+    system_control::{execute_system_control, query_system_control, SystemControlExecution},
     sync::MutexExt,
 };
 
@@ -797,7 +798,121 @@ impl AppRuntime {
                     }
                 });
             }
+            SYSTEM_CONTROL_QUERY_TYPE => {
+                let Some(request_id) = envelope_id else {
+                    warn!(%from, "ignored system control query without envelope id");
+                    return;
+                };
+                let Ok(payload) = serde_json::from_value::<SystemControlQueryPayload>(message.payload)
+                else {
+                    self.send_system_control_query_error(
+                        from,
+                        &request_id,
+                        "colink:system-control.invalid_request.v1",
+                        "Invalid system state query",
+                    )
+                    .await;
+                    return;
+                };
+                if payload.fields.is_empty() {
+                    self.send_system_control_query_error(
+                        from,
+                        &request_id,
+                        "colink:system-control.invalid_request.v1",
+                        "System state query fields must not be empty",
+                    )
+                    .await;
+                    return;
+                }
+                let runtime = self.clone();
+                let from = from.to_string();
+                tauri::async_runtime::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || query_system_control(&payload.fields))
+                        .await;
+                    match result {
+                        Ok(Ok(payload)) => {
+                            runtime
+                                .send_system_control_query_result(&from, &request_id, payload)
+                                .await;
+                        }
+                        Ok(Err(error)) => {
+                            warn!(%from, %error, "system state query failed");
+                            runtime
+                                .send_system_control_query_error(
+                                    &from,
+                                    &request_id,
+                                    "colink:system-control.query_failed.v1",
+                                    "Failed to read system state",
+                                )
+                                .await;
+                        }
+                        Err(error) => {
+                            warn!(%from, %error, "system state query task failed");
+                            runtime
+                                .send_system_control_query_error(
+                                    &from,
+                                    &request_id,
+                                    "colink:system-control.query_failed.v1",
+                                    "Failed to read system state",
+                                )
+                                .await;
+                        }
+                    }
+                });
+            }
             _ => {}
+        }
+    }
+
+    async fn send_system_control_query_result(
+        &self,
+        device_id: &str,
+        request_id: &str,
+        payload: crate::protocol::SystemControlResultPayload,
+    ) {
+        let result: AppResult<()> = async {
+            let response = BusinessEnvelope::from_payload(SYSTEM_CONTROL_RESULT_TYPE, payload)?;
+            self.send_business_message_with_correlation(
+                device_id,
+                response,
+                Some(request_id.to_string()),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(%device_id, %error, "failed to send system state query result");
+        }
+    }
+
+    async fn send_system_control_query_error(
+        &self,
+        device_id: &str,
+        request_id: &str,
+        reason: &str,
+        message: &str,
+    ) {
+        let result: AppResult<()> = async {
+            let response = BusinessEnvelope::from_payload(
+                SYSTEM_CONTROL_ERROR_TYPE,
+                SystemControlErrorPayload {
+                    reason: reason.to_string(),
+                    message: message.to_string(),
+                    details: None,
+                },
+            )?;
+            self.send_business_message_with_correlation(
+                device_id,
+                response,
+                Some(request_id.to_string()),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(%device_id, %error, "failed to send system state query error");
         }
     }
 

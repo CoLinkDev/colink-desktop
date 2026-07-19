@@ -3,7 +3,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::protocol::SystemControlAction;
+use crate::protocol::{SystemControlAction, SystemControlResultPayload};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemControlExecution {
@@ -46,6 +46,29 @@ pub fn execute_system_control(
         .stderr(Stdio::null())
         .spawn()
         .map(|_| SystemControlExecution::Executed)
+}
+
+pub fn query_system_control(fields: &[String]) -> io::Result<SystemControlResultPayload> {
+    let queries_volume = fields.iter().any(|field| field == "volume");
+    let queries_muted = fields.iter().any(|field| field == "muted");
+    let queries_playback = fields.iter().any(|field| field == "playback");
+
+    let audio_state = if queries_volume || queries_muted {
+        query_system_audio_state()?
+    } else {
+        None
+    };
+    let playback = if queries_playback {
+        query_media_playback_state()?
+    } else {
+        None
+    };
+
+    Ok(SystemControlResultPayload {
+        volume: queries_volume.then_some(audio_state.map(|(volume, _)| volume)),
+        muted: queries_muted.then_some(audio_state.map(|(_, muted)| muted)),
+        playback: queries_playback.then_some(playback),
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -169,6 +192,44 @@ fn execute_media_control(_action: SystemControlAction) -> io::Result<SystemContr
 }
 
 #[cfg(windows)]
+fn query_media_playback_state() -> io::Result<Option<String>> {
+    use windows::Media::Control::{
+        GlobalSystemMediaTransportControlsSessionManager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus,
+    };
+
+    let _runtime = WindowsRuntimeGuard::initialize()?;
+    let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+        .map_err(windows_error)?
+        .get()
+        .map_err(windows_error)?;
+    let Ok(session) = manager.GetCurrentSession() else {
+        return Ok(None);
+    };
+    let Ok(playback_info) = session.GetPlaybackInfo() else {
+        return Ok(None);
+    };
+    let Ok(status) = playback_info.PlaybackStatus() else {
+        return Ok(None);
+    };
+    let state = if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+        Some("playing")
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused {
+        Some("paused")
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Stopped {
+        Some("stopped")
+    } else {
+        None
+    };
+    Ok(state.map(str::to_string))
+}
+
+#[cfg(not(windows))]
+fn query_media_playback_state() -> io::Result<Option<String>> {
+    Ok(None)
+}
+
+#[cfg(windows)]
 fn set_system_volume(volume: i32) -> io::Result<SystemControlExecution> {
     let _runtime = WindowsRuntimeGuard::initialize()?;
     let endpoint = default_audio_endpoint_volume()?;
@@ -186,6 +247,24 @@ fn set_system_volume(volume: i32) -> io::Result<SystemControlExecution> {
 #[cfg(not(windows))]
 fn set_system_volume(_volume: i32) -> io::Result<SystemControlExecution> {
     Ok(SystemControlExecution::Ignored)
+}
+
+#[cfg(windows)]
+fn query_system_audio_state() -> io::Result<Option<(i32, bool)>> {
+    let _runtime = WindowsRuntimeGuard::initialize()?;
+    let endpoint = default_audio_endpoint_volume()?;
+    let volume = unsafe {
+        endpoint
+            .GetMasterVolumeLevelScalar()
+            .map_err(windows_error)?
+    };
+    let muted = unsafe { endpoint.GetMute().map_err(windows_error)? }.as_bool();
+    Ok(Some(((volume * 100.0).round().clamp(0.0, 100.0) as i32, muted)))
+}
+
+#[cfg(not(windows))]
+fn query_system_audio_state() -> io::Result<Option<(i32, bool)>> {
+    Ok(None)
 }
 
 #[cfg(windows)]
@@ -261,7 +340,7 @@ fn windows_error(error: windows::core::Error) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::SystemControlAction;
+    use crate::protocol::{SystemControlAction, SystemControlResultPayload};
 
     #[test]
     fn recognizes_documented_actions() {
@@ -291,6 +370,20 @@ mod tests {
         assert!(!SystemControlAction::SetVolume.accepts_volume(Some(101)));
         assert!(SystemControlAction::Mute.accepts_volume(None));
         assert!(!SystemControlAction::Mute.accepts_volume(Some(20)));
+    }
+
+    #[test]
+    fn serializes_unavailable_requested_state_as_null() {
+        let payload = SystemControlResultPayload {
+            volume: Some(None),
+            muted: Some(Some(true)),
+            playback: None,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&payload).expect("serialize system state"),
+            r#"{"volume":null,"muted":true}"#,
+        );
     }
 
     #[cfg(target_os = "windows")]
