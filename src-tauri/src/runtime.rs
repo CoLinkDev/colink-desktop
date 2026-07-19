@@ -59,7 +59,7 @@ use crate::{
     runtime_events::RuntimeEvent,
     store::db::Database,
     sysinfo::SysInfoService,
-    system_control::execute_system_control,
+    system_control::{execute_system_control, SystemControlExecution},
     sync::MutexExt,
 };
 
@@ -769,18 +769,25 @@ impl AppRuntime {
                 let Some(action) = SystemControlAction::parse(&payload.action) else {
                     return;
                 };
+                if !action.accepts_volume(payload.volume) {
+                    return;
+                }
                 let runtime = self.clone();
                 let from = from.to_string();
                 tauri::async_runtime::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || execute_system_control(action)).await;
+                    let result = tokio::task::spawn_blocking(move || {
+                        execute_system_control(action, payload.volume)
+                    })
+                    .await;
                     match result {
-                        Ok(Ok(())) => {
+                        Ok(Ok(SystemControlExecution::Executed)) => {
                             let _ = runtime.append_log(
                                 "info",
                                 "system-control",
                                 format!("executed {} command from {from}", action.as_str()),
                             );
                         }
+                        Ok(Ok(SystemControlExecution::Ignored)) => {}
                         Ok(Err(error)) => {
                             warn!(%from, action = action.as_str(), %error, "system control command failed");
                         }

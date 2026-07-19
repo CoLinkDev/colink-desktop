@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.5.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.6.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -466,6 +466,8 @@ pub struct BusinessKeyExchangePayload {
 #[serde(rename_all = "camelCase")]
 pub struct SystemControlCommandPayload {
     pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +475,12 @@ pub enum SystemControlAction {
     Sleep,
     Shutdown,
     Lock,
+    Play,
+    Pause,
+    Next,
+    Previous,
+    SetVolume,
+    Mute,
 }
 
 impl SystemControlAction {
@@ -481,6 +489,12 @@ impl SystemControlAction {
             "sleep" => Some(Self::Sleep),
             "shutdown" => Some(Self::Shutdown),
             "lock" => Some(Self::Lock),
+            "play" => Some(Self::Play),
+            "pause" => Some(Self::Pause),
+            "next" => Some(Self::Next),
+            "previous" => Some(Self::Previous),
+            "set-volume" => Some(Self::SetVolume),
+            "mute" => Some(Self::Mute),
             _ => None,
         }
     }
@@ -490,6 +504,19 @@ impl SystemControlAction {
             Self::Sleep => "sleep",
             Self::Shutdown => "shutdown",
             Self::Lock => "lock",
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::SetVolume => "set-volume",
+            Self::Mute => "mute",
+        }
+    }
+
+    pub fn accepts_volume(self, volume: Option<i32>) -> bool {
+        match self {
+            Self::SetVolume => volume.is_some_and(|value| (0..=100).contains(&value)),
+            _ => volume.is_none(),
         }
     }
 }
