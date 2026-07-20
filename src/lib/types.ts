@@ -8,6 +8,7 @@ export interface AppSettings {
   startMinimized: boolean
   downloadPath: string
   clipboardSync: boolean
+  autoAcceptFileOffers: boolean
   language: string
 }
 
@@ -260,6 +261,7 @@ export const defaultSettings: AppSettings = {
   startMinimized: true,
   downloadPath: '',
   clipboardSync: true,
+  autoAcceptFileOffers: true,
   language: resolveLanguage(),
 }
 

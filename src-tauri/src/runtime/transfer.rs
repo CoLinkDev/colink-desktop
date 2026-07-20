@@ -297,6 +297,12 @@ impl AppRuntime {
             file_name: payload.file_name.clone(),
             file_size: payload.file_size,
         };
+        let auto_accept_file_offers = self
+            .inner
+            .database
+            .load_settings()?
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::SettingsNotInitialized)))?
+            .auto_accept_file_offers;
         let session_id = payload.session_id.clone();
         self.inner
             .state
@@ -313,6 +319,15 @@ impl AppRuntime {
                 },
             );
         self.expire_pending_file_offer(session_id);
+        if filesystem_download_id.is_some() || auto_accept_file_offers {
+            return self
+                .respond_file_offer(FileOfferDecisionPayload {
+                    session_id: request.session_id,
+                    accepted: true,
+                    destination_path: None,
+                })
+                .await;
+        }
         let destination = if filesystem_download_id.is_some() {
             self.device_route("/files", from)
         } else {

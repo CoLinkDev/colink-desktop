@@ -17,6 +17,7 @@ pub struct AppSettings {
     pub start_minimized: bool,
     pub download_path: String,
     pub clipboard_sync: bool,
+    pub auto_accept_file_offers: bool,
     pub language: String,
 }
 
@@ -28,6 +29,7 @@ impl AppSettings {
             start_minimized: true,
             download_path,
             clipboard_sync: true,
+            auto_accept_file_offers: true,
             language: crate::i18n::default_language_code(),
         }
     }

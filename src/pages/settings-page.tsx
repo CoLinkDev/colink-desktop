@@ -87,6 +87,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
     startMinimized: z.boolean(),
     downloadPath: z.string().min(1, t('settings.validation.downloadPath')),
     clipboardSync: z.boolean(),
+    autoAcceptFileOffers: z.boolean(),
     language: z.string().min(1),
   }), [t])
 
@@ -266,6 +267,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
         <Section title={t('settings.behavior')}>
           <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
           <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
+          <SwitchRow label={t('settings.autoAcceptFileOffers')} checked={form.autoAcceptFileOffers} onChange={(v) => setForm((c) => ({ ...c, autoAcceptFileOffers: v }))} />
         </Section>
 
         <Section title={t('nowPlaying.title')}>
