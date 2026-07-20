@@ -770,14 +770,16 @@ impl AppRuntime {
                 let Some(action) = SystemControlAction::parse(&payload.action) else {
                     return;
                 };
-                if !action.accepts_volume(payload.volume) {
+                if !action.accepts_volume(payload.volume)
+                    || !action.accepts_target_mac(payload.target_mac.as_deref())
+                {
                     return;
                 }
                 let runtime = self.clone();
                 let from = from.to_string();
                 tauri::async_runtime::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        execute_system_control(action, payload.volume)
+                        execute_system_control(action, payload.volume, payload.target_mac.as_deref())
                     })
                     .await;
                     match result {

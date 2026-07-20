@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.7.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.8.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -471,6 +471,8 @@ pub struct SystemControlCommandPayload {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_mac: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -510,6 +512,7 @@ pub enum SystemControlAction {
     Previous,
     SetVolume,
     Mute,
+    WakeOnLan,
 }
 
 impl SystemControlAction {
@@ -524,6 +527,7 @@ impl SystemControlAction {
             "previous" => Some(Self::Previous),
             "set-volume" => Some(Self::SetVolume),
             "mute" => Some(Self::Mute),
+            "wake-on-lan" => Some(Self::WakeOnLan),
             _ => None,
         }
     }
@@ -539,6 +543,7 @@ impl SystemControlAction {
             Self::Previous => "previous",
             Self::SetVolume => "set-volume",
             Self::Mute => "mute",
+            Self::WakeOnLan => "wake-on-lan",
         }
     }
 
@@ -548,6 +553,20 @@ impl SystemControlAction {
             _ => volume.is_none(),
         }
     }
+
+    pub fn accepts_target_mac(self, target_mac: Option<&str>) -> bool {
+        match self {
+            Self::WakeOnLan => target_mac.is_some_and(is_valid_wake_on_lan_mac),
+            _ => target_mac.is_none(),
+        }
+    }
+}
+
+pub fn is_valid_wake_on_lan_mac(value: &str) -> bool {
+    value.len() == 17
+        && value
+            .split(':')
+            .all(|part| part.len() == 2 && u8::from_str_radix(part, 16).is_ok())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

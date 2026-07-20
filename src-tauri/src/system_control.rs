@@ -1,9 +1,12 @@
 use std::{
     io,
+    net::{Ipv4Addr, SocketAddrV4, UdpSocket},
     process::{Command, Stdio},
 };
 
-use crate::protocol::{SystemControlAction, SystemControlResultPayload};
+use if_addrs::{get_if_addrs, IfAddr};
+
+use crate::protocol::{is_valid_wake_on_lan_mac, SystemControlAction, SystemControlResultPayload};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemControlExecution {
@@ -14,11 +17,12 @@ pub enum SystemControlExecution {
 pub fn execute_system_control(
     action: SystemControlAction,
     volume: Option<i32>,
+    target_mac: Option<&str>,
 ) -> io::Result<SystemControlExecution> {
-    if !action.accepts_volume(volume) {
+    if !action.accepts_volume(volume) || !action.accepts_target_mac(target_mac) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "invalid system control volume",
+            "invalid system control payload",
         ));
     }
 
@@ -31,6 +35,9 @@ pub fn execute_system_control(
             return set_system_volume(volume.expect("validated set-volume payload"));
         }
         SystemControlAction::Mute => return mute_system_audio(),
+        SystemControlAction::WakeOnLan => {
+            return send_wake_on_lan_packet(target_mac.expect("validated wake-on-lan payload"));
+        }
         SystemControlAction::Sleep | SystemControlAction::Shutdown | SystemControlAction::Lock => {}
     }
 
@@ -46,6 +53,70 @@ pub fn execute_system_control(
         .stderr(Stdio::null())
         .spawn()
         .map(|_| SystemControlExecution::Executed)
+}
+
+fn send_wake_on_lan_packet(target_mac: &str) -> io::Result<SystemControlExecution> {
+    let packet = wake_on_lan_magic_packet(target_mac).expect("validated wake-on-lan MAC address");
+    let destinations = wake_on_lan_broadcast_addresses()?;
+    if destinations.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "no active IPv4 broadcast interface",
+        ));
+    }
+
+    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_broadcast(true)?;
+
+    let mut sent = false;
+    let mut last_error = None;
+    for destination in destinations {
+        match socket.send_to(&packet, SocketAddrV4::new(destination, 9)) {
+            Ok(_) => sent = true,
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if sent {
+        Ok(SystemControlExecution::Executed)
+    } else {
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::other("failed to send Wake-on-LAN packet")
+        }))
+    }
+}
+
+fn wake_on_lan_broadcast_addresses() -> io::Result<Vec<Ipv4Addr>> {
+    let mut addresses = get_if_addrs()?
+        .into_iter()
+        .filter(|interface| {
+            interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p()
+        })
+        .filter_map(|interface| match interface.addr {
+            IfAddr::V4(address) if !address.ip.is_unspecified() && !address.ip.is_link_local() => {
+                address.broadcast
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    addresses.sort_unstable();
+    addresses.dedup();
+    Ok(addresses)
+}
+
+fn wake_on_lan_magic_packet(target_mac: &str) -> Option<[u8; 102]> {
+    if !is_valid_wake_on_lan_mac(target_mac) {
+        return None;
+    }
+    let mut mac = [0u8; 6];
+    for (index, part) in target_mac.split(':').enumerate() {
+        mac[index] = u8::from_str_radix(part, 16).ok()?;
+    }
+    let mut packet = [0xff; 102];
+    for index in 0..16 {
+        let start = 6 + (index * mac.len());
+        packet[start..start + mac.len()].copy_from_slice(&mac);
+    }
+    Some(packet)
 }
 
 pub fn query_system_control(fields: &[String]) -> io::Result<SystemControlResultPayload> {
@@ -106,7 +177,7 @@ fn system_command(action: SystemControlAction) -> Command {
             command
         }
         SystemControlAction::Sleep => unreachable!("sleep is handled through SetSuspendState"),
-        _ => unreachable!("media and audio actions are handled before system commands"),
+        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
     };
     command
 }
@@ -131,7 +202,7 @@ fn system_command(action: SystemControlAction) -> Command {
             command.arg("-suspend");
             command
         }
-        _ => unreachable!("media and audio actions are handled before system commands"),
+        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
     };
     command
 }
@@ -149,7 +220,7 @@ fn system_command(action: SystemControlAction) -> Command {
         SystemControlAction::Lock => {
             command.arg("lock-session");
         }
-        _ => unreachable!("media and audio actions are handled before system commands"),
+        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
     }
     command
 }
@@ -359,6 +430,10 @@ mod tests {
             Some(SystemControlAction::SetVolume)
         );
         assert_eq!(SystemControlAction::parse("mute"), Some(SystemControlAction::Mute));
+        assert_eq!(
+            SystemControlAction::parse("wake-on-lan"),
+            Some(SystemControlAction::WakeOnLan)
+        );
         assert_eq!(SystemControlAction::parse("restart"), None);
     }
 
@@ -370,6 +445,19 @@ mod tests {
         assert!(!SystemControlAction::SetVolume.accepts_volume(Some(101)));
         assert!(SystemControlAction::Mute.accepts_volume(None));
         assert!(!SystemControlAction::Mute.accepts_volume(Some(20)));
+    }
+
+    #[test]
+    fn validates_wake_on_lan_mac_and_magic_packet() {
+        let mac = "01:23:45:67:89:ab";
+        assert!(SystemControlAction::WakeOnLan.accepts_target_mac(Some(mac)));
+        assert!(!SystemControlAction::WakeOnLan.accepts_target_mac(Some("01:23:45:67:89")));
+        assert!(!SystemControlAction::Sleep.accepts_target_mac(Some(mac)));
+
+        let packet = super::wake_on_lan_magic_packet(mac).expect("valid magic packet");
+        assert_eq!(&packet[..6], &[0xff; 6]);
+        assert_eq!(&packet[6..12], &[1, 35, 69, 103, 137, 171]);
+        assert_eq!(&packet[96..], &[1, 35, 69, 103, 137, 171]);
     }
 
     #[test]
