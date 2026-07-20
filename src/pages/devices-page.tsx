@@ -473,11 +473,11 @@ function DeviceList({
                       )}
                       {canForgetTrust && (
                         <button
-                          aria-label={t('devices.forgetTrust')}
+                          aria-label={t('devices.forgetConfirmBtn')}
                           className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger)/0.08)] disabled:opacity-40"
                           disabled={actingId === item.deviceId}
                           onClick={() => onForgetTrust(item.deviceId)}
-                          title={t('devices.forgetTrust')}
+                          title={t('devices.forgetConfirmBtn')}
                           type="button"
                         >
                           <Trash2 className="h-3.5 w-3.5" />

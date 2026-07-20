@@ -42,7 +42,7 @@ function ClipboardForm() {
 
             <div className="min-w-0">
               <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
-                {t('clipboard.title')}
+                {t('nav.clipboard')}
               </div>
               <p className="mt-1 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
                 {t('clipboard.description')}

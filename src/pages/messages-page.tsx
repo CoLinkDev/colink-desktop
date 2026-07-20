@@ -53,7 +53,7 @@ export function MessagesPage() {
   return (
     <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] gap-6 animate-fade-in overflow-hidden">
       <aside className="h-full overflow-y-auto py-6 pl-8 pr-1.5 space-y-1 scrollbar-thin">
-        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{t('messages.sidebarTitle')}</div>
+        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{t('nav.devices')}</div>
         {targetDevices.length === 0 ? (
           <div className="py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('messages.emptyDevices')}</div>
         ) : targetDevices.map((item) => (

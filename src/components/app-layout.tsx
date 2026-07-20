@@ -218,7 +218,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       {showThemeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-xs rounded-xl border bg-[hsl(var(--panel))] p-5 shadow-xl animate-scale-in">
-            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">{t('theme.title')}</div>
+            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">{t('nav.theme')}</div>
             <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
               {t('theme.subtitle')}
             </p>
@@ -283,7 +283,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 onClick={handleConfirmLogout}
                 variant="danger"
               >
-                {loggingOut ? t('common.logout') : t('common.confirm')}
+                {loggingOut ? t('nav.logout') : t('common.confirm')}
               </Button>
             </div>
           </div>

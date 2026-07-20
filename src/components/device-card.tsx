@@ -115,7 +115,7 @@ export function DeviceCard({
                 type="button"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                {t('devices.forgetTrust')}
+                {t('devices.forgetConfirmBtn')}
               </button>
             )}
           </>
