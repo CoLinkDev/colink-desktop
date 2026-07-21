@@ -35,6 +35,7 @@ use commands::{
     send_text, start_lan_pairing, stop_castboard, update_device_name, update_music_providers,
     update_settings,
     download_remote_filesystem_file,
+    get_remote_terminal_support, open_terminal, write_terminal, resize_terminal, close_terminal,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -123,7 +124,12 @@ fn main() {
             reveal_received_file,
             pending_file_offers,
             respond_file_offer,
-            clear_transfers
+            clear_transfers,
+            get_remote_terminal_support,
+            open_terminal,
+            write_terminal,
+            resize_terminal,
+            close_terminal
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

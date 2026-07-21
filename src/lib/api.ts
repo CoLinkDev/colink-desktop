@@ -18,6 +18,7 @@ import type {
   RemoteFilesystemDownload,
   RemoteFilesystemListResult,
   RemoteFilesystemRootsResult,
+  RemoteTerminalSupport,
   SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
@@ -216,4 +217,24 @@ export function respondFileOffer(sessionId: string, accepted: boolean, destinati
   return invoke<void>('respond_file_offer', {
     payload: { sessionId, accepted, destinationPath },
   })
+}
+
+export function openTerminal(deviceId: string, cols: number, rows: number) {
+  return invoke<string>('open_terminal', { deviceId, cols, rows })
+}
+
+export function getRemoteTerminalSupport(deviceId: string) {
+  return invoke<RemoteTerminalSupport>('get_remote_terminal_support', { deviceId })
+}
+
+export function writeTerminal(deviceId: string, sessionId: string, data: string) {
+  return invoke<void>('write_terminal', { deviceId, sessionId, data })
+}
+
+export function resizeTerminal(deviceId: string, sessionId: string, cols: number, rows: number) {
+  return invoke<void>('resize_terminal', { deviceId, sessionId, cols, rows })
+}
+
+export function closeTerminal(deviceId: string, sessionId: string) {
+  return invoke<void>('close_terminal', { deviceId, sessionId })
 }

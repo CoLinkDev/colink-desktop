@@ -24,12 +24,15 @@ mod filesystem;
 mod progress;
 mod route;
 mod transfer;
+mod terminal;
 mod utils;
 
 use self::clipboard::{
     clipboard_image_from_bytes, hash_clipboard_payload, ClipboardWatcherHandler,
 };
 use self::route::TransferRoute;
+pub use self::terminal::RemoteTerminalSupport;
+use self::terminal::TerminalManager;
 
 use crate::{
     device_presence,
@@ -56,6 +59,9 @@ use crate::{
         FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
         SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, SystemControlAction,
         SystemControlCommandPayload, SystemControlErrorPayload, SystemControlQueryPayload,
+        TERMINAL_CLOSE_TYPE, TERMINAL_DATA_TYPE, TERMINAL_OPEN_ACK_TYPE, TERMINAL_OPEN_TYPE,
+        TERMINAL_RESIZE_TYPE, TerminalClosePayload, TerminalDataPayload, TerminalOpenAckPayload,
+        TerminalOpenPayload, TerminalResizePayload,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -96,6 +102,7 @@ struct RuntimeInner {
     transport: TransportManager,
     music: MusicService,
     sysinfo: SysInfoService,
+    terminal: TerminalManager,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Mutex<RuntimeState>,
 }
@@ -178,6 +185,7 @@ impl AppRuntime {
                 transport,
                 music,
                 sysinfo,
+                terminal: TerminalManager::new(),
                 event_tx: event_tx.clone(),
                 state: Mutex::new(RuntimeState {
                     watcher_shutdown: None,
@@ -406,6 +414,9 @@ impl AppRuntime {
                 payload,
             } => {
                 debug!(%device_id, online = online, "runtime received device presence");
+                if !online {
+                    self.inner.terminal.close_for_device(&device_id);
+                }
                 let _ = device_presence::update_one(
                     &self.inner.database,
                     &self.inner.app,
@@ -861,6 +872,53 @@ impl AppRuntime {
                         }
                     }
                 });
+            }
+            TERMINAL_OPEN_TYPE => {
+                let Some(request_id) = envelope_id else { return; };
+                let Ok(payload) = serde_json::from_value::<TerminalOpenPayload>(message.payload) else { return; };
+                let response = match self.inner.terminal.open(self.clone(), from.to_string(), payload.session_id.clone(), payload.cols, payload.rows, payload.env) {
+                    Ok(()) => TerminalOpenAckPayload { session_id: payload.session_id, accepted: true, reason: None, message: None },
+                    Err(error) => TerminalOpenAckPayload { session_id: payload.session_id, accepted: false, reason: Some("colink:terminal.spawn_failed.v1".to_string()), message: Some(error.to_string()) },
+                };
+                if let Ok(message) = BusinessEnvelope::from_payload(TERMINAL_OPEN_ACK_TYPE, response) {
+                    let _ = self.send_business_message_with_correlation(from, message, Some(request_id)).await;
+                }
+            }
+            TERMINAL_DATA_TYPE => {
+                let Ok(payload) = serde_json::from_value::<TerminalDataPayload>(message.payload) else { return; };
+                if payload.stream == "input" {
+                    match STANDARD.decode(payload.data) {
+                        Ok(data) => {
+                            if let Err(error) = self.inner.terminal.write(from, &payload.session_id, &data) {
+                                tracing::warn!(from, session_id = %payload.session_id, %error, "terminal input write failed");
+                            }
+                        }
+                        Err(error) => tracing::warn!(from, session_id = %payload.session_id, %error, "terminal input decoding failed"),
+                    }
+                } else if payload.stream == "output" && self.inner.terminal.is_remote_session(from, &payload.session_id) {
+                    self.emit_terminal_event(self::terminal::TerminalUiEvent { session_id: payload.session_id, kind: "output".to_string(), data: Some(payload.data), exit_code: None, message: None });
+                }
+            }
+            TERMINAL_RESIZE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<TerminalResizePayload>(message.payload) else { return; };
+                if let Err(error) = self.inner.terminal.resize(from, &payload.session_id, payload.cols, payload.rows) {
+                    tracing::warn!(from, session_id = %payload.session_id, %error, "terminal resize failed");
+                }
+            }
+            TERMINAL_CLOSE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<TerminalClosePayload>(message.payload) else { return; };
+                if self.inner.terminal.close_remote_session(from, &payload.session_id) {
+                    self.emit_terminal_event(self::terminal::TerminalUiEvent { session_id: payload.session_id, kind: "closed".to_string(), data: None, exit_code: payload.exit_code, message: None });
+                } else {
+                    self.inner.terminal.close_for_session(from, &payload.session_id);
+                }
+            }
+            TERMINAL_OPEN_ACK_TYPE => {
+                let Ok(payload) = serde_json::from_value::<TerminalOpenAckPayload>(message.payload) else { return; };
+                if self.inner.terminal.accept_remote_session(from, &payload.session_id, correlation_id.as_deref()) {
+                    if !payload.accepted { self.inner.terminal.discard_remote_session(&payload.session_id); }
+                    self.emit_terminal_event(self::terminal::TerminalUiEvent { session_id: payload.session_id, kind: if payload.accepted { "opened" } else { "failed" }.to_string(), data: None, exit_code: None, message: payload.message.or(payload.reason) });
+                }
             }
             _ => {}
         }

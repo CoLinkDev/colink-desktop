@@ -82,6 +82,8 @@ interface AppStateValue {
   clearTransfers: () => Promise<void>
   settingsDirty: boolean
   setSettingsDirty: (dirty: boolean) => void
+  terminalSessionActive: boolean
+  setTerminalSessionActive: (active: boolean) => void
   headerActions: ReactNode
   setHeaderActions: (actions: ReactNode) => void
 }
@@ -139,6 +141,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<SessionSummary | null>(null)
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [settingsDirty, setSettingsDirty] = useState(false)
+  const [terminalSessionActive, setTerminalSessionActive] = useState(false)
   const [headerActions, setHeaderActions] = useState<ReactNode>(null)
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
   const [devices, setDevices] = useState<DeviceInfo[]>([])
@@ -442,6 +445,8 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      terminalSessionActive,
+      setTerminalSessionActive,
       headerActions,
       setHeaderActions,
     }),
@@ -476,6 +481,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      terminalSessionActive,
       headerActions,
     ],
   )

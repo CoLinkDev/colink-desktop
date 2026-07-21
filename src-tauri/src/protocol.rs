@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.8.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.9.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -33,6 +33,11 @@ pub const SYSTEM_CONTROL_COMMAND_TYPE: &str = "system-control.v1.command";
 pub const SYSTEM_CONTROL_QUERY_TYPE: &str = "system-control.v1.query";
 pub const SYSTEM_CONTROL_RESULT_TYPE: &str = "system-control.v1.result";
 pub const SYSTEM_CONTROL_ERROR_TYPE: &str = "system-control.v1.error";
+pub const TERMINAL_OPEN_TYPE: &str = "terminal.v1.open";
+pub const TERMINAL_OPEN_ACK_TYPE: &str = "terminal.v1.open-ack";
+pub const TERMINAL_DATA_TYPE: &str = "terminal.v1.data";
+pub const TERMINAL_RESIZE_TYPE: &str = "terminal.v1.resize";
+pub const TERMINAL_CLOSE_TYPE: &str = "terminal.v1.close";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -464,6 +469,39 @@ pub struct BusinessKeyExchangePayload {
     pub ephemeral_public_key: String,
     pub signature: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpenPayload {
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpenAckPayload {
+    pub session_id: String,
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalDataPayload { pub session_id: String, pub stream: String, pub data: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalResizePayload { pub session_id: String, pub cols: u16, pub rows: u16 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalClosePayload { pub session_id: String, pub exit_code: Option<i32> }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

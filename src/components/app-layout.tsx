@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay } from 'lucide-react'
+import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -18,7 +18,7 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, session, theme, setTheme, settingsDirty, headerActions } = useAppState()
+  const { cloud, logout, session, theme, setTheme, settingsDirty, terminalSessionActive, headerActions } = useAppState()
   const { t } = useTranslation()
 
   const [showThemeModal, setShowThemeModal] = useState(false)
@@ -28,11 +28,11 @@ export function AppLayout({ children }: PropsWithChildren) {
   const [logoutError, setLogoutError] = useState<string | null>(null)
   const isSettingsRoute = location.pathname === '/settings'
 
-  const blocker = useBlocker(
-    ({ nextLocation }) =>
-      settingsDirty &&
-      isSettingsRoute &&
-      nextLocation.pathname !== location.pathname
+  const terminalRouteActive = terminalSessionActive && location.pathname === '/terminal'
+  const blocker = useBlocker(({ nextLocation }) =>
+    nextLocation.pathname !== location.pathname && (
+      (settingsDirty && isSettingsRoute) || terminalRouteActive
+    )
   )
 
   useEffect(() => {
@@ -85,6 +85,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.clipboard')
       case '/castboard':
         return t('nav.castboard')
+      case '/terminal':
+        return t('nav.terminal')
       default:
         return 'CoLink Desktop'
     }
@@ -111,6 +113,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
           <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
+          <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
@@ -205,7 +208,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
         <main className={cn(
           "flex-1 min-h-0",
-          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files')
+          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal')
             ? "overflow-hidden"
             : "overflow-y-auto px-8 py-6"
         )}>
@@ -294,9 +297,9 @@ export function AppLayout({ children }: PropsWithChildren) {
       {blocker.state === 'blocked' && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('settings.unsavedChangesTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t(terminalRouteActive ? 'terminal.leaveTitle' : 'settings.unsavedChangesTitle')}</div>
             <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
-              {t('settings.unsavedChangesDesc')}
+              {t(terminalRouteActive ? 'terminal.leaveDescription' : 'settings.unsavedChangesDesc')}
             </p>
 
             <div className="mt-6 flex justify-end gap-2">
@@ -310,7 +313,7 @@ export function AppLayout({ children }: PropsWithChildren) {
                 onClick={() => blocker.proceed()}
                 variant="danger"
               >
-                {t('settings.leave')}
+                {t(terminalRouteActive ? 'terminal.leave' : 'settings.leave')}
               </Button>
             </div>
           </div>

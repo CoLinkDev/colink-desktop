@@ -255,6 +255,8 @@ export interface RemoteFilesystemDownload {
   error: string | null
 }
 
+export type RemoteTerminalSupport = 'unknown' | 'supported' | 'unsupported'
+
 export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',
   autoStart: true,

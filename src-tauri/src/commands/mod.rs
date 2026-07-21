@@ -8,6 +8,7 @@ mod message;
 mod music;
 mod settings;
 mod update;
+mod terminal;
 
 pub use app::bootstrap_app;
 pub use auth::{
@@ -33,3 +34,4 @@ pub use filesystem::{
 pub use music::{get_music_providers, list_available_music_providers, update_music_providers};
 pub use settings::{get_settings, pick_download_directory, update_settings};
 pub use update::{check_update, open_update_download};
+pub use terminal::{close_terminal, get_remote_terminal_support, open_terminal, resize_terminal, write_terminal};
