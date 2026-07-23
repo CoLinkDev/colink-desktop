@@ -9,6 +9,7 @@ mod music;
 mod settings;
 mod update;
 mod terminal;
+mod camera;
 
 pub use app::bootstrap_app;
 pub use auth::{
@@ -35,3 +36,4 @@ pub use music::{get_music_providers, list_available_music_providers, update_musi
 pub use settings::{get_settings, pick_download_directory, update_settings};
 pub use update::{check_update, open_update_download};
 pub use terminal::{close_terminal, get_remote_terminal_support, open_terminal, resize_terminal, write_terminal};
+pub use camera::{close_remote_camera, get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive};

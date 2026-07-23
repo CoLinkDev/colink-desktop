@@ -45,7 +45,7 @@ use crate::{
     protocol::{
         check_business_protocol_version, check_lan_protocol_version, negotiated_lan_protocol_version,
         supports_lan_key_exchange, supports_lan_key_exchange_nonce, AuthChallengePayload,
-        AuthResponsePayload, BusinessEnvelope, BusinessKeyExchangeNoncePayload,
+        AuthResponsePayload, BusinessEnvelope, BusinessKeyExchangeNoncePayload, CameraDataFrame,
         BusinessKeyExchangePayload, BusinessNegotiatePayload, BusinessVersionAckPayload,
         BusinessVersionPayload, EmptyPayload, EncryptedBusinessPayload, FileDataFrame, LanEnvelope,
         LanRejectPayload, PairingIdentityPayload, ProtocolHelloAckEnvelope, ProtocolHelloEnvelope,
@@ -71,6 +71,8 @@ const SWIM_SUSPECT_MISSES: u8 = 2;
 const SWIM_SUSPECT_TIMEOUT_MILLIS: i64 = 3_000;
 const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
+const CAMERA_SEND_BUFFER_CAPACITY: usize = 3;
+const CAMERA_RECEIVE_BUFFER_CAPACITY: usize = 4;
 const REASON_AUTH_UNKNOWN_DEVICE: &str = "colink:auth.unknown_device.v1";
 const REASON_AUTH_KEY_CHANGED: &str = "colink:auth.key_changed.v1";
 const REASON_PAIRING_USER_REJECTED: &str = "colink:pairing.user_rejected.v1";
@@ -116,6 +118,9 @@ struct LanState {
     seq: u64,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
+    camera_tokens: HashMap<String, String>,
+    camera_senders: HashMap<String, mpsc::Sender<CameraDataFrame>>,
+    camera_receive_buffers: HashMap<String, CameraReceiveBuffer>,
     pending_pairings: HashMap<String, oneshot::Sender<bool>>,
     pairing_candidates: HashMap<String, LanPairingCandidate>,
 }
@@ -200,6 +205,7 @@ struct LanContext {
 enum InboundRoute {
     Peer,
     Transfer { session_id: String },
+    Camera { session_id: String },
 }
 
 struct HandshakeResult<S> {
@@ -219,6 +225,41 @@ struct PeerProof {
 struct PairingDecision {
     request_id: String,
     accepted: bool,
+}
+
+#[derive(Default)]
+struct CameraReceiveBuffer {
+    frames: VecDeque<CameraDataFrame>,
+    event_queued: bool,
+    waiting_for_keyframe: bool,
+}
+
+impl CameraReceiveBuffer {
+    fn push(&mut self, frame: CameraDataFrame) -> bool {
+        if frame.codec == "h264" && self.waiting_for_keyframe {
+            if !frame.keyframe {
+                return false;
+            }
+            self.frames.clear();
+            self.waiting_for_keyframe = false;
+        }
+
+        if self.frames.len() >= CAMERA_RECEIVE_BUFFER_CAPACITY {
+            self.frames.clear();
+            if frame.codec == "h264" && !frame.keyframe {
+                self.waiting_for_keyframe = true;
+                return false;
+            }
+        }
+
+        self.frames.push_back(frame);
+        true
+    }
+
+    fn take(&mut self) -> Vec<CameraDataFrame> {
+        self.event_queued = false;
+        self.frames.drain(..).collect()
+    }
 }
 
 impl LanManager {
@@ -243,6 +284,9 @@ impl LanManager {
                 seq: 0,
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
+                camera_tokens: HashMap::new(),
+                camera_senders: HashMap::new(),
+                camera_receive_buffers: HashMap::new(),
                 pending_pairings: HashMap::new(),
                 pairing_candidates: HashMap::new(),
             })),
@@ -292,6 +336,9 @@ impl LanManager {
             inner.probe_in_flight.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
+            inner.camera_tokens.clear();
+            inner.camera_senders.clear();
+            inner.camera_receive_buffers.clear();
             inner.pending_pairings.clear();
             inner.pairing_candidates.clear();
             inner.seq = 0;
@@ -316,7 +363,7 @@ impl LanManager {
     }
 
     pub fn stop(&self) {
-        let (peers, transfer_senders, pending) = {
+        let (peers, transfer_senders, camera_senders, pending) = {
             let mut inner = self.inner.lock_unpoisoned();
             if let Some(cancel) = inner.cancel.take() {
                 let _ = cancel.send(true);
@@ -331,13 +378,16 @@ impl LanManager {
             inner.probe_in_flight.clear();
             inner.pairing_candidates.clear();
             inner.transfer_tokens.clear();
+            inner.camera_tokens.clear();
+            inner.camera_receive_buffers.clear();
             (
                 std::mem::take(&mut inner.peers),
                 std::mem::take(&mut inner.transfer_senders),
+                std::mem::take(&mut inner.camera_senders),
                 std::mem::take(&mut inner.pending_pairings),
             )
         };
-        drop((peers, transfer_senders, pending));
+        drop((peers, transfer_senders, camera_senders, pending));
         self.emit_pairing_candidates();
         info!("lan manager stopped");
     }
@@ -619,6 +669,77 @@ impl LanManager {
             .map_err(|error| AppError::message(error.to_string()))?;
         self.attach_transfer_stream(session_id.to_string(), stream)
             .await
+    }
+
+    pub fn register_camera_token(&self, session_id: &str, token: &str) {
+        self.inner
+            .lock_unpoisoned()
+            .camera_tokens
+            .insert(session_id.to_string(), token.to_string());
+    }
+
+    pub fn unregister_camera(&self, session_id: &str) {
+        let sender = {
+            let mut inner = self.inner.lock_unpoisoned();
+            inner.camera_tokens.remove(session_id);
+            inner.camera_receive_buffers.remove(session_id);
+            inner.camera_senders.remove(session_id)
+        };
+        drop(sender);
+    }
+
+    pub fn take_camera_frames(&self, session_id: &str) -> Vec<CameraDataFrame> {
+        self.inner
+            .lock_unpoisoned()
+            .camera_receive_buffers
+            .get_mut(session_id)
+            .map(CameraReceiveBuffer::take)
+            .unwrap_or_default()
+    }
+
+    pub fn has_camera_connection(&self, session_id: &str) -> bool {
+        self.inner
+            .lock_unpoisoned()
+            .camera_senders
+            .contains_key(session_id)
+    }
+
+    pub fn send_camera_frame(&self, session_id: &str, frame: CameraDataFrame) -> AppResult<()> {
+        let sender = self
+            .inner
+            .lock_unpoisoned()
+            .camera_senders
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| AppError::message("LAN camera connection does not exist"))?;
+        // Bounded non-blocking send keeps capture off the WebSocket write path.
+        // On congestion the host forces a keyframe so the controller can resync cleanly.
+        sender
+            .try_send(frame)
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    AppError::message("LAN camera connection is congested")
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    AppError::message("LAN camera connection does not exist")
+                }
+            })
+    }
+
+    pub async fn connect_camera(
+        &self,
+        session_id: &str,
+        token: &str,
+        ip: &str,
+        port: u16,
+    ) -> AppResult<()> {
+        let url = Url::parse(&format!(
+            "ws://{ip}:{port}/camera-stream/{session_id}?token={token}"
+        ))?;
+        let (stream, _) = connect_async(url.as_str())
+            .await
+            .map_err(|error| AppError::message(error.to_string()))?;
+        self.attach_camera_stream(session_id.to_string(), stream).await
     }
 
     async fn run(
@@ -935,6 +1056,10 @@ impl LanManager {
             InboundRoute::Transfer { session_id } => {
                 debug!(%session_id, "handling inbound lan transfer websocket");
                 self.attach_transfer_stream(session_id, stream).await
+            }
+            InboundRoute::Camera { session_id } => {
+                debug!(%session_id, "handling inbound lan camera websocket");
+                self.attach_camera_stream(session_id, stream).await
             }
         }
     }
@@ -1361,6 +1486,89 @@ impl LanManager {
             manager.detach_transfer(&session_id);
         });
         Ok(())
+    }
+
+    async fn attach_camera_stream<S>(
+        &self,
+        session_id: String,
+        stream: WebSocketStream<S>,
+    ) -> AppResult<()>
+    where
+        WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+            + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Unpin
+            + Send
+            + 'static,
+    {
+        let (tx, mut rx) = mpsc::channel::<CameraDataFrame>(CAMERA_SEND_BUFFER_CAPACITY);
+        self.inner
+            .lock_unpoisoned()
+            .camera_senders
+            .insert(session_id.clone(), tx);
+        info!(
+            %session_id,
+            send_capacity = CAMERA_SEND_BUFFER_CAPACITY,
+            receive_capacity = CAMERA_RECEIVE_BUFFER_CAPACITY,
+            "LAN camera data stream attached"
+        );
+        let _ = self.event_tx.send(RuntimeEvent::LanCameraConnected {
+            session_id: session_id.clone(),
+        });
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let (mut writer, mut reader) = stream.split();
+            loop {
+                tokio::select! {
+                    outbound = rx.recv() => {
+                        let Some(outbound) = outbound else { break; };
+                        if writer.send(Message::Binary(outbound.encode().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    inbound = reader.next() => {
+                        match inbound {
+                            Some(Ok(Message::Binary(bytes))) => {
+                                if let Some(frame) = CameraDataFrame::decode(bytes.as_ref()) {
+                                    manager.queue_camera_frame(&session_id, frame);
+                                }
+                            }
+                            Some(Ok(Message::Ping(payload))) => {
+                                if writer.send(Message::Pong(payload)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                            Some(Ok(_)) => {}
+                        }
+                    }
+                }
+            }
+            manager.unregister_camera(&session_id);
+            info!(%session_id, "LAN camera data stream detached");
+            let _ = manager.event_tx.send(RuntimeEvent::LanCameraClosed { session_id });
+        });
+        Ok(())
+    }
+
+    fn queue_camera_frame(&self, session_id: &str, frame: CameraDataFrame) {
+        let should_notify = {
+            let mut inner = self.inner.lock_unpoisoned();
+            let buffer = inner
+                .camera_receive_buffers
+                .entry(session_id.to_string())
+                .or_default();
+            if !buffer.push(frame) || buffer.event_queued {
+                false
+            } else {
+                buffer.event_queued = true;
+                true
+            }
+        };
+        if should_notify {
+            let _ = self.event_tx.send(RuntimeEvent::LanCameraFramesReady {
+                session_id: session_id.to_string(),
+            });
+        }
     }
 
     async fn handle_swim_message(
@@ -2313,7 +2521,11 @@ impl LanManager {
             return Ok(InboundRoute::Peer);
         }
 
-        let Some(session_id) = path.strip_prefix("/transfer/") else {
+        let (session_id, camera) = if let Some(session_id) = path.strip_prefix("/transfer/") {
+            (session_id, false)
+        } else if let Some(session_id) = path.strip_prefix("/camera-stream/") {
+            (session_id, true)
+        } else {
             return Err(reject_ws(StatusCode::NOT_FOUND, "unknown websocket path"));
         };
         if session_id.is_empty() {
@@ -2331,15 +2543,22 @@ impl LanManager {
         if token.is_empty() {
             return Err(reject_ws(
                 StatusCode::UNAUTHORIZED,
-                "missing transfer token",
+                "missing stream token",
             ));
         }
-        if !self.consume_transfer_token(session_id, &token) {
-            return Err(reject_ws(StatusCode::FORBIDDEN, "invalid transfer token"));
+        let valid = if camera {
+            self.consume_camera_token(session_id, &token)
+        } else {
+            self.consume_transfer_token(session_id, &token)
+        };
+        if !valid {
+            return Err(reject_ws(StatusCode::FORBIDDEN, "invalid stream token"));
         }
 
-        Ok(InboundRoute::Transfer {
-            session_id: session_id.to_string(),
+        Ok(if camera {
+            InboundRoute::Camera { session_id: session_id.to_string() }
+        } else {
+            InboundRoute::Transfer { session_id: session_id.to_string() }
         })
     }
 
@@ -2348,6 +2567,17 @@ impl LanManager {
         match inner.transfer_tokens.get(session_id) {
             Some(expected) if expected == token => {
                 inner.transfer_tokens.remove(session_id);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn consume_camera_token(&self, session_id: &str, token: &str) -> bool {
+        let mut inner = self.inner.lock_unpoisoned();
+        match inner.camera_tokens.get(session_id) {
+            Some(expected) if expected == token => {
+                inner.camera_tokens.remove(session_id);
                 true
             }
             _ => false,
@@ -3304,6 +3534,7 @@ where
         }?;
         return Ok((crypto, peer_business_version));
     }
+
 }
 
 struct EphemeralKeyExchange {
@@ -3891,7 +4122,8 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{LanManager, MemberRecord, MemberState};
+    use super::{CameraReceiveBuffer, LanManager, MemberRecord, MemberState};
+    use crate::protocol::CameraDataFrame;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -3900,6 +4132,33 @@ mod tests {
             updated_at: 0,
             missed_probes: 0,
         }
+    }
+
+    fn camera_frame(sequence: u64, keyframe: bool) -> CameraDataFrame {
+        CameraDataFrame::new("h264", keyframe, sequence, sequence, vec![sequence as u8])
+            .expect("camera frame")
+    }
+
+    #[test]
+    fn camera_receive_buffer_discards_deltas_until_keyframe_after_overflow() {
+        let mut buffer = CameraReceiveBuffer::default();
+        assert!(buffer.push(camera_frame(0, true)));
+        assert!(buffer.push(camera_frame(1, false)));
+        assert!(buffer.push(camera_frame(2, false)));
+        assert!(buffer.push(camera_frame(3, false)));
+        assert!(!buffer.push(camera_frame(4, false)));
+        assert!(!buffer.push(camera_frame(5, false)));
+        assert!(buffer.push(camera_frame(6, true)));
+        assert!(buffer.push(camera_frame(7, false)));
+
+        let frames = buffer.take();
+        assert_eq!(
+            frames
+                .into_iter()
+                .map(|frame| frame.sequence)
+                .collect::<Vec<_>>(),
+            vec![6, 7]
+        );
     }
 
     #[test]

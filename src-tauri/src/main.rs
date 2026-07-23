@@ -36,6 +36,8 @@ use commands::{
     update_settings,
     download_remote_filesystem_file,
     get_remote_terminal_support, open_terminal, write_terminal, resize_terminal, close_terminal,
+    get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive,
+    close_remote_camera,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -129,7 +131,12 @@ fn main() {
             open_terminal,
             write_terminal,
             resize_terminal,
-            close_terminal
+            close_terminal,
+            get_remote_camera_support,
+            list_remote_cameras,
+            open_remote_camera,
+            send_camera_alive,
+            close_remote_camera
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

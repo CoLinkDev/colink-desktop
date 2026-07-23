@@ -19,6 +19,8 @@ import type {
   RemoteFilesystemListResult,
   RemoteFilesystemRootsResult,
   RemoteTerminalSupport,
+  RemoteCameraSupport,
+  CameraEntry,
   SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
@@ -238,3 +240,10 @@ export function resizeTerminal(deviceId: string, sessionId: string, cols: number
 export function closeTerminal(deviceId: string, sessionId: string) {
   return invoke<void>('close_terminal', { deviceId, sessionId })
 }
+
+export function getRemoteCameraSupport(deviceId: string) { return invoke<RemoteCameraSupport>('get_remote_camera_support', { deviceId }) }
+export function listRemoteCameras(deviceId: string) { return invoke<CameraEntry[]>('list_remote_cameras', { deviceId }) }
+export function openRemoteCamera(deviceId: string, cameraId: string, preferredCodecs: string[]) { return invoke<string>('open_remote_camera', { deviceId, cameraId, preferredCodecs }) }
+
+export function sendCameraAlive(deviceId: string, sessionId: string) { return invoke<void>('send_camera_alive', { deviceId, sessionId }) }
+export function closeRemoteCamera(deviceId: string, sessionId: string) { return invoke<void>('close_remote_camera', { deviceId, sessionId }) }

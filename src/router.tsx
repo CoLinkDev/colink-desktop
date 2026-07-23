@@ -13,6 +13,7 @@ import { LogsPage } from './pages/logs-page'
 import { CastBoardPage } from './pages/castboard-page'
 import { FilesPage } from './pages/files-page'
 import { TerminalPage } from './pages/terminal-page'
+import { CameraPage } from './pages/camera-page'
 
 function RootRedirect() {
   const { status } = useAppState()
@@ -85,6 +86,7 @@ export const router = createHashRouter([
         path: '/terminal',
         element: <TerminalPage />,
       },
+      { path: '/camera', element: <CameraPage /> },
     ],
   },
 ])

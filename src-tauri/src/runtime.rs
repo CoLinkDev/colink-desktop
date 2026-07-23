@@ -20,6 +20,8 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 mod clipboard;
+mod camera;
+mod camera_capture;
 mod filesystem;
 mod progress;
 mod route;
@@ -32,7 +34,10 @@ use self::clipboard::{
 };
 use self::route::TransferRoute;
 pub use self::terminal::RemoteTerminalSupport;
+pub use self::camera::RemoteCameraSupport;
 use self::terminal::TerminalManager;
+use self::camera::CameraManager;
+use self::camera_capture::CameraCaptureService;
 
 use crate::{
     device_presence,
@@ -61,7 +66,11 @@ use crate::{
         SystemControlCommandPayload, SystemControlErrorPayload, SystemControlQueryPayload,
         TERMINAL_CLOSE_TYPE, TERMINAL_DATA_TYPE, TERMINAL_OPEN_ACK_TYPE, TERMINAL_OPEN_TYPE,
         TERMINAL_RESIZE_TYPE, TerminalClosePayload, TerminalDataPayload, TerminalOpenAckPayload,
-        TerminalOpenPayload, TerminalResizePayload,
+        TerminalOpenPayload, TerminalResizePayload, CameraAlivePayload, CameraClosePayload,
+        CameraConfigPayload, CameraFramePayload,
+        CameraListPayload, CameraListResultPayload, CameraOpenAckPayload, CameraOpenPayload,
+        CameraReadyPayload, CAMERA_ALIVE_TYPE, CAMERA_CLOSE_TYPE, CAMERA_CONFIG_TYPE, CAMERA_FRAME_TYPE,
+        CAMERA_LIST_RESULT_TYPE, CAMERA_LIST_TYPE, CAMERA_OPEN_ACK_TYPE, CAMERA_OPEN_TYPE, CAMERA_READY_TYPE,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -103,6 +112,8 @@ struct RuntimeInner {
     music: MusicService,
     sysinfo: SysInfoService,
     terminal: TerminalManager,
+    camera: CameraManager,
+    camera_capture: CameraCaptureService,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Mutex<RuntimeState>,
 }
@@ -186,6 +197,8 @@ impl AppRuntime {
                 music,
                 sysinfo,
                 terminal: TerminalManager::new(),
+                camera: CameraManager::new(),
+                camera_capture: CameraCaptureService::new(event_tx.clone()),
                 event_tx: event_tx.clone(),
                 state: Mutex::new(RuntimeState {
                     watcher_shutdown: None,
@@ -213,6 +226,10 @@ impl AppRuntime {
     }
 
     pub fn deactivate(&self) -> AppResult<()> {
+        for session_id in self.inner.camera.close_all_host_sessions() {
+            self.inner.camera_capture.stop(&session_id);
+            self.inner.lan.unregister_camera(&session_id);
+        }
         self.inner.lan.stop();
         self.inner.music.stop();
         self.inner.sysinfo.stop();
@@ -403,7 +420,9 @@ impl AppRuntime {
                 correlation_id,
                 message,
             } => {
-                debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
+                if message.message_type != CAMERA_FRAME_TYPE {
+                    debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
+                }
                 self
                     .handle_business_message(&from, "cloud", envelope_id, correlation_id, message)
                     .await;
@@ -416,6 +435,7 @@ impl AppRuntime {
                 debug!(%device_id, online = online, "runtime received device presence");
                 if !online {
                     self.inner.terminal.close_for_device(&device_id);
+                    self.handle_camera_device_disconnected(&device_id);
                 }
                 let _ = device_presence::update_one(
                     &self.inner.database,
@@ -543,7 +563,9 @@ impl AppRuntime {
                 correlation_id,
                 message,
             } => {
-                debug!(%from, message_type = %message.message_type, "runtime received lan message");
+                if message.message_type != CAMERA_FRAME_TYPE {
+                    debug!(%from, message_type = %message.message_type, "runtime received lan message");
+                }
                 self
                     .handle_business_message(
                         &from,
@@ -561,6 +583,23 @@ impl AppRuntime {
             RuntimeEvent::LanTransferClosed { session_id } => {
                 debug!(%session_id, "runtime received lan transfer closed");
                 let _ = self.handle_lan_transfer_closed(&session_id);
+            }
+            RuntimeEvent::LanCameraFramesReady { session_id } => {
+                for frame in self.inner.lan.take_camera_frames(&session_id) {
+                    self.handle_lan_camera_frame(&session_id, frame);
+                }
+            }
+            RuntimeEvent::LanCameraConnected { session_id } => {
+                self.handle_lan_camera_connected(&session_id).await;
+            }
+            RuntimeEvent::LanCameraClosed { session_id } => {
+                self.handle_lan_camera_closed(&session_id).await;
+            }
+            RuntimeEvent::NativeCameraFrame { session_id, generation, keyframe, payload } => {
+                self.handle_native_camera_frame(&session_id, generation, keyframe, payload).await;
+            }
+            RuntimeEvent::NativeCameraFailed { session_id, generation, message } => {
+                self.handle_native_camera_failed(&session_id, generation, message).await;
             }
             RuntimeEvent::LanPairingRequested(request) => {
                 debug!(device_id = %request.device_id, reason = %request.reason, "runtime received lan pairing request");
@@ -919,6 +958,60 @@ impl AppRuntime {
                     if !payload.accepted { self.inner.terminal.discard_remote_session(&payload.session_id); }
                     self.emit_terminal_event(self::terminal::TerminalUiEvent { session_id: payload.session_id, kind: if payload.accepted { "opened" } else { "failed" }.to_string(), data: None, exit_code: None, message: payload.message.or(payload.reason) });
                 }
+            }
+            CAMERA_LIST_TYPE => {
+                let Some(request_id) = envelope_id else { return; };
+                if serde_json::from_value::<CameraListPayload>(message.payload).is_err() { return; }
+                let response_payload = match self.inner.camera_capture.list_devices() {
+                    Ok(cameras) => CameraListResultPayload {
+                        cameras,
+                        reason: None,
+                        message: None,
+                    },
+                    Err(error) => {
+                        tracing::warn!(%error, "native camera enumeration failed");
+                        CameraListResultPayload {
+                            cameras: Vec::new(),
+                            reason: Some("colink:camera.list_failed.v1".to_string()),
+                            message: Some(error.to_string()),
+                        }
+                    }
+                };
+                if let Ok(response) = BusinessEnvelope::from_payload(CAMERA_LIST_RESULT_TYPE, response_payload) {
+                    let _ = self.send_business_message_with_correlation(from, response, Some(request_id)).await;
+                }
+            }
+            CAMERA_LIST_RESULT_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraListResultPayload>(message.payload) else { return; };
+                self.handle_camera_list_result(from, correlation_id.as_deref(), payload).await;
+            }
+            CAMERA_OPEN_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraOpenPayload>(message.payload) else { return; };
+                self.handle_camera_open(from, envelope_id, payload).await;
+            }
+            CAMERA_OPEN_ACK_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraOpenAckPayload>(message.payload) else { return; };
+                self.handle_camera_open_ack(from, correlation_id.as_deref(), payload).await;
+            }
+            CAMERA_FRAME_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraFramePayload>(message.payload) else { return; };
+                self.handle_camera_frame(from, payload);
+            }
+            CAMERA_CLOSE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraClosePayload>(message.payload) else { return; };
+                self.handle_camera_close(from, payload);
+            }
+            CAMERA_READY_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraReadyPayload>(message.payload) else { return; };
+                self.handle_camera_ready(from, payload).await;
+            }
+            CAMERA_ALIVE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraAlivePayload>(message.payload) else { return; };
+                self.handle_camera_alive(from, payload).await;
+            }
+            CAMERA_CONFIG_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraConfigPayload>(message.payload) else { return; };
+                self.handle_camera_config(from, envelope_id.as_deref(), payload).await;
             }
             _ => {}
         }

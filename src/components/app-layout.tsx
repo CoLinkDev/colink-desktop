@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal } from 'lucide-react'
+import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, ScrollText, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -87,6 +87,8 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.castboard')
       case '/terminal':
         return t('nav.terminal')
+      case '/camera':
+        return t('camera.title', { defaultValue: 'Remote camera' })
       default:
         return 'CoLink Desktop'
     }
@@ -114,6 +116,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
+          <SidebarLink icon={Camera} label={t('nav.camera')} to="/camera" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
@@ -208,7 +211,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
         <main className={cn(
           "flex-1 min-h-0",
-          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal')
+          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal' || location.pathname === '/camera')
             ? "overflow-hidden"
             : "overflow-y-auto px-8 py-6"
         )}>

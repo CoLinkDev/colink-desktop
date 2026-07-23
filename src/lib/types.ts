@@ -256,6 +256,13 @@ export interface RemoteFilesystemDownload {
 }
 
 export type RemoteTerminalSupport = 'unknown' | 'supported' | 'unsupported'
+export type RemoteCameraSupport = RemoteTerminalSupport
+
+export interface CameraEntry {
+  cameraId: string
+  label: string
+  position?: string | null
+}
 
 export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',

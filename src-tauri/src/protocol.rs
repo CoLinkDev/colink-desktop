@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.9.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.10.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -38,6 +38,16 @@ pub const TERMINAL_OPEN_ACK_TYPE: &str = "terminal.v1.open-ack";
 pub const TERMINAL_DATA_TYPE: &str = "terminal.v1.data";
 pub const TERMINAL_RESIZE_TYPE: &str = "terminal.v1.resize";
 pub const TERMINAL_CLOSE_TYPE: &str = "terminal.v1.close";
+pub const CAMERA_LIST_TYPE: &str = "camera.v1.list";
+pub const CAMERA_LIST_RESULT_TYPE: &str = "camera.v1.list-result";
+pub const CAMERA_OPEN_TYPE: &str = "camera.v1.open";
+pub const CAMERA_OPEN_ACK_TYPE: &str = "camera.v1.open-ack";
+pub const CAMERA_READY_TYPE: &str = "camera.v1.ready";
+pub const CAMERA_ALIVE_TYPE: &str = "camera.v1.alive";
+pub const CAMERA_CONFIG_TYPE: &str = "camera.v1.config";
+pub const CAMERA_CONFIG_ACK_TYPE: &str = "camera.v1.config-ack";
+pub const CAMERA_CLOSE_TYPE: &str = "camera.v1.close";
+pub const CAMERA_FRAME_TYPE: &str = "camera.v1.frame";
 
 const FILE_DATA_FRAME_VERSION: u8 = 0x01;
 const FILE_DATA_FRAME_HEADER_LEN: usize = 8;
@@ -504,6 +514,214 @@ pub struct TerminalResizePayload { pub session_id: String, pub cols: u16, pub ro
 pub struct TerminalClosePayload { pub session_id: String, pub exit_code: Option<i32> }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraListPayload {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraListResultPayload {
+    pub cameras: Vec<CameraEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraEntry {
+    pub camera_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CameraCapabilities>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraCapabilities { pub resolutions: Vec<CameraResolution>, pub fps_range: CameraFpsRange }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraResolution { pub width: u32, pub height: u32 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraFpsRange { pub min: u32, pub max: u32 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraOpenPayload {
+    pub session_id: String,
+    pub camera_id: String,
+    pub preferred_codecs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_fps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraOpenAckPayload {
+    pub session_id: String,
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negotiated_codec: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraReadyPayload { pub session_id: String, pub transport: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraAlivePayload { pub session_id: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraConfigPayload {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraConfigAckPayload {
+    pub session_id: String,
+    pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraClosePayload {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraFramePayload {
+    pub session_id: String,
+    pub codec: String,
+    pub keyframe: bool,
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraDataFrame {
+    pub codec: String,
+    pub keyframe: bool,
+    pub sequence: u32,
+    pub timestamp_ms: u32,
+    pub payload: Vec<u8>,
+}
+
+impl CameraDataFrame {
+    pub fn new(
+        codec: &str,
+        keyframe: bool,
+        sequence: u64,
+        timestamp_ms: u64,
+        payload: Vec<u8>,
+    ) -> Option<Self> {
+        codec_wire_value(codec)?;
+        if payload.len() > u32::MAX as usize {
+            return None;
+        }
+        Some(Self {
+            codec: codec.to_string(),
+            keyframe,
+            sequence: sequence.min(u32::MAX as u64) as u32,
+            timestamp_ms: timestamp_ms.min(u32::MAX as u64) as u32,
+            payload,
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(16 + self.payload.len());
+        bytes.extend_from_slice(&[
+            0x01,
+            0x01,
+            codec_wire_value(&self.codec).unwrap_or_default(),
+            u8::from(self.keyframe),
+        ]);
+        bytes.extend_from_slice(&self.sequence.to_be_bytes());
+        bytes.extend_from_slice(&self.timestamp_ms.to_be_bytes());
+        bytes.extend_from_slice(&(self.payload.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&self.payload);
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 || bytes[0] != 0x01 || bytes[1] != 0x01 {
+            return None;
+        }
+        let payload_len = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        if bytes.len() != 16 + payload_len {
+            return None;
+        }
+        Some(Self {
+            codec: codec_name(bytes[2])?.to_string(),
+            keyframe: bytes[3] & 0x01 != 0,
+            sequence: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            timestamp_ms: u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            payload: bytes[16..].to_vec(),
+        })
+    }
+}
+
+fn codec_wire_value(codec: &str) -> Option<u8> {
+    match codec {
+        "jpeg" => Some(0x01),
+        "h264" => Some(0x02),
+        "webp" => Some(0x03),
+        _ => None,
+    }
+}
+
+fn codec_name(value: u8) -> Option<&'static str> {
+    match value {
+        0x01 => Some("jpeg"),
+        0x02 => Some("h264"),
+        0x03 => Some("webp"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemControlCommandPayload {
     pub action: String,
@@ -882,7 +1100,7 @@ pub struct SwimGossip {
 #[cfg(test)]
 mod tests {
     use super::{
-        BusinessEnvelope, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
+        BusinessEnvelope, CameraDataFrame, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
         MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, MUSIC_LYRIC_TYPE,
         MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
@@ -908,6 +1126,13 @@ mod tests {
         assert_eq!(FileDataFrame::ack(3).kind, FileDataFrameKind::Ack);
         assert_eq!(FileDataFrame::finish(4).index, 4);
         assert_eq!(FileDataFrame::cancel("stop").payload, b"stop");
+    }
+
+    #[test]
+    fn encodes_and_decodes_camera_data_frame() {
+        let frame = CameraDataFrame::new("h264", true, 42, 1_400, vec![0, 0, 0, 1, 0x65])
+            .expect("supported codec");
+        assert_eq!(CameraDataFrame::decode(&frame.encode()), Some(frame));
     }
 
     #[test]

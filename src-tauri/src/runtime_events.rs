@@ -72,6 +72,26 @@ pub enum RuntimeEvent {
     LanTransferClosed {
         session_id: String,
     },
+    LanCameraFramesReady {
+        session_id: String,
+    },
+    LanCameraConnected {
+        session_id: String,
+    },
+    LanCameraClosed {
+        session_id: String,
+    },
+    NativeCameraFrame {
+        session_id: String,
+        generation: u64,
+        keyframe: bool,
+        payload: Vec<u8>,
+    },
+    NativeCameraFailed {
+        session_id: String,
+        generation: u64,
+        message: String,
+    },
     LanPairingRequested(LanPairingRequest),
     LanPairingCompleted(LanPairingCompleted),
     LanPairingFailed(LanPairingFailed),

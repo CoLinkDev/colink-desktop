@@ -4,8 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
-import { AppStateProvider } from './hooks/use-app-state'
-import { useAppState } from './hooks/use-app-state'
+import { AppStateProvider, useAppState } from './hooks/use-app-state'
 import { FileOfferDialog } from './components/file-offer-dialog'
 import { LanPairingDialog } from './components/lan-pairing-dialog'
 import { UpdateDialog } from './components/update-dialog'
@@ -24,11 +23,13 @@ export default function App() {
   const { t } = useTranslation()
 
   useEffect(() => {
+    let disposed = false
     let unlisten: (() => void) | null = null
 
     void (async () => {
       try {
-        unlisten = await listen<LanKeyChangedPayload>('lan-key-changed', (event) => {
+        const nextUnlisten = await listen<LanKeyChangedPayload>('lan-key-changed', (event) => {
+          if (disposed) return
           const name = event.payload.name || event.payload.deviceId
           toast.warning(
             t('lanPairing.keyChangedToast', {
@@ -37,12 +38,18 @@ export default function App() {
             }),
           )
         })
+        if (disposed) {
+          nextUnlisten()
+        } else {
+          unlisten = nextUnlisten
+        }
       } catch {
         // Desktop runtime only.
       }
     })()
 
     return () => {
+      disposed = true
       unlisten?.()
     }
   }, [t])

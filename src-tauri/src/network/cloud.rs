@@ -60,6 +60,7 @@ struct ManagerState {
     generation: u64,
     cancel: Option<watch::Sender<bool>>,
     command_tx: Option<mpsc::UnboundedSender<CloudCommand>>,
+    camera_tx: Option<mpsc::Sender<CloudCommand>>,
     status: CloudStatus,
     business_versions: HashMap<String, String>,
 }
@@ -97,6 +98,15 @@ enum CloudCommand {
         correlation_id: Option<String>,
         message: BusinessEnvelope,
     },
+}
+
+impl CloudCommand {
+    fn is_camera_frame(&self) -> bool {
+        matches!(
+            self,
+            Self::Relay { message, .. } if message.message_type == crate::protocol::CAMERA_FRAME_TYPE
+        )
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -143,6 +153,7 @@ impl CloudConnectionManager {
                 generation: 0,
                 cancel: None,
                 command_tx: None,
+                camera_tx: None,
                 status: CloudStatus::disconnected(),
                 business_versions: HashMap::new(),
             })),
@@ -221,6 +232,7 @@ impl CloudConnectionManager {
             inner.generation += 1;
             inner.cancel = Some(cancel_tx);
             inner.command_tx = None;
+            inner.camera_tx = None;
             inner.business_versions.clear();
             inner.status = CloudStatus::connecting();
             inner.generation
@@ -247,6 +259,7 @@ impl CloudConnectionManager {
             }
             inner.generation += 1;
             inner.command_tx = None;
+            inner.camera_tx = None;
             inner.business_versions.clear();
             inner.status = CloudStatus::disconnected();
         }
@@ -267,6 +280,7 @@ impl CloudConnectionManager {
             }
             inner.generation += 1;
             inner.command_tx = None;
+            inner.camera_tx = None;
             inner.business_versions.clear();
             inner.status = CloudStatus::disconnected();
         }
@@ -529,7 +543,8 @@ impl CloudConnectionManager {
         let connected_at = Instant::now();
 
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
-        self.install_command_sender(generation, command_tx);
+        let (camera_tx, mut camera_rx) = mpsc::channel(1);
+        self.install_command_senders(generation, command_tx, camera_tx);
 
         let connected = CloudStatus::connected();
         if self.update_status_if_current(generation, connected.clone()) {
@@ -569,7 +584,7 @@ impl CloudConnectionManager {
                         });
                     }
                 }
-                command = command_rx.recv() => {
+                command = next_cloud_command(&mut command_rx, &mut camera_rx) => {
                     let Some(command) = command else {
                         continue;
                     };
@@ -764,22 +779,33 @@ impl CloudConnectionManager {
     }
 
     fn send_command(&self, command: CloudCommand) -> AppResult<()> {
-        let sender = self
-            .inner
-            .lock_unpoisoned()
+        let inner = self.inner.lock_unpoisoned();
+        if command.is_camera_frame() {
+            return inner
+                .camera_tx
+                .as_ref()
+                .ok_or_else(|| AppError::message(self.user_text(TextKey::CloudNotConnected)))?
+                .try_send(command)
+                .map_err(|_| AppError::message("camera transport is congested"));
+        }
+        inner
             .command_tx
-            .clone()
-            .ok_or_else(|| AppError::message(self.user_text(TextKey::CloudNotConnected)))?;
-
-        sender
+            .as_ref()
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::CloudNotConnected)))?
             .send(command)
             .map_err(|_| AppError::message(self.user_text(TextKey::CloudUnavailable)))
     }
 
-    fn install_command_sender(&self, generation: u64, sender: mpsc::UnboundedSender<CloudCommand>) {
+    fn install_command_senders(
+        &self,
+        generation: u64,
+        sender: mpsc::UnboundedSender<CloudCommand>,
+        camera_sender: mpsc::Sender<CloudCommand>,
+    ) {
         let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = Some(sender);
+            inner.camera_tx = Some(camera_sender);
         }
     }
 
@@ -787,6 +813,7 @@ impl CloudConnectionManager {
         let mut inner = self.inner.lock_unpoisoned();
         if inner.generation == generation {
             inner.command_tx = None;
+            inner.camera_tx = None;
             inner.business_versions.clear();
         }
     }
@@ -925,6 +952,16 @@ fn build_ws_url(
         .append_pair("ticket", ticket)
         .append_pair("businessVersion", business_version);
     Ok(url)
+}
+
+async fn next_cloud_command(
+    command_rx: &mut mpsc::UnboundedReceiver<CloudCommand>,
+    camera_rx: &mut mpsc::Receiver<CloudCommand>,
+) -> Option<CloudCommand> {
+    tokio::select! {
+        command = command_rx.recv() => command,
+        camera = camera_rx.recv() => camera,
+    }
 }
 
 fn backoff_delay(attempt: u32) -> Duration {
