@@ -112,11 +112,11 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={MessagesSquare} label={t('nav.messages')} to="/messages" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={FolderOpen} label={t('nav.files')} to="/files" />
-          <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
-          <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
           <SidebarLink icon={Camera} label={t('nav.camera')} to="/camera" />
+          <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
+          <SidebarLink icon={ScrollText} label={t('nav.logs')} to="/logs" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 
