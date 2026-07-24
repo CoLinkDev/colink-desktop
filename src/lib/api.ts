@@ -159,6 +159,10 @@ export function openUpdateDownload(url: string) {
   return invoke<void>('open_update_download', { url })
 }
 
+export function installTauriUpdate() {
+  return invoke<void>('install_tauri_update')
+}
+
 export function pickDownloadDirectory() {
   return invoke<string | null>('pick_download_directory')
 }

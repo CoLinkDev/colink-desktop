@@ -25,7 +25,10 @@ jobs:
         include:
           - os: windows-latest
             bundle: nsis
-            artifact-path: colink-desktop/src-tauri/target/release/bundle/nsis/*.exe
+            artifact-path: |
+              colink-desktop/src-tauri/target/release/bundle/nsis/*.exe
+              colink-desktop/src-tauri/target/release/bundle/nsis/*.nsis.zip
+              colink-desktop/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
           - os: ubuntu-24.04
             bundle: deb
             artifact-path: colink-desktop/src-tauri/target/release/bundle/deb/*.deb
@@ -94,7 +97,16 @@ jobs:
           $content = $content -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"${{ steps.version.outputs.VERSION }}`""
           Set-Content src-tauri/Cargo.toml $content
 
-      - name: Build Tauri app
+      - name: Build Tauri app on Windows
+        if: runner.os == 'Windows'
+        working-directory: colink-desktop
+        run: pnpm tauri build --bundles ${{ matrix.bundle }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build Tauri app on Linux
+        if: runner.os == 'Linux'
         working-directory: colink-desktop
         run: pnpm tauri build --bundles ${{ matrix.bundle }}
 

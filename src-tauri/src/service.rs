@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 use url::{form_urlencoded, Url};
 
+#[cfg(target_os = "windows")]
+use tauri::Emitter;
+#[cfg(target_os = "windows")]
+use tauri_plugin_updater::UpdaterExt;
+
 use crate::{
     api::{DeviceListResponse, DEVICES_PATH},
     auth,
@@ -28,6 +33,7 @@ const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
 const ME_PATH: &str = "/api/v1/me";
 const UPDATE_CHECK_PATH: &str = "/api/v1/update/check";
+const TAURI_UPDATE_PATH: &str = "/api/v1/update/tauri/windows/x86_64";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -398,6 +404,61 @@ pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease
         asset.download_url = absolute_url(&settings.server_url, &asset.download_url)?;
     }
     Ok(Some(release))
+}
+
+pub async fn install_tauri_update(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> AppResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let settings = load_settings(state)?;
+        let endpoint = Url::parse(&format!(
+            "{}{TAURI_UPDATE_PATH}/{}",
+            settings.server_url,
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        let updater = app
+            .updater_builder()
+            .endpoints(vec![endpoint])
+            .map_err(|error| AppError::message(format!("build updater endpoint: {error}")))?
+            .build()
+            .map_err(|error| AppError::message(format!("build updater: {error}")))?;
+        let update = updater
+            .check()
+            .await
+            .map_err(|error| AppError::message(format!("check updater: {error}")))?
+            .ok_or_else(|| AppError::message("no automatic update is available"))?;
+
+        let _ = window.emit("update-progress", 0_u8);
+        let progress_window = window.clone();
+        let installing_window = window.clone();
+        let mut downloaded = 0_u64;
+        update
+            .download_and_install(
+                move |chunk_length, content_length| {
+                    downloaded = downloaded.saturating_add(chunk_length as u64);
+                    if let Some(total) = content_length.filter(|total| *total > 0) {
+                        let percent = (downloaded.saturating_mul(100) / total).min(100) as u8;
+                        let _ = progress_window.emit("update-progress", percent);
+                    }
+                },
+                move || {
+                    let _ = installing_window.emit("update-installing", ());
+                },
+            )
+            .await
+            .map_err(|error| AppError::message(format!("install updater: {error}")))?;
+
+        app.restart();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (state, app, window);
+        Err(AppError::message("automatic updates are only supported on Windows"))
+    }
 }
 
 fn update_platform() -> &'static str {

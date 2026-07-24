@@ -29,7 +29,8 @@ use commands::{
     get_settings, handle_castboard_window_event, list_available_music_providers,
     list_castboard_monitors, list_devices, list_lan_pairing_candidates, list_logs,
     list_remote_filesystem, list_remote_filesystem_downloads, list_remote_filesystem_roots, login, logout,
-    open_castboard_on_monitor, open_received_file, open_update_download, pending_file_offers,
+    install_tauri_update, open_castboard_on_monitor, open_received_file, open_update_download,
+    pending_file_offers,
     pick_download_directory, pick_files, register_account, respond_file_offer,
     respond_lan_pairing, reveal_received_file, rotate_device_key, save_saved_login, send_files,
     send_text, start_lan_pairing, stop_castboard, update_device_name, update_music_providers,
@@ -45,11 +46,16 @@ use tauri::{Manager, WindowEvent};
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = shell::show_main_window(app, None);
-        }))
+        }));
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .setup(|app| {
             let tracing_guard = dev_log::initialize(app.handle())?;
             app.manage(tracing_guard);
@@ -117,6 +123,7 @@ fn main() {
             stop_castboard,
             check_update,
             open_update_download,
+            install_tauri_update,
             pick_download_directory,
             send_text,
             pick_files,

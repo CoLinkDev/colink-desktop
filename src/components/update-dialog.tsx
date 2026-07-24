@@ -1,9 +1,11 @@
-import { AlertTriangle, Download, X } from 'lucide-react'
+import { listen } from '@tauri-apps/api/event'
+import { AlertTriangle, Download, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { openUpdateDownload } from '../lib/api'
+import { installTauriUpdate, openUpdateDownload } from '../lib/api'
 import type { AppUpdateRelease } from '../lib/types'
 import { Button } from './ui/button'
 
@@ -15,14 +17,61 @@ interface UpdateDialogProps {
 
 export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
   const { t } = useTranslation()
+  const [installing, setInstalling] = useState(false)
+  const [phase, setPhase] = useState<'downloading' | 'installing' | null>(null)
+  const [progress, setProgress] = useState<number | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    let unlistenProgress: (() => void) | null = null
+    let unlistenInstalling: (() => void) | null = null
+
+    void (async () => {
+      try {
+        const [nextUnlistenProgress, nextUnlistenInstalling] = await Promise.all([
+          listen<number>('update-progress', (event) => {
+            if (!disposed) {
+              setProgress(event.payload)
+            }
+          }),
+          listen('update-installing', () => {
+            if (!disposed) {
+              setPhase('installing')
+            }
+          }),
+        ])
+        if (disposed) {
+          nextUnlistenProgress()
+          nextUnlistenInstalling()
+        } else {
+          unlistenProgress = nextUnlistenProgress
+          unlistenInstalling = nextUnlistenInstalling
+        }
+      } catch {
+        // Desktop runtime only.
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlistenProgress?.()
+      unlistenInstalling?.()
+    }
+  }, [])
 
   if (!update) {
     return null
   }
 
-  const asset = update.assets[0]
+  const asset = update.assets.find((item) => item.name.toLowerCase().endsWith('.exe')) ?? update.assets[0]
+  const canInstallAutomatically = update.assets.some((item) => item.name.toLowerCase().endsWith('.exe'))
   const notes = update.releaseNotes.trim()
   const description = notes || t('updates.description')
+  const progressText = phase === 'installing'
+    ? t('updates.installing')
+    : progress === null
+      ? t('updates.downloading')
+      : t('updates.progress', { percent: progress })
 
   async function openDownload() {
     if (!asset) {
@@ -35,6 +84,21 @@ export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
       }
     } catch {
       toast.error(t('common.requestFailed'))
+    }
+  }
+
+  async function installUpdate() {
+    setInstalling(true)
+    setPhase('downloading')
+    setProgress(0)
+
+    try {
+      await installTauriUpdate()
+    } catch {
+      setInstalling(false)
+      setPhase(null)
+      setProgress(null)
+      toast.error(t('updates.installFailed'))
     }
   }
 
@@ -62,6 +126,7 @@ export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
           {!required && (
             <button
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
+              disabled={installing}
               onClick={onClose}
               title={t('common.close')}
               type="button"
@@ -95,16 +160,37 @@ export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
           </ReactMarkdown>
         </div>
 
+        {installing && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[12px] text-[hsl(var(--muted))]">
+              <span>{progressText}</span>
+              {progress !== null && phase === 'downloading' && <span>{progress}%</span>}
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[hsl(var(--border))]">
+              <div
+                className="h-full bg-[hsl(var(--accent))] transition-[width] duration-150"
+                style={{ width: `${phase === 'installing' ? 100 : progress ?? 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mt-6 flex justify-end gap-2">
           {!required && (
-            <Button onClick={onClose} variant="secondary">
+            <Button disabled={installing} onClick={onClose} variant="secondary">
               {t('updates.later')}
             </Button>
           )}
           {asset && (
-            <Button onClick={openDownload} variant="primary">
+            <Button disabled={installing} onClick={openDownload} variant={canInstallAutomatically ? 'secondary' : 'primary'}>
               <Download className="h-4 w-4" />
               {t('updates.download')}
+            </Button>
+          )}
+          {canInstallAutomatically && (
+            <Button disabled={installing} onClick={installUpdate} variant="primary">
+              {installing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {t('updates.install')}
             </Button>
           )}
         </div>
