@@ -1,0 +1,46 @@
+name: Warm Rust cache
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday and Thursday at 00:00 UTC.
+    - cron: "0 0 * * 1"
+    - cron: "0 0 * * 4"
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    if: github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Desktop
+        uses: actions/checkout@v4
+        with:
+          path: colink-desktop
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop-release
+          workspaces: colink-desktop/src-tauri
+
+      - name: Warm Rust release dependencies
+        working-directory: colink-desktop/src-tauri
+        run: cargo build --release

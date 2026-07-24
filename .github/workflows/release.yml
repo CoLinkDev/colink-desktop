@@ -67,7 +67,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: desktop-release
           workspaces: colink-desktop/src-tauri
+          save-if: "false"
 
       - name: Install frontend dependencies
         working-directory: colink-desktop
