@@ -81,11 +81,12 @@ pub enum RuntimeEvent {
     LanCameraClosed {
         session_id: String,
     },
-    NativeCameraFrame {
+    NativeCameraFramesReady {
+        session_id: String,
+    },
+    NativeCameraStopped {
         session_id: String,
         generation: u64,
-        keyframe: bool,
-        payload: Vec<u8>,
     },
     NativeCameraFailed {
         session_id: String,

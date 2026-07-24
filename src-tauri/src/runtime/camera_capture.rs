@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -35,14 +35,33 @@ pub(super) struct CameraCaptureProfile {
 
 #[derive(Clone)]
 pub(super) struct CameraCaptureService {
-    active: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    state: Arc<Mutex<CaptureState>>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+}
+
+#[derive(Default)]
+struct CaptureState {
+    active: HashMap<String, ActiveCapture>,
+    stopping_cameras: HashMap<String, HashSet<String>>,
+    pending_frames: HashMap<String, PendingCameraFrame>,
+    frame_events_queued: HashSet<String>,
+}
+
+struct ActiveCapture {
+    camera_id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct PendingCameraFrame {
+    generation: u64,
+    keyframe: bool,
+    payload: Vec<u8>,
 }
 
 impl CameraCaptureService {
     pub(super) fn new(event_tx: mpsc::UnboundedSender<RuntimeEvent>) -> Self {
         Self {
-            active: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(Mutex::new(CaptureState::default())),
             event_tx,
         }
     }
@@ -62,30 +81,39 @@ impl CameraCaptureService {
     }
 
     pub(super) fn start(&self, request: CameraCaptureRequest) -> AppResult<()> {
-        self.stop(&request.session_id);
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.active
-            .lock_unpoisoned()
-            .insert(request.session_id.clone(), cancelled.clone());
+        {
+            let mut state = self.state.lock_unpoisoned();
+            state.reserve(&request, cancelled.clone())?;
+        }
+        tracing::info!(
+            session_id = %request.session_id,
+            camera_id = %request.camera_id,
+            generation = request.generation,
+            "native camera capture starting"
+        );
 
-        let active = self.active.clone();
+        let capture_service = self.clone();
         let event_tx = self.event_tx.clone();
         let session_id = request.session_id.clone();
+        let cleanup_session_id = session_id.clone();
+        let cleanup_cancelled = cancelled.clone();
         thread::Builder::new()
             .name(format!("camera-{}", &session_id[..session_id.len().min(8)]))
             .spawn(move || {
-                let frame_tx = event_tx.clone();
-                let frame_cancelled = cancelled.clone();
-                let frame_session_id = session_id.clone();
                 let generation = request.generation;
+                let frame_service = capture_service.clone();
+                let frame_session_id = session_id.clone();
+                let frame_cancelled = cancelled.clone();
                 let result = platform::capture(request, cancelled.clone(), move |keyframe, payload| {
                     if !frame_cancelled.load(Ordering::Acquire) {
-                        let _ = frame_tx.send(RuntimeEvent::NativeCameraFrame {
-                            session_id: frame_session_id.clone(),
+                        frame_service.queue_frame(
+                            &frame_session_id,
                             generation,
                             keyframe,
                             payload,
-                        });
+                            &frame_cancelled,
+                        );
                     }
                 });
 
@@ -105,22 +133,255 @@ impl CameraCaptureService {
                     }
                 }
 
-                let mut captures = active.lock_unpoisoned();
-                if captures
-                    .get(&session_id)
-                    .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
-                {
-                    captures.remove(&session_id);
+                if capture_service.finish_capture(&session_id, &cancelled) {
+                    tracing::info!(%session_id, generation, "native camera capture stopped");
+                    let _ = event_tx.send(RuntimeEvent::NativeCameraStopped {
+                        session_id,
+                        generation,
+                    });
                 }
             })
-            .map_err(|error| AppError::message(error.to_string()))?;
+            .map_err(|error| {
+                self.finish_capture(&cleanup_session_id, &cleanup_cancelled);
+                self.release_stopped_camera(&cleanup_session_id);
+                AppError::message(error.to_string())
+            })?;
         Ok(())
     }
 
     pub(super) fn stop(&self, session_id: &str) {
-        if let Some(cancelled) = self.active.lock_unpoisoned().remove(session_id) {
+        let cancelled = {
+            let mut state = self.state.lock_unpoisoned();
+            state.request_stop(session_id)
+        };
+        if let Some(cancelled) = cancelled {
+            tracing::info!(%session_id, "native camera capture stop requested");
             cancelled.store(true, Ordering::Release);
         }
+    }
+
+    pub(super) fn take_frame(&self, session_id: &str) -> Option<(u64, bool, Vec<u8>)> {
+        let mut state = self.state.lock_unpoisoned();
+        state.take_frame(session_id)
+    }
+
+    pub(super) fn release_stopped_camera(&self, session_id: &str) {
+        let mut state = self.state.lock_unpoisoned();
+        state.release_stopped_camera(session_id);
+    }
+
+    fn queue_frame(
+        &self,
+        session_id: &str,
+        generation: u64,
+        keyframe: bool,
+        payload: Vec<u8>,
+        cancelled: &Arc<AtomicBool>,
+    ) {
+        let should_notify = {
+            let mut state = self.state.lock_unpoisoned();
+            state.queue_frame(session_id, generation, keyframe, payload, cancelled)
+        };
+        if should_notify {
+            let _ = self.event_tx.send(RuntimeEvent::NativeCameraFramesReady {
+                session_id: session_id.to_string(),
+            });
+        }
+    }
+
+    fn finish_capture(
+        &self,
+        session_id: &str,
+        cancelled: &Arc<AtomicBool>,
+    ) -> bool {
+        let mut state = self.state.lock_unpoisoned();
+        state.finish_capture(session_id, cancelled)
+    }
+}
+
+impl CaptureState {
+    fn reserve(&mut self, request: &CameraCaptureRequest, cancelled: Arc<AtomicBool>) -> AppResult<()> {
+        if self.active.contains_key(&request.session_id) {
+            return Err(AppError::message("camera capture is already active"));
+        }
+        if let Some(sessions) = self.stopping_cameras.get(&request.camera_id) {
+            let restarting_own_capture = sessions.len() == 1 && sessions.contains(&request.session_id);
+            if !restarting_own_capture {
+                return Err(AppError::message("camera is still shutting down"));
+            }
+            let should_remove = self
+                .stopping_cameras
+                .get_mut(&request.camera_id)
+                .is_some_and(|sessions| {
+                    sessions.remove(&request.session_id);
+                    sessions.is_empty()
+                });
+            if should_remove {
+                self.stopping_cameras.remove(&request.camera_id);
+            }
+        }
+        self.active.insert(
+            request.session_id.clone(),
+            ActiveCapture {
+                camera_id: request.camera_id.clone(),
+                cancelled,
+            },
+        );
+        Ok(())
+    }
+
+    fn request_stop(&mut self, session_id: &str) -> Option<Arc<AtomicBool>> {
+        self.pending_frames.remove(session_id);
+        self.frame_events_queued.remove(session_id);
+        let active = self.active.get(session_id)?;
+        let camera_id = active.camera_id.clone();
+        let cancelled = active.cancelled.clone();
+        self.stopping_cameras
+            .entry(camera_id)
+            .or_default()
+            .insert(session_id.to_string());
+        Some(cancelled)
+    }
+
+    fn take_frame(&mut self, session_id: &str) -> Option<(u64, bool, Vec<u8>)> {
+        self.frame_events_queued.remove(session_id);
+        self.pending_frames
+            .remove(session_id)
+            .map(|frame| (frame.generation, frame.keyframe, frame.payload))
+    }
+
+    fn queue_frame(
+        &mut self,
+        session_id: &str,
+        generation: u64,
+        keyframe: bool,
+        payload: Vec<u8>,
+        cancelled: &Arc<AtomicBool>,
+    ) -> bool {
+        let Some(active) = self.active.get(session_id) else { return false; };
+        if !Arc::ptr_eq(&active.cancelled, cancelled) || cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        let replace = self
+            .pending_frames
+            .get(session_id)
+            .is_none_or(|frame| keyframe || !frame.keyframe);
+        if replace {
+            self.pending_frames.insert(
+                session_id.to_string(),
+                PendingCameraFrame {
+                    generation,
+                    keyframe,
+                    payload,
+                },
+            );
+        }
+        self.frame_events_queued.insert(session_id.to_string())
+    }
+
+    fn finish_capture(&mut self, session_id: &str, cancelled: &Arc<AtomicBool>) -> bool {
+        if !self
+            .active
+            .get(session_id)
+            .is_some_and(|active| Arc::ptr_eq(&active.cancelled, cancelled))
+        {
+            return false;
+        }
+        self.active.remove(session_id);
+        self.pending_frames.remove(session_id);
+        self.frame_events_queued.remove(session_id);
+        // Keep a stop request reserved until the runtime handles NativeCameraStopped.
+        true
+    }
+
+    fn release_stopped_camera(&mut self, session_id: &str) {
+        if self.active.contains_key(session_id) {
+            return;
+        }
+        self.stopping_cameras.retain(|_, sessions| {
+            sessions.remove(session_id);
+            !sessions.is_empty()
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use super::{CameraCaptureRequest, CaptureState};
+
+    fn request(session_id: &str, camera_id: &str) -> CameraCaptureRequest {
+        CameraCaptureRequest {
+            session_id: session_id.to_string(),
+            generation: 1,
+            camera_id: camera_id.to_string(),
+            width: 640,
+            height: 360,
+            fps: 8,
+        }
+    }
+
+    fn reserve(state: &mut CaptureState, session_id: &str, camera_id: &str) -> Arc<AtomicBool> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .reserve(&request(session_id, camera_id), cancelled.clone())
+            .expect("reserve capture");
+        cancelled
+    }
+
+    #[test]
+    fn stopping_capture_blocks_new_sessions_until_the_native_thread_exits() {
+        let mut state = CaptureState::default();
+        let first = reserve(&mut state, "first", "camera");
+        reserve(&mut state, "second", "camera");
+
+        let stopped = state.request_stop("first").expect("request first stop");
+        assert!(Arc::ptr_eq(&stopped, &first));
+        assert!(state.reserve(&request("third", "camera"), Arc::new(AtomicBool::new(false))).is_err());
+
+        assert!(state.finish_capture("first", &first));
+        assert!(state.reserve(&request("third", "camera"), Arc::new(AtomicBool::new(false))).is_err());
+
+        state.release_stopped_camera("first");
+        reserve(&mut state, "third", "camera");
+        assert!(state.active.contains_key("second"));
+        assert!(state.active.contains_key("third"));
+    }
+
+    #[test]
+    fn reconfiguration_restarts_only_after_its_previous_capture_has_finished() {
+        let mut state = CaptureState::default();
+        let first = reserve(&mut state, "session", "camera");
+
+        state.request_stop("session").expect("request stop");
+        assert!(state.reserve(&request("session", "camera"), Arc::new(AtomicBool::new(false))).is_err());
+
+        assert!(state.finish_capture("session", &first));
+        reserve(&mut state, "session", "camera");
+        assert!(!state.stopping_cameras.contains_key("camera"));
+    }
+
+    #[test]
+    fn frame_queue_is_bounded_and_preserves_a_keyframe() {
+        let mut state = CaptureState::default();
+        let cancelled = reserve(&mut state, "session", "camera");
+
+        assert!(state.queue_frame("session", 1, false, vec![1], &cancelled));
+        assert!(!state.queue_frame("session", 1, false, vec![2], &cancelled));
+        assert!(!state.queue_frame("session", 1, true, vec![3], &cancelled));
+        assert!(!state.queue_frame("session", 1, false, vec![4], &cancelled));
+
+        assert_eq!(state.take_frame("session"), Some((1, true, vec![3])));
+        assert!(state.queue_frame("session", 1, false, vec![5], &cancelled));
+    }
+
+    #[test]
+    fn active_session_cannot_be_replaced() {
+        let mut state = CaptureState::default();
+        reserve(&mut state, "session", "camera");
+
+        assert!(state.reserve(&request("session", "camera"), Arc::new(AtomicBool::new(false))).is_err());
     }
 }
 

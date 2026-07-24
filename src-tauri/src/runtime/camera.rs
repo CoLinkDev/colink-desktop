@@ -79,6 +79,8 @@ struct HostCameraSession {
     transport: Option<String>,
     pending_lan_ready: bool,
     capture_running: bool,
+    capture_stopping: bool,
+    restart_capture: bool,
     capture_generation: u64,
 }
 
@@ -93,7 +95,7 @@ struct HostCameraConfigUpdate {
     width: u32,
     height: u32,
     fps: u32,
-    restart_capture: bool,
+    stop_capture: bool,
 }
 
 struct HostCameraPreferences {
@@ -235,6 +237,8 @@ impl CameraManager {
             transport: None,
             pending_lan_ready: false,
             capture_running: false,
+            capture_stopping: false,
+            restart_capture: false,
             capture_generation: 0,
         });
         Ok(HostCameraSessionInfo {
@@ -282,8 +286,9 @@ impl CameraManager {
     fn begin_host_capture(&self, session_id: &str) -> Option<CameraCaptureRequest> {
         let mut sessions = self.host_sessions.lock().ok()?;
         let session = sessions.get_mut(session_id)?;
-        if !session.ready || session.capture_running { return None; }
+        if !session.ready || session.capture_running || session.capture_stopping { return None; }
         session.capture_running = true;
+        session.restart_capture = false;
         session.capture_generation = session.capture_generation.saturating_add(1);
         Some(CameraCaptureRequest {
             session_id: session_id.to_string(),
@@ -314,13 +319,19 @@ impl CameraManager {
         session.width = profile.width;
         session.height = profile.height;
         session.fps = profile.fps;
-        let restart_capture = session.capture_running;
-        session.capture_running = false;
+        let stop_capture = session.capture_running;
+        if stop_capture {
+            session.capture_running = false;
+            session.capture_stopping = true;
+            session.restart_capture = true;
+        } else if session.capture_stopping {
+            session.restart_capture = true;
+        }
         Ok(HostCameraConfigUpdate {
             width: session.width,
             height: session.height,
             fps: session.fps,
-            restart_capture,
+            stop_capture,
         })
     }
 
@@ -397,6 +408,34 @@ impl CameraManager {
             return None;
         }
         sessions.remove(session_id).map(|session| session.device_id)
+    }
+
+    fn finish_host_capture(&self, session_id: &str, generation: u64) -> Option<CameraCaptureRequest> {
+        let mut sessions = self.host_sessions.lock().ok()?;
+        let session = sessions.get_mut(session_id)?;
+        if session.capture_generation != generation {
+            return None;
+        }
+        session.capture_running = false;
+        session.capture_stopping = false;
+        if !session.restart_capture
+            || !session.ready
+            || !session.last_alive.is_some_and(|alive| alive.elapsed() <= Duration::from_secs(15))
+        {
+            session.restart_capture = false;
+            return None;
+        }
+        session.restart_capture = false;
+        session.capture_running = true;
+        session.capture_generation = session.capture_generation.saturating_add(1);
+        Some(CameraCaptureRequest {
+            session_id: session_id.to_string(),
+            generation: session.capture_generation,
+            camera_id: session.camera_id.clone(),
+            width: session.width,
+            height: session.height,
+            fps: session.fps,
+        })
     }
 
     fn host_session_exists(&self, session_id: &str) -> bool {
@@ -782,9 +821,8 @@ impl AppRuntime {
             {
                 Ok(profile) => match self.inner.camera.reconfigure_host_session(from, &payload, profile) {
                     Ok(update) => {
-                        if update.restart_capture {
+                        if update.stop_capture {
                             self.inner.camera_capture.stop(&payload.session_id);
-                            self.start_host_capture(&payload.session_id).await;
                         }
                         CameraConfigAckPayload {
                             session_id: payload.session_id,
@@ -874,15 +912,95 @@ impl AppRuntime {
         self.inner.lan.unregister_camera(session_id);
     }
 
+    pub(super) async fn handle_native_camera_stopped(&self, session_id: &str, generation: u64) {
+        let restart = self.inner.camera.finish_host_capture(session_id, generation);
+        match restart {
+            Some(request) => {
+                if !self.start_host_capture_request(request).await {
+                    self.inner.camera_capture.release_stopped_camera(session_id);
+                }
+            }
+            None => self.inner.camera_capture.release_stopped_camera(session_id),
+        }
+    }
+
     async fn start_host_capture(&self, session_id: &str) {
         let Some(request) = self.inner.camera.begin_host_capture(session_id) else { return; };
+        self.start_host_capture_request(request).await;
+    }
+
+    async fn start_host_capture_request(&self, request: CameraCaptureRequest) -> bool {
         let generation = request.generation;
+        let session_id = request.session_id.clone();
         if let Err(error) = self.inner.camera_capture.start(request) {
-            self.handle_native_camera_failed(session_id, generation, error.to_string()).await;
+            self.handle_native_camera_failed(&session_id, generation, error.to_string()).await;
+            return false;
         }
+        true
     }
 
     pub(super) fn emit_camera_event(&self, event: CameraUiEvent) {
         let _ = self.inner.app.emit("camera-event", event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconfiguration_waits_for_the_previous_capture_to_stop() {
+        let manager = CameraManager::new();
+        let session_id = "session";
+        let device_id = "device";
+        let opened = manager
+            .open_host_session(
+                device_id,
+                &CameraOpenPayload {
+                    session_id: session_id.to_string(),
+                    camera_id: "camera".to_string(),
+                    preferred_codecs: vec!["h264".to_string()],
+                    preferred_width: Some(640),
+                    preferred_height: Some(360),
+                    preferred_fps: Some(8),
+                },
+                CameraCaptureProfile {
+                    width: 640,
+                    height: 360,
+                    fps: 8,
+                },
+            )
+            .expect("open host camera session");
+        assert!(manager.mark_host_ready(device_id, &opened.session_id, "relay", false));
+        assert!(manager.receive_host_alive(device_id, &opened.session_id));
+        let first = manager
+            .begin_host_capture(&opened.session_id)
+            .expect("begin initial capture");
+
+        let update = manager
+            .reconfigure_host_session(
+                device_id,
+                &CameraConfigPayload {
+                    session_id: opened.session_id.clone(),
+                    width: Some(960),
+                    height: Some(540),
+                    fps: Some(15),
+                },
+                CameraCaptureProfile {
+                    width: 960,
+                    height: 540,
+                    fps: 15,
+                },
+            )
+            .expect("reconfigure host camera session");
+
+        assert!(update.stop_capture);
+        assert!(manager.begin_host_capture(&opened.session_id).is_none());
+
+        let second = manager
+            .finish_host_capture(&opened.session_id, first.generation)
+            .expect("restart capture after stop confirmation");
+        assert_eq!(second.generation, first.generation + 1);
+        assert_eq!((second.width, second.height, second.fps), (960, 540, 15));
     }
 }

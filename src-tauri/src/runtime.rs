@@ -595,8 +595,13 @@ impl AppRuntime {
             RuntimeEvent::LanCameraClosed { session_id } => {
                 self.handle_lan_camera_closed(&session_id).await;
             }
-            RuntimeEvent::NativeCameraFrame { session_id, generation, keyframe, payload } => {
-                self.handle_native_camera_frame(&session_id, generation, keyframe, payload).await;
+            RuntimeEvent::NativeCameraFramesReady { session_id } => {
+                if let Some((generation, keyframe, payload)) = self.inner.camera_capture.take_frame(&session_id) {
+                    self.handle_native_camera_frame(&session_id, generation, keyframe, payload).await;
+                }
+            }
+            RuntimeEvent::NativeCameraStopped { session_id, generation } => {
+                self.handle_native_camera_stopped(&session_id, generation).await;
             }
             RuntimeEvent::NativeCameraFailed { session_id, generation, message } => {
                 self.handle_native_camera_failed(&session_id, generation, message).await;
