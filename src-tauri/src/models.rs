@@ -370,6 +370,8 @@ pub struct AppUpdateRelease {
     pub release_notes: String,
     pub published_at: String,
     pub assets: Vec<AppUpdateAsset>,
+    #[serde(default)]
+    pub automatic_install_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

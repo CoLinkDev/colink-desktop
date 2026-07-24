@@ -95,6 +95,7 @@ export interface AppUpdateRelease {
   releaseNotes: string
   publishedAt: string
   assets: AppUpdateAsset[]
+  automaticInstallAvailable: boolean
 }
 
 export interface AppUpdateAsset {

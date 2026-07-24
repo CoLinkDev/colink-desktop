@@ -387,8 +387,10 @@ pub fn list_available_music_providers() -> Vec<MusicProviderMeta> {
 
 pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease>> {
     let settings = load_settings(state)?;
+    let architecture = update_architecture()?;
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("platform", update_platform())
+        .append_pair("arch", architecture)
         .append_pair("version", env!("CARGO_PKG_VERSION"))
         .finish();
     let path = format!("{UPDATE_CHECK_PATH}?{query}");
@@ -404,6 +406,7 @@ pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease
     for asset in &mut release.assets {
         asset.download_url = absolute_url(&settings.server_url, &asset.download_url)?;
     }
+    release.automatic_install_available = automatic_update_available(&release);
     Ok(Some(release))
 }
 
@@ -468,6 +471,22 @@ fn update_platform() -> &'static str {
     } else {
         "windows"
     }
+}
+
+fn update_architecture() -> AppResult<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Ok("x64"),
+        "aarch64" => Ok("arm64"),
+        architecture => Err(AppError::message(format!(
+            "unsupported update architecture: {architecture}"
+        ))),
+    }
+}
+
+fn automatic_update_available(release: &AppUpdateRelease) -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+        && release.assets.len() == 1
+        && release.assets[0].name.to_ascii_lowercase().ends_with(".exe")
 }
 
 pub fn open_update_download_url(url: &str) -> AppResult<()> {
