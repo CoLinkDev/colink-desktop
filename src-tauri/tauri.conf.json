@@ -27,7 +27,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "createUpdaterArtifacts": "v1Compatible",
     "windows": {
       "nsis": {
         "template": "windows/installer.nsi",
@@ -43,12 +42,6 @@
         ],
         "displayLanguageSelector": true
       }
-    }
-  },
-  "plugins": {
-    "updater": {
-      "dangerousInsecureTransportProtocol": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE2Mzc3Qjc5OTIyRTVCNApSV1MwNVNLWnQzZGpBYm93T3JjR3VNVDdDNWVPWkwvNVA2MTJkZk01WnVpZjU5Ti9nd2hKS1p0bgo="
     }
   }
 }

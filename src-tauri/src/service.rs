@@ -33,6 +33,7 @@ const AUTH_LOGOUT_PATH: &str = "/api/v1/auth/logout";
 const AUTH_REGISTER_PATH: &str = "/api/v1/auth/register";
 const ME_PATH: &str = "/api/v1/me";
 const UPDATE_CHECK_PATH: &str = "/api/v1/update/check";
+#[cfg(target_os = "windows")]
 const TAURI_UPDATE_PATH: &str = "/api/v1/update/tauri/windows/x86_64";
 
 #[derive(Debug, Deserialize)]
