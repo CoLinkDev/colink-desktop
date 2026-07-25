@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
@@ -58,6 +59,7 @@ use crate::{
 };
 
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
+const MIN_LAN_PORT: u16 = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -756,16 +758,20 @@ impl LanManager {
         context: LanContext,
         mut cancel_rx: watch::Receiver<bool>,
     ) {
-        let Ok(listener) = TcpListener::bind(("0.0.0.0", LAN_PORT)).await else {
-            warn!(port = LAN_PORT, "lan listener bind failed");
-            let _ = self.event_tx.send(RuntimeEvent::Log {
-                level: "warn".to_string(),
-                source: "lan".to_string(),
-                message: "local LAN listener port bind failed".to_string(),
-            });
-            self.finalize_generation(generation);
-            return;
+        let (listener, port) = match bind_lan_listener().await {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(preferred_port = LAN_PORT, %error, "lan listener bind failed");
+                let _ = self.event_tx.send(RuntimeEvent::Log {
+                    level: "warn".to_string(),
+                    source: "lan".to_string(),
+                    message: "local LAN listener could not bind an available port".to_string(),
+                });
+                self.finalize_generation(generation);
+                return;
+            }
         };
+        info!(port, preferred_port = LAN_PORT, "lan listener bound");
 
         let Ok(mdns) = ServiceDaemon::new() else {
             warn!("mdns daemon initialization failed");
@@ -806,7 +812,7 @@ impl LanManager {
         let mut suspect_interval = interval(Duration::from_millis(500));
         suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let _ = self.register_service(&mdns, &context);
+        let _ = self.register_service(&mdns, &context, port);
         info!(generation = generation, "lan discovery loop started");
 
         loop {
@@ -860,11 +866,11 @@ impl LanManager {
                         match event {
                             DaemonEvent::IpAdd(ip) if ip.is_ipv4() => {
                                 debug!(%ip, "mdns address added");
-                                let _ = self.register_service(&mdns, &context);
+                                let _ = self.register_service(&mdns, &context, port);
                             }
                             DaemonEvent::IpDel(_) => {
                                 debug!("mdns address removed");
-                                let _ = self.register_service(&mdns, &context);
+                                let _ = self.register_service(&mdns, &context, port);
                             }
                             _ => {}
                         }
@@ -879,7 +885,12 @@ impl LanManager {
         info!(generation = generation, "lan discovery loop stopped");
     }
 
-    fn register_service(&self, mdns: &ServiceDaemon, context: &LanContext) -> AppResult<()> {
+    fn register_service(
+        &self,
+        mdns: &ServiceDaemon,
+        context: &LanContext,
+        port: u16,
+    ) -> AppResult<()> {
         let hostname = hostname::get()
             .ok()
             .and_then(|value| value.into_string().ok())
@@ -903,14 +914,14 @@ impl LanManager {
             &instance_name,
             &format!("{hostname}.local."),
             "",
-            LAN_PORT,
+            port,
             &properties[..],
         )
         .map_err(|error| AppError::message(error.to_string()))?;
         let mut info = info.enable_addr_auto();
         info.set_interfaces(vec![IfKind::IPv4]);
         info!(
-            port = LAN_PORT,
+            port,
             "registering mdns service on ipv4 interfaces"
         );
         mdns.register(info)
@@ -4123,6 +4134,37 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+async fn bind_lan_listener() -> io::Result<(TcpListener, u16)> {
+    let mut last_error = None;
+    for port in lan_port_candidates() {
+        match TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(listener) => return Ok((listener, port)),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                last_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::AddrInUse, "no LAN port is available")
+    }))
+}
+
+fn lan_port_candidates() -> impl Iterator<Item = u16> {
+    let mut ports = Vec::with_capacity((u16::MAX - MIN_LAN_PORT + 1) as usize);
+    ports.push(LAN_PORT);
+    let max_distance = (LAN_PORT - MIN_LAN_PORT).max(u16::MAX - LAN_PORT);
+    for distance in 1..=max_distance {
+        if let Some(port) = LAN_PORT.checked_add(distance) {
+            ports.push(port);
+        }
+        if let Some(port) = LAN_PORT.checked_sub(distance).filter(|port| *port >= MIN_LAN_PORT) {
+            ports.push(port);
+        }
+    }
+    ports.into_iter()
+}
+
 async fn recv_monitor_event(
     receiver: &Option<mdns_sd::Receiver<DaemonEvent>>,
 ) -> Option<DaemonEvent> {
@@ -4172,7 +4214,7 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CameraReceiveBuffer, LanManager, MemberRecord, MemberState};
+    use super::{lan_port_candidates, CameraReceiveBuffer, LanManager, MemberRecord, MemberState};
     use crate::protocol::CameraDataFrame;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
@@ -4208,6 +4250,14 @@ mod tests {
                 .map(|frame| frame.sequence)
                 .collect::<Vec<_>>(),
             vec![6, 7]
+        );
+    }
+
+    #[test]
+    fn port_candidates_choose_the_nearest_higher_port_on_ties() {
+        assert_eq!(
+            lan_port_candidates().take(5).collect::<Vec<_>>(),
+            vec![27_777, 27_778, 27_776, 27_779, 27_775],
         );
     }
 
