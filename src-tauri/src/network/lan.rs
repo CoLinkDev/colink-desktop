@@ -105,6 +105,8 @@ struct LanState {
     generation: u64,
     active_device: Option<DeviceIdentity>,
     cancel: Option<watch::Sender<bool>>,
+    discovery_refresh_tx: Option<mpsc::UnboundedSender<String>>,
+    discovery_refresh_at: HashMap<String, i64>,
     peers: HashMap<String, PeerEntry>,
     peer_endpoints: HashMap<String, (String, u16)>,
     peer_names: HashMap<String, String>,
@@ -271,6 +273,8 @@ impl LanManager {
                 generation: 0,
                 active_device: None,
                 cancel: None,
+                discovery_refresh_tx: None,
+                discovery_refresh_at: HashMap::new(),
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
                 peer_names: HashMap::new(),
@@ -326,6 +330,8 @@ impl LanManager {
             inner.generation += 1;
             inner.active_device = Some(context.device.clone());
             inner.cancel = Some(cancel_tx);
+            inner.discovery_refresh_tx = None;
+            inner.discovery_refresh_at.clear();
             inner.peers.clear();
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
@@ -370,6 +376,8 @@ impl LanManager {
             }
             inner.generation += 1;
             inner.active_device = None;
+            inner.discovery_refresh_tx = None;
+            inner.discovery_refresh_at.clear();
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
             inner.peer_types.clear();
@@ -771,7 +779,7 @@ impl LanManager {
         };
 
         let _ = mdns.set_ip_check_interval(5);
-        let browse_rx = match mdns.browse(SERVICE_TYPE) {
+        let mut browse_rx = match mdns.browse(SERVICE_TYPE) {
             Ok(receiver) => receiver,
             Err(error) => {
                 warn!(%error, "mdns browse failed");
@@ -784,6 +792,14 @@ impl LanManager {
                 return;
             }
         };
+        let (discovery_refresh_tx, mut discovery_refresh_rx) = mpsc::unbounded_channel();
+        {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return;
+            }
+            inner.discovery_refresh_tx = Some(discovery_refresh_tx);
+        }
         let monitor_rx = mdns.monitor().ok();
         let mut swim_interval = interval(SWIM_PERIOD);
         swim_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -817,6 +833,20 @@ impl LanManager {
                     };
                     if let ServiceEvent::ServiceResolved(service) = event {
                         self.handle_service_resolved(generation, context.clone(), *service);
+                    }
+                }
+                device_id = discovery_refresh_rx.recv() => {
+                    let Some(device_id) = device_id else {
+                        continue;
+                    };
+                    debug!(%device_id, "refreshing mdns browse after swim source change");
+                    if let Err(error) = mdns.stop_browse(SERVICE_TYPE) {
+                        warn!(%error, "mdns browse refresh stop failed");
+                        continue;
+                    }
+                    match mdns.browse(SERVICE_TYPE) {
+                        Ok(next_browse_rx) => browse_rx = next_browse_rx,
+                        Err(error) => warn!(%error, "mdns browse refresh start failed"),
                     }
                 }
                 _ = swim_interval.tick() => {
@@ -955,7 +985,7 @@ impl LanManager {
                         "mdns-triggered swim ping succeeded"
                     );
                     if ack.is_target_ack(&device_id) {
-                        manager.process_swim_message(generation, &context, ack, None);
+                        manager.process_swim_message(generation, &context, ack);
                     } else {
                         warn!(
                             device_id = %device_id,
@@ -1579,22 +1609,17 @@ impl LanManager {
         remote_addr: SocketAddr,
     ) -> AppResult<SwimEnvelope> {
         if message.payload.from != context.device.device_id {
-            self.remember_peer_endpoint(&message.payload.from, remote_addr.ip(), LAN_PORT);
+            self.request_mdns_refresh(&message.payload.from, remote_addr.ip());
         }
 
         match message.message_type.as_str() {
             "swim.ping" => {
                 let seq = message.payload.seq;
-                self.process_swim_message(generation, context, message, Some(remote_addr.ip()));
+                self.process_swim_message(generation, context, message);
                 Ok(self.swim_ack(context, seq))
             }
             "swim.ping-req" => {
-                self.process_swim_message(
-                    generation,
-                    context,
-                    message.clone(),
-                    Some(remote_addr.ip()),
-                );
+                self.process_swim_message(generation, context, message.clone());
                 let target = message
                     .payload
                     .target
@@ -1614,7 +1639,7 @@ impl LanManager {
                     );
                     return Err(AppError::message("swim target identity mismatch"));
                 }
-                self.process_swim_message(generation, context, ack.clone(), None);
+                self.process_swim_message(generation, context, ack.clone());
                 Ok(ack)
             }
             _ => Err(AppError::message("unknown swim message")),
@@ -1626,7 +1651,6 @@ impl LanManager {
         generation: u64,
         context: &LanContext,
         message: SwimEnvelope,
-        source_ip: Option<IpAddr>,
     ) {
         if self.current_generation() != generation {
             debug!(
@@ -1644,9 +1668,6 @@ impl LanManager {
             gossip_count = message.payload.gossip.len(),
             "processing swim message"
         );
-        if let Some(ip) = source_ip {
-            self.remember_peer_endpoint(&message.payload.from, ip, LAN_PORT);
-        }
         self.observe_swim_alive(
             generation,
             context,
@@ -1803,7 +1824,7 @@ impl LanManager {
         match self.send_swim_ping(&context, &target).await {
             Ok(ack) => {
                 let from = ack.payload.from.clone();
-                self.process_swim_message(generation, &context, ack.clone(), None);
+                self.process_swim_message(generation, &context, ack.clone());
                 if ack.is_target_ack(&target) {
                     return;
                 }
@@ -1828,7 +1849,7 @@ impl LanManager {
                 Ok(ack) => {
                     let from = ack.payload.from.clone();
                     if ack.is_target_ack(&target) {
-                        self.process_swim_message(generation, &context, ack, None);
+                        self.process_swim_message(generation, &context, ack);
                         return;
                     }
                     warn!(%target, %intermediary, %from, "indirect swim probe identity mismatch");
@@ -2431,6 +2452,34 @@ impl LanManager {
         self.refresh_pairing_candidate(device_id);
     }
 
+    fn request_mdns_refresh(&self, device_id: &str, source_ip: IpAddr) {
+        let refresh_tx = {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner
+                .peer_endpoints
+                .get(device_id)
+                .is_some_and(|(ip, _)| ip == &source_ip.to_string())
+            {
+                return;
+            }
+            let now = unix_now_millis();
+            if inner
+                .discovery_refresh_at
+                .get(device_id)
+                .is_some_and(|last| now - *last < 15_000)
+            {
+                return;
+            }
+            inner
+                .discovery_refresh_at
+                .insert(device_id.to_string(), now);
+            inner.discovery_refresh_tx.clone()
+        };
+        if let Some(refresh_tx) = refresh_tx {
+            let _ = refresh_tx.send(device_id.to_string());
+        }
+    }
+
     fn detach_peer(&self, generation: u64, device_id: &str) {
         let (should_emit, pending) = {
             let mut inner = self.inner.lock_unpoisoned();
@@ -2606,6 +2655,7 @@ impl LanManager {
         }
         inner.active_device = None;
         inner.cancel = None;
+        inner.discovery_refresh_tx = None;
     }
 
     fn user_text(&self, key: TextKey) -> String {
