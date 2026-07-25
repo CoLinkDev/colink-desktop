@@ -404,7 +404,7 @@ mod platform {
                 IMFMediaType, IMFSample, IMFSourceReader, IMFTransform, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
                 MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
                 MFT_CATEGORY_VIDEO_ENCODER,
-                MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+                MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
                 MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_END_STREAMING,
                 MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
                 MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
@@ -414,10 +414,11 @@ mod platform {
                 MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
                 MF_MT_MAX_KEYFRAME_SPACING,
                 MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
+                MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
                 MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
                 MFSampleExtension_CleanPoint, MF_SOURCE_READER_ALL_STREAMS,
                 MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
-                METransformHaveOutput, METransformNeedInput, MFSTARTUP_FULL, MF_VERSION,
+                METransformDrainComplete, METransformHaveOutput, METransformNeedInput, MFSTARTUP_FULL, MF_VERSION,
                 MFMediaType_Video, MFVideoFormat_H264, MFVideoFormat_NV12,
             },
             System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED},
@@ -548,11 +549,9 @@ mod platform {
             }
         }
 
-        unsafe {
-            let _ = encoder.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-            let _ = encoder.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
-            let _ = reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32);
-        }
+        shutdown_h264_encoder(&encoder)?;
+        unsafe { reader.Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32) }
+            .map_err(|error| camera_error("flush camera source", error))?;
         Ok(())
     }
 
@@ -634,6 +633,62 @@ mod platform {
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    fn shutdown_h264_encoder(encoder: &H264Encoder) -> AppResult<()> {
+        unsafe {
+            encoder
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)
+                .map_err(|error| camera_error("notify H.264 encoder end of stream", error))?;
+        }
+
+        if let Some(event_generator) = encoder.event_generator.as_ref() {
+            drain_async_encoder(&encoder.transform, event_generator)?;
+        } else {
+            drain_sync_encoder(&encoder.transform)?;
+        }
+
+        unsafe {
+            encoder
+                .transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0)
+                .map_err(|error| camera_error("end H.264 stream", error))?;
+        }
+        Ok(())
+    }
+
+    fn drain_async_encoder(
+        encoder: &IMFTransform,
+        event_generator: &IMFMediaEventGenerator,
+    ) -> AppResult<()> {
+        unsafe { encoder.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
+            .map_err(|error| camera_error("drain H.264 encoder", error))?;
+
+        loop {
+            let event = unsafe { event_generator.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) }
+                .map_err(|error| camera_error("wait for H.264 encoder drain", error))?;
+            unsafe { event.GetStatus() }
+                .map_err(|error| camera_error("read H.264 encoder drain status", error))?
+                .ok()
+                .map_err(|error| camera_error("H.264 encoder failed while draining", error))?;
+            match unsafe { event.GetType() }
+                .map_err(|error| camera_error("read H.264 encoder drain event", error))?
+            {
+                event_type if event_type == METransformHaveOutput.0 as u32 => {
+                    let _ = take_encoded_sample(encoder)?;
+                }
+                event_type if event_type == METransformDrainComplete.0 as u32 => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+
+    fn drain_sync_encoder(encoder: &IMFTransform) -> AppResult<()> {
+        unsafe { encoder.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
+            .map_err(|error| camera_error("drain H.264 encoder", error))?;
+        while take_encoded_sample(encoder)?.is_some() {}
         Ok(())
     }
 
