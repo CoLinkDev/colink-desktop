@@ -63,8 +63,9 @@ export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
     return null
   }
 
-  const asset = update.assets.length === 1 ? update.assets[0] : undefined
-  const canInstallAutomatically = update.automaticInstallAvailable && asset?.name.toLowerCase().endsWith('.exe') === true
+  const asset = update.assets.find(({ name }) => name.toLowerCase().endsWith('.exe'))
+    ?? update.assets.find(({ name }) => name.toLowerCase().endsWith('.msi'))
+  const canInstallAutomatically = update.automaticInstallAvailable
   const notes = update.releaseNotes.trim()
   const description = notes || t('updates.description')
   const progressText = phase === 'installing'

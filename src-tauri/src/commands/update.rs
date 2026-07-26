@@ -3,8 +3,11 @@ use tauri::{AppHandle, State, WebviewWindow};
 use crate::{models::AppUpdateRelease, service, state::AppState};
 
 #[tauri::command]
-pub async fn check_update(state: State<'_, AppState>) -> Result<Option<AppUpdateRelease>, String> {
-    service::check_update(state.inner())
+pub async fn check_update(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Option<AppUpdateRelease>, String> {
+    service::check_update(state.inner(), &app)
         .await
         .map_err(|error| error.to_string())
 }

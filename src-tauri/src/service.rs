@@ -385,7 +385,10 @@ pub fn list_available_music_providers() -> Vec<MusicProviderMeta> {
         .collect()
 }
 
-pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease>> {
+pub async fn check_update(
+    state: &AppState,
+    app: &tauri::AppHandle,
+) -> AppResult<Option<AppUpdateRelease>> {
     let settings = load_settings(state)?;
     let architecture = update_architecture()?;
     let query = form_urlencoded::Serializer::new(String::new())
@@ -406,7 +409,7 @@ pub async fn check_update(state: &AppState) -> AppResult<Option<AppUpdateRelease
     for asset in &mut release.assets {
         asset.download_url = absolute_url(&settings.server_url, &asset.download_url)?;
     }
-    release.automatic_install_available = automatic_update_available(&release);
+    release.automatic_install_available = automatic_update_available(&settings, app).await;
     Ok(Some(release))
 }
 
@@ -418,21 +421,8 @@ pub async fn install_tauri_update(
     #[cfg(target_os = "windows")]
     {
         let settings = load_settings(state)?;
-        let endpoint = Url::parse(&format!(
-            "{}{TAURI_UPDATE_PATH}/{}",
-            settings.server_url,
-            env!("CARGO_PKG_VERSION"),
-        ))?;
-        let updater = app
-            .updater_builder()
-            .endpoints(vec![endpoint])
-            .map_err(|error| AppError::message(format!("build updater endpoint: {error}")))?
-            .build()
-            .map_err(|error| AppError::message(format!("build updater: {error}")))?;
-        let update = updater
-            .check()
-            .await
-            .map_err(|error| AppError::message(format!("check updater: {error}")))?
+        let update = check_tauri_update(&settings, app)
+            .await?
             .ok_or_else(|| AppError::message("no automatic update is available"))?;
 
         let _ = window.emit("update-progress", 0_u8);
@@ -483,10 +473,43 @@ fn update_architecture() -> AppResult<&'static str> {
     }
 }
 
-fn automatic_update_available(release: &AppUpdateRelease) -> bool {
-    cfg!(all(target_os = "windows", target_arch = "x86_64"))
-        && release.assets.len() == 1
-        && release.assets[0].name.to_ascii_lowercase().ends_with(".exe")
+#[cfg(target_os = "windows")]
+async fn automatic_update_available(settings: &AppSettings, app: &tauri::AppHandle) -> bool {
+    match check_tauri_update(settings, app).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            warn!(error = %error, "check automatic update");
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn automatic_update_available(_settings: &AppSettings, _app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+async fn check_tauri_update(
+    settings: &AppSettings,
+    app: &tauri::AppHandle,
+) -> AppResult<Option<tauri_plugin_updater::Update>> {
+    let endpoint = Url::parse(&format!(
+        "{}{TAURI_UPDATE_PATH}/{}",
+        settings.server_url,
+        env!("CARGO_PKG_VERSION"),
+    ))?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| AppError::message(format!("build updater endpoint: {error}")))?
+        .build()
+        .map_err(|error| AppError::message(format!("build updater: {error}")))?;
+    updater
+        .check()
+        .await
+        .map_err(|error| AppError::message(format!("check updater: {error}")))
 }
 
 pub fn open_update_download_url(url: &str) -> AppResult<()> {
