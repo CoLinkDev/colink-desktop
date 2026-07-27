@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
 pub const BUSINESS_PROTOCOL_VERSION: &str = "1.11.0";
+pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -359,6 +360,33 @@ pub struct DeviceOnlinePayload {
     #[serde(rename = "type")]
     pub device_type: String,
     pub business_version: String,
+    pub ws_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushNotificationPayload {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub body: Option<String>,
+    pub markdown: Option<String>,
+    pub level: Option<String>,
+    pub volume: Option<i32>,
+    pub badge: Option<i32>,
+    pub sound: Option<String>,
+    pub icon: Option<String>,
+    pub image: Option<String>,
+    pub group: Option<String>,
+    pub url: Option<String>,
+    pub copy: Option<String>,
+    pub auto_copy: Option<bool>,
+    pub call: Option<bool>,
+    pub is_archive: Option<bool>,
+    pub ttl: Option<i32>,
+    pub id: Option<String>,
+    pub delete: Option<bool>,
+    pub action: Option<String>,
+    pub ciphertext: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

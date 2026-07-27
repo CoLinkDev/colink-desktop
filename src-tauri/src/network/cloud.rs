@@ -4,10 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clipboard_rs::{Clipboard, ClipboardContext};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
 use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
@@ -31,7 +33,8 @@ use crate::{
     network::http::HttpClient,
     protocol::{
         check_business_protocol_version, BusinessEnvelope, CloudClientEnvelope,
-        CloudServerEnvelope, DeviceOnlinePayload, BUSINESS_PROTOCOL_VERSION,
+        CloudServerEnvelope, DeviceOnlinePayload, PushNotificationPayload,
+        BUSINESS_PROTOCOL_VERSION, CLOUD_WEBSOCKET_PROTOCOL_VERSION,
     },
     runtime_events::RuntimeEvent,
     shell,
@@ -534,6 +537,7 @@ impl CloudConnectionManager {
             &context.settings.server_url,
             &ticket.ticket,
             BUSINESS_PROTOCOL_VERSION,
+            CLOUD_WEBSOCKET_PROTOCOL_VERSION,
         )
         .map_err(|error| ConnectionFailure::Retryable(error.to_string()))?;
         debug!(url = %ws_url, "connecting cloud websocket");
@@ -624,7 +628,15 @@ impl CloudConnectionManager {
                     match message {
                         Some(Ok(Message::Text(text))) => {
                             debug!(bytes = text.len(), "received cloud text frame");
-                            self.handle_server_message(text.as_str()).await;
+                            if let Some(acknowledgement) = self.handle_server_message(text.as_str()) {
+                                if write_client_message(&mut writer, acknowledgement).await.is_err() {
+                                    warn!("cloud push acknowledgement failed");
+                                    return Ok(ConnectionExit::Disconnected {
+                                        connected_for: connected_at.elapsed(),
+                                        reason: Some("cloud push acknowledgement failed".to_string()),
+                                    });
+                                }
+                            }
                         }
                         Some(Ok(Message::Close(_))) => {
                             info!("cloud websocket closed by server");
@@ -661,10 +673,10 @@ impl CloudConnectionManager {
         }
     }
 
-    async fn handle_server_message(&self, raw: &str) {
+    fn handle_server_message(&self, raw: &str) -> Option<CloudClientEnvelope> {
         let Ok(message) = serde_json::from_str::<CloudServerEnvelope>(raw) else {
             warn!("received invalid cloud message");
-            return;
+            return None;
         };
 
         match message.message_type.as_str() {
@@ -708,13 +720,13 @@ impl CloudConnectionManager {
                     "cloud business message received"
                 );
                 let Some(from) = message.from else {
-                    return;
+                    return None;
                 };
                 let Some(payload) = message.payload else {
-                    return;
+                    return None;
                 };
                 let Ok(business) = serde_json::from_value::<BusinessEnvelope>(payload) else {
-                    return;
+                    return None;
                 };
                 let _ = self.event_tx.send(RuntimeEvent::CloudRelay {
                     from,
@@ -723,9 +735,69 @@ impl CloudConnectionManager {
                     message: business,
                 });
             }
+            "notification.push" => {
+                let Some(push_id) = message.id else {
+                    warn!("received cloud push without an id");
+                    return None;
+                };
+                let Some(payload) = message.payload else {
+                    warn!(push_id, "received cloud push without a payload");
+                    return None;
+                };
+                let Ok(payload) = serde_json::from_value::<PushNotificationPayload>(payload) else {
+                    warn!(push_id, "received invalid cloud push payload");
+                    return None;
+                };
+                self.show_push_notification(&payload);
+                return Some(CloudClientEnvelope {
+                    id: Uuid::new_v4().to_string(),
+                    message_type: "notification.push-ack".to_string(),
+                    to: None,
+                    correlation_id: Some(push_id),
+                    payload: None,
+                });
+            }
             _ => {
                 debug!(message_type = %message.message_type, "ignored cloud message");
             }
+        }
+
+        None
+    }
+
+    fn show_push_notification(&self, payload: &PushNotificationPayload) {
+        if payload.delete.unwrap_or(false) {
+            warn!(id = ?payload.id, "desktop notifications do not support remote cancellation");
+            return;
+        }
+        let title = payload
+            .title
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("CoLink");
+        let body = payload
+            .markdown
+            .as_deref()
+            .or(payload.body.as_deref())
+            .or(payload.subtitle.as_deref())
+            .unwrap_or("");
+        if payload.auto_copy.unwrap_or(false) {
+            let copy = payload.copy.as_deref().unwrap_or(body);
+            if !copy.is_empty() {
+                if let Err(error) = ClipboardContext::new().and_then(|context| context.set_text(copy.to_string())) {
+                    warn!(%error, "failed to apply cloud push clipboard content");
+                }
+            }
+        }
+        if let Err(error) = self
+            .app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+        {
+            warn!(%error, "failed to display cloud push notification");
         }
     }
 
@@ -934,6 +1006,7 @@ fn build_ws_url(
     base_url: &str,
     ticket: &str,
     business_version: &str,
+    ws_version: &str,
 ) -> Result<Url, url::ParseError> {
     let mut url = Url::parse(base_url)?;
 
@@ -950,7 +1023,8 @@ fn build_ws_url(
     url.query_pairs_mut()
         .clear()
         .append_pair("ticket", ticket)
-        .append_pair("businessVersion", business_version);
+        .append_pair("businessVersion", business_version)
+        .append_pair("wsVersion", ws_version);
     Ok(url)
 }
 
@@ -1016,6 +1090,7 @@ mod tests {
             "http://example.com/base?ignored=true",
             "ticket value",
             "business.v1",
+            "1.1.0",
         )
         .expect("url");
 
@@ -1024,13 +1099,13 @@ mod tests {
         assert_eq!(url.path(), WS_CONNECT_PATH);
         assert_eq!(
             url.query(),
-            Some("ticket=ticket+value&businessVersion=business.v1")
+            Some("ticket=ticket+value&businessVersion=business.v1&wsVersion=1.1.0")
         );
     }
 
     #[test]
     fn builds_secure_websocket_url_from_https_base_url() {
-        let url = build_ws_url("https://example.com", "ticket", "business.v1").expect("url");
+        let url = build_ws_url("https://example.com", "ticket", "business.v1", "1.1.0").expect("url");
 
         assert_eq!(url.scheme(), "wss");
         assert_eq!(url.path(), WS_CONNECT_PATH);
@@ -1045,7 +1120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_handshake_sends_ticket_and_business_version() {
+    async fn websocket_handshake_sends_ticket_business_and_cloud_websocket_versions() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock server");
@@ -1057,7 +1132,7 @@ mod tests {
                     assert_eq!(request.uri().path(), WS_CONNECT_PATH);
                     assert_eq!(
                         request.uri().query(),
-                        Some("ticket=test-ticket&businessVersion=business.v1"),
+                        Some("ticket=test-ticket&businessVersion=business.v1&wsVersion=1.1.0"),
                     );
                     Ok(response)
                 })
@@ -1070,7 +1145,7 @@ mod tests {
         });
 
         let url = format!(
-            "ws://{address}{WS_CONNECT_PATH}?ticket=test-ticket&businessVersion=business.v1"
+            "ws://{address}{WS_CONNECT_PATH}?ticket=test-ticket&businessVersion=business.v1&wsVersion=1.1.0"
         );
         let (_websocket, response) = open_websocket(&url, Duration::from_secs(2))
             .await
