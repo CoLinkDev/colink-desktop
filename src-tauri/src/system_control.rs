@@ -27,6 +27,7 @@ pub fn execute_system_control(
     }
 
     match action {
+        SystemControlAction::CancelPower => return Ok(SystemControlExecution::Ignored),
         SystemControlAction::Play
         | SystemControlAction::Pause
         | SystemControlAction::Next
@@ -418,6 +419,10 @@ mod tests {
         assert_eq!(SystemControlAction::parse("sleep"), Some(SystemControlAction::Sleep));
         assert_eq!(SystemControlAction::parse("shutdown"), Some(SystemControlAction::Shutdown));
         assert_eq!(SystemControlAction::parse("lock"), Some(SystemControlAction::Lock));
+        assert_eq!(
+            SystemControlAction::parse("cancel-power"),
+            Some(SystemControlAction::CancelPower)
+        );
         assert_eq!(SystemControlAction::parse("play"), Some(SystemControlAction::Play));
         assert_eq!(SystemControlAction::parse("pause"), Some(SystemControlAction::Pause));
         assert_eq!(SystemControlAction::parse("next"), Some(SystemControlAction::Next));
@@ -435,6 +440,14 @@ mod tests {
             Some(SystemControlAction::WakeOnLan)
         );
         assert_eq!(SystemControlAction::parse("restart"), None);
+    }
+
+    #[test]
+    fn identifies_power_actions_that_support_delays() {
+        assert!(SystemControlAction::Sleep.is_power_action());
+        assert!(SystemControlAction::Shutdown.is_power_action());
+        assert!(SystemControlAction::Lock.is_power_action());
+        assert!(!SystemControlAction::CancelPower.is_power_action());
     }
 
     #[test]

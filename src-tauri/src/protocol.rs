@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.10.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.11.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
@@ -726,6 +726,8 @@ fn codec_name(value: u8) -> Option<&'static str> {
 pub struct SystemControlCommandPayload {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_mac: Option<String>,
@@ -762,6 +764,7 @@ pub enum SystemControlAction {
     Sleep,
     Shutdown,
     Lock,
+    CancelPower,
     Play,
     Pause,
     Next,
@@ -777,6 +780,7 @@ impl SystemControlAction {
             "sleep" => Some(Self::Sleep),
             "shutdown" => Some(Self::Shutdown),
             "lock" => Some(Self::Lock),
+            "cancel-power" => Some(Self::CancelPower),
             "play" => Some(Self::Play),
             "pause" => Some(Self::Pause),
             "next" => Some(Self::Next),
@@ -793,6 +797,7 @@ impl SystemControlAction {
             Self::Sleep => "sleep",
             Self::Shutdown => "shutdown",
             Self::Lock => "lock",
+            Self::CancelPower => "cancel-power",
             Self::Play => "play",
             Self::Pause => "pause",
             Self::Next => "next",
@@ -815,6 +820,10 @@ impl SystemControlAction {
             Self::WakeOnLan => target_mac.is_some_and(is_valid_wake_on_lan_mac),
             _ => target_mac.is_none(),
         }
+    }
+
+    pub fn is_power_action(self) -> bool {
+        matches!(self, Self::Sleep | Self::Shutdown | Self::Lock)
     }
 }
 
@@ -1101,8 +1110,8 @@ pub struct SwimGossip {
 mod tests {
     use super::{
         BusinessEnvelope, CameraDataFrame, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
-        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, MUSIC_LYRIC_TYPE,
-        MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, SystemControlAction,
+        SystemControlCommandPayload, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -1133,6 +1142,30 @@ mod tests {
         let frame = CameraDataFrame::new("h264", true, 42, 1_400, vec![0, 0, 0, 1, 0x65])
             .expect("supported codec");
         assert_eq!(CameraDataFrame::decode(&frame.encode()), Some(frame));
+    }
+
+    #[test]
+    fn serializes_delayed_and_cancelled_power_commands() {
+        assert_eq!(
+            serde_json::json!({"action": "shutdown", "delay": 30}),
+            serde_json::to_value(SystemControlCommandPayload {
+                action: SystemControlAction::Shutdown.as_str().to_string(),
+                delay: Some(30),
+                volume: None,
+                target_mac: None,
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            serde_json::json!({"action": "cancel-power"}),
+            serde_json::to_value(SystemControlCommandPayload {
+                action: SystemControlAction::CancelPower.as_str().to_string(),
+                delay: None,
+                volume: None,
+                target_mac: None,
+            })
+            .unwrap(),
+        );
     }
 
     #[test]

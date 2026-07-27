@@ -125,10 +125,23 @@ struct RuntimeState {
     pending_file_offers: HashMap<String, PendingFileOfferState>,
     pending_filesystem_requests: HashMap<String, PendingFilesystemRequest>,
     remote_filesystem_downloads: HashMap<String, RemoteFilesystemDownload>,
+    pending_power_actions: HashMap<PowerActionConnection, PendingPowerAction>,
+    next_power_action_generation: u64,
     cancelled_files: HashSet<String>,
     clipboard_suppressed_hash: Option<String>,
     clipboard_last_sent_hash: Option<String>,
     cleanup_done: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PowerActionConnection {
+    device_id: String,
+    route: String,
+}
+
+struct PendingPowerAction {
+    generation: u64,
+    cancel_tx: oneshot::Sender<()>,
 }
 
 struct OutgoingFileState {
@@ -207,6 +220,8 @@ impl AppRuntime {
                     pending_file_offers: HashMap::new(),
                     pending_filesystem_requests: HashMap::new(),
                     remote_filesystem_downloads: HashMap::new(),
+                    pending_power_actions: HashMap::new(),
+                    next_power_action_generation: 0,
                     cancelled_files: HashSet::new(),
                     clipboard_suppressed_hash: None,
                     clipboard_last_sent_hash: None,
@@ -394,6 +409,7 @@ impl AppRuntime {
                     self.append_log("info", "cloud", "cloud connection established".to_string());
             }
             RuntimeEvent::CloudDisconnected(reason) => {
+                self.cancel_pending_power_actions_for_route("cloud");
                 warn!(
                     reason = reason.as_deref().unwrap_or("unknown"),
                     "runtime received cloud disconnected"
@@ -436,6 +452,7 @@ impl AppRuntime {
                 if !online {
                     self.inner.terminal.close_for_device(&device_id);
                     self.handle_camera_device_disconnected(&device_id);
+                    self.cancel_pending_power_action(&device_id, "cloud");
                 }
                 let _ = device_presence::update_one(
                     &self.inner.database,
@@ -502,6 +519,7 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
+                self.cancel_pending_power_action(&device_id, "lan");
                 warn!(%device_id, "runtime received lan disconnected");
                 let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
@@ -657,6 +675,130 @@ impl AppRuntime {
                 let _ = self.append_log(&level, &source, message);
             }
         }
+    }
+
+    fn schedule_delayed_power_action(
+        &self,
+        device_id: &str,
+        route: &str,
+        action: SystemControlAction,
+        delay_seconds: u64,
+    ) {
+        let connection = PowerActionConnection {
+            device_id: device_id.to_string(),
+            route: route.to_string(),
+        };
+        let (generation, cancel_rx, replaced_action) = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state.next_power_action_generation = state.next_power_action_generation.wrapping_add(1);
+            let generation = state.next_power_action_generation;
+            let (cancel_tx, cancel_rx) = oneshot::channel();
+            let replaced_action = state.pending_power_actions.insert(
+                connection.clone(),
+                PendingPowerAction {
+                    generation,
+                    cancel_tx,
+                },
+            );
+            (generation, cancel_rx, replaced_action)
+        };
+        if let Some(replaced_action) = replaced_action {
+            let _ = replaced_action.cancel_tx.send(());
+        }
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(delay_seconds)) => {}
+                _ = cancel_rx => return,
+            }
+            if !runtime.take_pending_power_action(&connection, generation) {
+                return;
+            }
+            runtime.execute_system_control_command(connection.device_id, action, None, None);
+        });
+    }
+
+    fn cancel_pending_power_action(&self, device_id: &str, route: &str) {
+        let pending_action = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .pending_power_actions
+            .remove(&PowerActionConnection {
+                device_id: device_id.to_string(),
+                route: route.to_string(),
+            });
+        if let Some(pending_action) = pending_action {
+            let _ = pending_action.cancel_tx.send(());
+        }
+    }
+
+    fn cancel_pending_power_actions_for_route(&self, route: &str) {
+        let pending_actions = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let connections = state
+                .pending_power_actions
+                .keys()
+                .filter(|connection| connection.route == route)
+                .cloned()
+                .collect::<Vec<_>>();
+            connections
+                .into_iter()
+                .filter_map(|connection| state.pending_power_actions.remove(&connection))
+                .collect::<Vec<_>>()
+        };
+        for pending_action in pending_actions {
+            let _ = pending_action.cancel_tx.send(());
+        }
+    }
+
+    fn take_pending_power_action(
+        &self,
+        connection: &PowerActionConnection,
+        generation: u64,
+    ) -> bool {
+        let mut state = self.inner.state.lock_unpoisoned();
+        if state
+            .pending_power_actions
+            .get(connection)
+            .is_none_or(|pending_action| pending_action.generation != generation)
+        {
+            return false;
+        }
+        state.pending_power_actions.remove(connection);
+        true
+    }
+
+    fn execute_system_control_command(
+        &self,
+        from: String,
+        action: SystemControlAction,
+        volume: Option<i32>,
+        target_mac: Option<String>,
+    ) {
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                execute_system_control(action, volume, target_mac.as_deref())
+            })
+            .await;
+            match result {
+                Ok(Ok(SystemControlExecution::Executed)) => {
+                    let _ = runtime.append_log(
+                        "info",
+                        "system-control",
+                        format!("executed {} command from {from}", action.as_str()),
+                    );
+                }
+                Ok(Ok(SystemControlExecution::Ignored)) => {}
+                Ok(Err(error)) => {
+                    warn!(%from, action = action.as_str(), %error, "system control command failed");
+                }
+                Err(error) => {
+                    warn!(%from, action = action.as_str(), %error, "system control task failed");
+                }
+            }
+        });
     }
 
     async fn handle_business_message(
@@ -825,35 +967,23 @@ impl AppRuntime {
                 let Some(action) = SystemControlAction::parse(&payload.action) else {
                     return;
                 };
+                if action == SystemControlAction::CancelPower {
+                    self.cancel_pending_power_action(from, route);
+                    return;
+                }
                 if !action.accepts_volume(payload.volume)
                     || !action.accepts_target_mac(payload.target_mac.as_deref())
                 {
                     return;
                 }
-                let runtime = self.clone();
-                let from = from.to_string();
-                tauri::async_runtime::spawn(async move {
-                    let result = tokio::task::spawn_blocking(move || {
-                        execute_system_control(action, payload.volume, payload.target_mac.as_deref())
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(SystemControlExecution::Executed)) => {
-                            let _ = runtime.append_log(
-                                "info",
-                                "system-control",
-                                format!("executed {} command from {from}", action.as_str()),
-                            );
-                        }
-                        Ok(Ok(SystemControlExecution::Ignored)) => {}
-                        Ok(Err(error)) => {
-                            warn!(%from, action = action.as_str(), %error, "system control command failed");
-                        }
-                        Err(error) => {
-                            warn!(%from, action = action.as_str(), %error, "system control task failed");
-                        }
-                    }
-                });
+                let delay_seconds = action
+                    .is_power_action()
+                    .then(|| payload.delay.unwrap_or_default().max(0) as u64);
+                if let Some(delay_seconds) = delay_seconds.filter(|delay| *delay > 0) {
+                    self.schedule_delayed_power_action(from, route, action, delay_seconds);
+                    return;
+                }
+                self.execute_system_control_command(from.to_string(), action, payload.volume, payload.target_mac);
             }
             SYSTEM_CONTROL_QUERY_TYPE => {
                 let Some(request_id) = envelope_id else {
