@@ -20,7 +20,7 @@ pub use castboard::{
     open_castboard_on_monitor, stop_castboard,
 };
 pub use device::{
-    delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
+    create_pair_string, delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,
 };
 pub use logs::list_logs;

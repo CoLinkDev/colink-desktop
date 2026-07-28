@@ -54,6 +54,14 @@ pub async fn list_lan_pairing_candidates(
 }
 
 #[tauri::command]
+pub async fn create_pair_string(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .runtime
+        .create_pair_string()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn start_lan_pairing(
     state: State<'_, AppState>,
     payload: StartLanPairingPayload,

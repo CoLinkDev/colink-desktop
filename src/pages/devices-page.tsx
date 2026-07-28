@@ -3,14 +3,15 @@ import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
-import { ArrowDown, ArrowUp, Grid2X2, Info, Key, List, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Grid2X2, Info, Key, List, QrCode, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 
 import { DeviceCard } from '../components/device-card'
 import { DeviceDetailsDialog } from '../components/device-details-dialog'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
-import { forgetLanTrust, listLanPairingCandidates, startLanPairing } from '../lib/api'
+import { createPairString, forgetLanTrust, listLanPairingCandidates, startLanPairing } from '../lib/api'
 import type { DeviceInfo, LanPairingCandidate } from '../lib/types'
 import { cn, formatLastSeen, formatPlatformName } from '../lib/utils'
 
@@ -44,6 +45,7 @@ export function DevicesPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sort, setSort] = useState<DeviceSort>({ key: 'name', direction: 'asc' })
   const [refreshing, setRefreshing] = useState(false)
+  const [pairString, setPairString] = useState<string | null>(null)
 
   const handleRefreshDevices = useCallback(async () => {
     setRefreshing(true)
@@ -160,6 +162,14 @@ export function DevicesPage() {
     }
   }
 
+  async function handleCreatePairString() {
+    try {
+      setPairString(await createPairString())
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    }
+  }
+
   async function handleForgetTrust(deviceId: string) {
     setForgetConfirmId(deviceId)
     setError(null)
@@ -204,14 +214,25 @@ export function DevicesPage() {
   return (
     <div className="space-y-5 animate-fade-in">
       {viewMode === 'list' && (
-        <div className="relative max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[hsl(var(--muted))]" />
-          <Input
-            className="pl-9"
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder={t('devices.searchPlaceholder')}
-            value={searchQuery}
-          />
+        <div className="flex items-center gap-3">
+          <div className="relative min-w-0 max-w-sm flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[hsl(var(--muted))]" />
+            <Input
+              className="pl-9"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={t('devices.searchPlaceholder')}
+              value={searchQuery}
+            />
+          </div>
+          <Button
+            className="ml-auto shrink-0"
+            onClick={handleCreatePairString}
+            title={t('devices.showPairQr')}
+            variant="secondary"
+          >
+            <QrCode className="h-4 w-4" />
+            {t('devices.showPairQr')}
+          </Button>
         </div>
       )}
 
@@ -291,6 +312,24 @@ export function DevicesPage() {
           isLocalDevice={detailsDevice.deviceId === device?.deviceId}
           onClose={() => setDetailsDevice(null)}
         />
+      )}
+
+      {pairString && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.pairQrTitle')}</div>
+            <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
+              {t('devices.pairQrDescription')}
+            </p>
+            <div className="mt-5 flex justify-center rounded-xl bg-white p-4">
+              <QRCodeSVG bgColor="#ffffff" fgColor="#111827" includeMargin size={256} value={pairString} />
+            </div>
+            <div className="mt-6 flex justify-end">
+              <Button onClick={() => setPairString(null)} variant="secondary">{t('common.close')}</Button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* Rotate Key Confirmation Modal */}

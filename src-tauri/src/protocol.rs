@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const LAN_PROTOCOL_VERSION: &str = "1.2.0";
+pub const LAN_PROTOCOL_VERSION: &str = "1.3.0";
 pub const BUSINESS_PROTOCOL_VERSION: &str = "1.11.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
@@ -456,6 +456,8 @@ pub struct PairingIdentityPayload {
     pub public_key: String,
     pub name: String,
     pub nonce: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pair_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -987,6 +989,15 @@ pub fn supports_lan_key_exchange_nonce(peer_version: &str) -> bool {
     match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
         (Some(local), Some(peer)) => {
             local.major == peer.major && local >= Semver::new(1, 2, 0) && peer >= Semver::new(1, 2, 0)
+        }
+        _ => false,
+    }
+}
+
+pub fn supports_lan_pair_string(peer_version: &str) -> bool {
+    match (semver(LAN_PROTOCOL_VERSION), semver(peer_version)) {
+        (Some(local), Some(peer)) => {
+            local.major == peer.major && local >= Semver::new(1, 3, 0) && peer >= Semver::new(1, 3, 0)
         }
         _ => false,
     }

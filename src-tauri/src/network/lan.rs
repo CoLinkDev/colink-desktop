@@ -6,10 +6,11 @@ use std::{
     time::Duration,
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
 use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::{rngs::OsRng, seq::SliceRandom, RngCore};
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -45,7 +46,8 @@ use crate::{
     },
     protocol::{
         check_business_protocol_version, check_lan_protocol_version, negotiated_lan_protocol_version,
-        supports_lan_key_exchange, supports_lan_key_exchange_nonce, AuthChallengePayload,
+        supports_lan_key_exchange, supports_lan_key_exchange_nonce, supports_lan_pair_string,
+        AuthChallengePayload,
         AuthResponsePayload, BusinessEnvelope, BusinessKeyExchangeNoncePayload, CameraDataFrame,
         BusinessKeyExchangePayload, BusinessNegotiatePayload, BusinessVersionAckPayload,
         BusinessVersionPayload, EmptyPayload, EncryptedBusinessPayload, FileDataFrame, LanEnvelope,
@@ -78,6 +80,9 @@ const CAMERA_RECEIVE_BUFFER_CAPACITY: usize = 4;
 const REASON_AUTH_UNKNOWN_DEVICE: &str = "colink:auth.unknown_device.v1";
 const REASON_AUTH_KEY_CHANGED: &str = "colink:auth.key_changed.v1";
 const REASON_PAIRING_USER_REJECTED: &str = "colink:pairing.user_rejected.v1";
+const REASON_PAIRING_PAIR_STRING_INVALID: &str = "colink:pairing.pair_string_invalid.v1";
+const REASON_PAIRING_PAIR_STRING_EXPIRED: &str = "colink:pairing.pair_string_expired.v1";
+const REASON_PAIRING_PAIR_STRING_UNAVAILABLE: &str = "colink:pairing.pair_string_unavailable.v1";
 const REASON_KEY_EXCHANGE_SIGNATURE_INVALID: &str =
     "colink:key_exchange.signature_invalid.v1";
 const REASON_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str =
@@ -86,6 +91,10 @@ const REASON_KEY_EXCHANGE_GENERIC: &str = "colink:key_exchange.generic.v1";
 const MESSAGE_AUTH_UNKNOWN_DEVICE: &str = "No trust record for this device";
 const MESSAGE_AUTH_KEY_CHANGED: &str = "Peer public key differs from stored trust record";
 const MESSAGE_PAIRING_USER_REJECTED: &str = "User declined the pairing request";
+const MESSAGE_PAIRING_PAIR_STRING_INVALID: &str = "Pair string is invalid";
+const MESSAGE_PAIRING_PAIR_STRING_EXPIRED: &str = "Pair string has expired";
+const MESSAGE_PAIRING_PAIR_STRING_UNAVAILABLE: &str = "Pair string is unavailable";
+const PAIR_STRING_RECOMMENDED_TTL_MILLIS: i64 = 60 * 60 * 1_000;
 const MESSAGE_KEY_EXCHANGE_SIGNATURE_INVALID: &str =
     "Ephemeral key signature verification failed";
 const MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str = "Ephemeral key timestamp expired";
@@ -127,6 +136,7 @@ struct LanState {
     camera_receive_buffers: HashMap<String, CameraReceiveBuffer>,
     pending_pairings: HashMap<String, oneshot::Sender<bool>>,
     pairing_candidates: HashMap<String, LanPairingCandidate>,
+    pair_strings: HashMap<String, PairStringRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +241,60 @@ struct PairingDecision {
     accepted: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PairStringRecord {
+    device_id: String,
+    public_key: String,
+    expires_at: i64,
+    state: PairStringState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairStringState {
+    Active,
+    Reserved,
+    Consumed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairStringPayload {
+    device_id: String,
+    public_key: String,
+    token: String,
+    expires_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PairStringFailure {
+    Invalid,
+    Expired,
+    Unavailable,
+}
+
+impl PairStringFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Invalid => REASON_PAIRING_PAIR_STRING_INVALID,
+            Self::Expired => REASON_PAIRING_PAIR_STRING_EXPIRED,
+            Self::Unavailable => REASON_PAIRING_PAIR_STRING_UNAVAILABLE,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Invalid => MESSAGE_PAIRING_PAIR_STRING_INVALID,
+            Self::Expired => MESSAGE_PAIRING_PAIR_STRING_EXPIRED,
+            Self::Unavailable => MESSAGE_PAIRING_PAIR_STRING_UNAVAILABLE,
+        }
+    }
+}
+
 #[derive(Default)]
 struct CameraReceiveBuffer {
     frames: VecDeque<CameraDataFrame>,
@@ -295,6 +359,7 @@ impl LanManager {
                 camera_receive_buffers: HashMap::new(),
                 pending_pairings: HashMap::new(),
                 pairing_candidates: HashMap::new(),
+                pair_strings: HashMap::new(),
             })),
         }
     }
@@ -390,6 +455,7 @@ impl LanManager {
             inner.transfer_tokens.clear();
             inner.camera_tokens.clear();
             inner.camera_receive_buffers.clear();
+            inner.pair_strings.clear();
             (
                 std::mem::take(&mut inner.peers),
                 std::mem::take(&mut inner.transfer_senders),
@@ -633,6 +699,86 @@ impl LanManager {
                 .await;
         });
         Ok(())
+    }
+
+    pub fn create_pair_string(&self) -> AppResult<String> {
+        let context = self.load_context()?;
+        let now = unix_now_millis();
+        let expires_at = now + PAIR_STRING_RECOMMENDED_TTL_MILLIS;
+        let mut token_bytes = [0_u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let token = URL_SAFE_NO_PAD.encode(token_bytes);
+        let payload = PairStringPayload {
+            device_id: context.device.device_id.clone(),
+            public_key: context.device.public_key.clone(),
+            token: token.clone(),
+            expires_at,
+            name: Some(context.device.name.clone()),
+            platform: Some(context.device.device_type.clone()),
+        };
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload)?);
+        let pair_string = format!("colink://pair/v1?data={encoded}");
+        let mut inner = self.inner.lock_unpoisoned();
+        inner.pair_strings.retain(|_, record| {
+            record.expires_at > now
+                && matches!(record.state, PairStringState::Active | PairStringState::Reserved)
+        });
+        inner.pair_strings.insert(
+            token,
+            PairStringRecord {
+                device_id: payload.device_id,
+                public_key: payload.public_key,
+                expires_at,
+                state: PairStringState::Active,
+            },
+        );
+        Ok(pair_string)
+    }
+
+    fn reserve_pair_string(
+        &self,
+        value: &str,
+        context: &LanContext,
+    ) -> Result<String, PairStringFailure> {
+        let payload = parse_pair_string(value)?;
+        let now = unix_now_millis();
+        let mut inner = self.inner.lock_unpoisoned();
+        let Some(record) = inner.pair_strings.get_mut(&payload.token) else {
+            return Err(PairStringFailure::Invalid);
+        };
+        if record.expires_at <= now || payload.expires_at <= now {
+            record.state = PairStringState::Cancelled;
+            return Err(PairStringFailure::Expired);
+        }
+        if record.device_id != context.device.device_id
+            || payload.device_id != context.device.device_id
+            || !same_public_key(&record.public_key, &payload.public_key)
+            || !same_public_key(&context.device.public_key, &payload.public_key)
+            || record.expires_at != payload.expires_at
+        {
+            return Err(PairStringFailure::Invalid);
+        }
+        if record.state != PairStringState::Active {
+            return Err(PairStringFailure::Unavailable);
+        }
+        record.state = PairStringState::Reserved;
+        Ok(payload.token)
+    }
+
+    fn consume_pair_string(&self, token: &str) {
+        if let Some(record) = self.inner.lock_unpoisoned().pair_strings.get_mut(token) {
+            if record.state == PairStringState::Reserved {
+                record.state = PairStringState::Consumed;
+            }
+        }
+    }
+
+    fn cancel_pair_string(&self, token: &str) {
+        if let Some(record) = self.inner.lock_unpoisoned().pair_strings.get_mut(token) {
+            if record.state == PairStringState::Reserved {
+                record.state = PairStringState::Cancelled;
+            }
+        }
     }
 
     pub fn register_transfer_token(&self, session_id: &str, token: &str) {
@@ -2681,6 +2827,46 @@ impl LanManager {
     }
 }
 
+fn parse_pair_string(value: &str) -> Result<PairStringPayload, PairStringFailure> {
+    let url = Url::parse(value).map_err(|_| PairStringFailure::Invalid)?;
+    if url.scheme() != "colink" || url.host_str() != Some("pair") || url.path() != "/v1" {
+        return Err(PairStringFailure::Invalid);
+    }
+    let mut data = None;
+    for (key, value) in url.query_pairs() {
+        if key != "data" || data.replace(value.into_owned()).is_some() {
+            return Err(PairStringFailure::Invalid);
+        }
+    }
+    let data = data.ok_or(PairStringFailure::Invalid)?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(data)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PairStringPayload>(&bytes).ok())
+        .ok_or(PairStringFailure::Invalid)?;
+    if payload.device_id.trim().is_empty()
+        || payload.token.is_empty()
+        || STANDARD
+            .decode(&payload.public_key)
+            .map(|value| value.len() != 32)
+            .unwrap_or(true)
+        || URL_SAFE_NO_PAD
+            .decode(&payload.token)
+            .map(|value| value.len() != 32)
+            .unwrap_or(true)
+    {
+        return Err(PairStringFailure::Invalid);
+    }
+    Ok(payload)
+}
+
+fn same_public_key(left: &str, right: &str) -> bool {
+    match (STANDARD.decode(left), STANDARD.decode(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn reject_ws(status: StatusCode, body: &str) -> ErrorResponse {
     Response::builder()
         .status(status)
@@ -2761,6 +2947,7 @@ async fn perform_inbound_handshake(
             &mut stream,
             context,
             &peer_device_id,
+            &peer_hello.payload.protocol_version,
             &mut outbound_seq,
         )
         .await?
@@ -3064,6 +3251,7 @@ where
                         public_key: context.device.public_key.clone(),
                         name: context.device.name.clone(),
                         nonce: local_nonce.clone(),
+                        pair_string: None,
                     },
                 )
                 .await?;
@@ -3302,6 +3490,7 @@ where
             public_key: context.device.public_key.clone(),
             name: context.device.name.clone(),
             nonce: local_nonce.clone(),
+            pair_string: None,
         },
     )
     .await?;
@@ -3404,6 +3593,7 @@ async fn pair_inbound<S>(
     stream: &mut WebSocketStream<S>,
     context: &LanContext,
     expected_device_id: &str,
+    peer_protocol_version: &str,
     outbound_seq: &mut u64,
 ) -> AppResult<LanPeerSession>
 where
@@ -3424,6 +3614,56 @@ where
         let Ok(request) = serde_json::from_value::<PairingIdentityPayload>(envelope.payload) else {
             continue;
         };
+        if let Some(pair_string) = request.pair_string.as_deref() {
+            if !supports_lan_pair_string(peer_protocol_version) {
+                write_lan_message(
+                    stream,
+                    context,
+                    expected_device_id,
+                    "pairing.v1.reject",
+                    Some(envelope.id.clone()),
+                    outbound_seq,
+                    &LanRejectPayload {
+                        reason: REASON_PAIRING_PAIR_STRING_INVALID.to_string(),
+                        message: MESSAGE_PAIRING_PAIR_STRING_INVALID.to_string(),
+                        details: None,
+                    },
+                )
+                .await?;
+                return Err(AppError::message(MESSAGE_PAIRING_PAIR_STRING_INVALID));
+            }
+            let token = match manager.reserve_pair_string(pair_string, context) {
+                Ok(token) => token,
+                Err(failure) => {
+                    write_lan_message(
+                        stream,
+                        context,
+                        expected_device_id,
+                        "pairing.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: failure.reason().to_string(),
+                            message: failure.message().to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    return Err(AppError::message(failure.message()));
+                }
+            };
+            return pair_inbound_with_pair_string(
+                manager,
+                stream,
+                context,
+                expected_device_id,
+                outbound_seq,
+                request,
+                envelope.id,
+                token,
+            )
+            .await;
+        }
         let local_nonce = Uuid::new_v4().simple().to_string();
         write_lan_message(
             stream,
@@ -3436,6 +3676,7 @@ where
                 public_key: context.device.public_key.clone(),
                 name: context.device.name.clone(),
                 nonce: local_nonce.clone(),
+                pair_string: None,
             },
         )
         .await?;
@@ -3512,6 +3753,85 @@ where
             }
         }
     }
+}
+
+async fn pair_inbound_with_pair_string<S>(
+    manager: &LanManager,
+    stream: &mut WebSocketStream<S>,
+    context: &LanContext,
+    expected_device_id: &str,
+    outbound_seq: &mut u64,
+    request: PairingIdentityPayload,
+    request_id: String,
+    token: String,
+) -> AppResult<LanPeerSession>
+where
+    WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let result = async {
+        let local_nonce = Uuid::new_v4().simple().to_string();
+        write_lan_message(
+            stream,
+            context,
+            expected_device_id,
+            "pairing.v1.exchange",
+            Some(request_id.clone()),
+            outbound_seq,
+            &PairingIdentityPayload {
+                public_key: context.device.public_key.clone(),
+                name: context.device.name.clone(),
+                nonce: local_nonce,
+                pair_string: None,
+            },
+        )
+        .await?;
+        write_lan_message(
+            stream,
+            context,
+            expected_device_id,
+            "pairing.v1.confirm",
+            Some(request_id),
+            outbound_seq,
+            &EmptyPayload {},
+        )
+        .await?;
+        loop {
+            let complete = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+                .await
+                .map_err(|_| AppError::message("LAN pairing timed out"))??;
+            if complete.to != context.device.device_id || complete.from != expected_device_id {
+                continue;
+            }
+            match complete.message_type.as_str() {
+                "pairing.v1.complete" => {
+                    manager.trust_peer(&PeerProof {
+                        device_id: expected_device_id.to_string(),
+                        public_key: request.public_key.clone(),
+                        name: request.name.clone(),
+                    })?;
+                    manager.consume_pair_string(&token);
+                    return Ok(LanPeerSession {
+                        peer_device_id: expected_device_id.to_string(),
+                        peer_public_key: request.public_key,
+                    });
+                }
+                "pairing.v1.reject" => {
+                    let message = serde_json::from_value::<LanRejectPayload>(complete.payload)
+                        .map(|payload| payload.message)
+                        .unwrap_or_else(|_| "pairing rejected".to_string());
+                    return Err(AppError::message(message));
+                }
+                _ => {}
+            }
+        }
+    }
+    .await;
+    if result.is_err() {
+        manager.cancel_pair_string(&token);
+    }
+    result
 }
 
 async fn negotiate_business_crypto<S>(

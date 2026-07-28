@@ -97,6 +97,10 @@ export function listLanPairingCandidates() {
   return invoke<LanPairingCandidate[]>('list_lan_pairing_candidates')
 }
 
+export function createPairString() {
+  return invoke<string>('create_pair_string')
+}
+
 export function startLanPairing(deviceId: string) {
   return invoke<void>('start_lan_pairing', {
     payload: { deviceId },
