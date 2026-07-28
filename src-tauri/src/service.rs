@@ -3,6 +3,7 @@ use std::{fs, path::{Path, PathBuf}};
 use hostname::get;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tokio::time::{timeout, Duration};
 use tracing::warn;
 use url::{form_urlencoded, Url};
 
@@ -140,24 +141,28 @@ pub async fn register_account(
 
 pub async fn logout(state: &AppState) -> AppResult<()> {
     let settings = load_settings(state)?;
+    let session = state.database.load_session()?;
 
-    if let Some(session) = state.database.load_session()? {
+    clear_auth_state(state)?;
+
+    if let Some(session) = session {
         let request = LogoutRequest {
             refresh_token: &session.refresh_token,
         };
 
-        let _ = state
-            .http
-            .post_empty(
+        let _ = timeout(
+            Duration::from_secs(3),
+            state.http.post_empty(
                 &settings.server_url,
                 AUTH_LOGOUT_PATH,
                 &request,
                 Some(&session.access_token),
-            )
-            .await;
+            ),
+        )
+        .await;
     }
 
-    clear_auth_state(state)
+    Ok(())
 }
 
 pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {

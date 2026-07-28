@@ -2395,6 +2395,17 @@ impl LanManager {
             .unwrap_or(false)
     }
 
+    fn is_lan_trusted(&self, device_id: &str) -> bool {
+        self.database
+            .load_trusted_peer_keys()
+            .map(|records| {
+                records
+                    .iter()
+                    .any(|record| record.device_id == device_id && record.trusted_by_lan)
+            })
+            .unwrap_or(false)
+    }
+
     fn is_trusted(record: &TrustedPeerKeyRecord) -> bool {
         record.trusted_by_lan || record.trusted_by_cloud
     }
@@ -2502,7 +2513,7 @@ impl LanManager {
             self.remove_pairing_candidate(device_id);
             return;
         }
-        if self.is_lan_authorized(device_id) {
+        if self.is_lan_trusted(device_id) {
             self.remove_pairing_candidate(device_id);
             return;
         }
@@ -2882,19 +2893,17 @@ async fn perform_outbound_handshake(
     expected_device_id: &str,
     allow_pairing: bool,
 ) -> AppResult<HandshakeResult<tokio_tungstenite::MaybeTlsStream<TcpStream>>> {
-    let peer_hello = exchange_hello(&mut stream, context).await?;
+        let peer_hello = exchange_hello(&mut stream, context, allow_pairing).await?;
     let mut outbound_seq = 1_u64;
     let trust_record = database
         .load_trusted_peer_keys()?
         .into_iter()
         .find(|record| record.device_id == expected_device_id && LanManager::is_trusted(record));
 
-    let session = if let Some(record) = trust_record {
+    let session = if !allow_pairing {
+        let record = trust_record.ok_or_else(|| AppError::message("LAN device key is not trusted"))?;
         authenticate_outbound(manager, &mut stream, context, &record, &mut outbound_seq).await?
     } else {
-        if !allow_pairing {
-            return Err(AppError::message("LAN device key is not trusted"));
-        }
         pair_outbound(
             manager,
             &mut stream,
@@ -2931,7 +2940,7 @@ async fn perform_inbound_handshake(
     context: &LanContext,
     database: &Database,
 ) -> AppResult<HandshakeResult<TcpStream>> {
-    let peer_hello = exchange_hello(&mut stream, context).await?;
+    let peer_hello = exchange_hello(&mut stream, context, false).await?;
     let mut outbound_seq = 1_u64;
     let peer_device_id = peer_hello.payload.device_id;
     let trust_record = database
@@ -2939,7 +2948,14 @@ async fn perform_inbound_handshake(
         .into_iter()
         .find(|record| record.device_id == peer_device_id && LanManager::is_trusted(record));
 
-    let session = if let Some(record) = trust_record {
+    let force_pairing = peer_hello
+        .payload
+        .extensions
+        .get("forcePairing")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let session = if !force_pairing {
+        let record = trust_record.ok_or_else(|| AppError::message("LAN device key is not trusted"))?;
         authenticate_inbound(manager, &mut stream, context, &record, &mut outbound_seq).await?
     } else {
         pair_inbound(
@@ -2981,6 +2997,7 @@ struct LanPeerSession {
 async fn exchange_hello<S>(
     stream: &mut WebSocketStream<S>,
     context: &LanContext,
+    force_pairing: bool,
 ) -> AppResult<ProtocolHelloEnvelope>
 where
     WebSocketStream<S>: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
@@ -2992,7 +3009,7 @@ where
         payload: ProtocolHelloPayload {
             device_id: context.device.device_id.clone(),
             protocol_version: LAN_PROTOCOL_VERSION.to_string(),
-            extensions: serde_json::json!({}),
+            extensions: serde_json::json!({ "forcePairing": force_pairing }),
         },
     };
     stream

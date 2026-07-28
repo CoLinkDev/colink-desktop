@@ -649,6 +649,7 @@ impl AppRuntime {
                     request_id = %payload.request_id,
                     "runtime received lan pairing completed"
                 );
+                let _ = self.reconcile_device_routes();
                 let _ = self.inner.app.emit(LAN_PAIRING_COMPLETED_EVENT, payload);
             }
             RuntimeEvent::LanPairingFailed(payload) => {
