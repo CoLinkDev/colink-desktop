@@ -47,6 +47,7 @@ use crate::{
     protocol::{
         check_business_protocol_version, check_lan_protocol_version, negotiated_lan_protocol_version,
         supports_lan_key_exchange, supports_lan_key_exchange_nonce, supports_lan_pair_string,
+        supports_lan_pair_string_v2,
         AuthChallengePayload,
         AuthResponsePayload, BusinessEnvelope, BusinessKeyExchangeNoncePayload, CameraDataFrame,
         BusinessKeyExchangePayload, BusinessNegotiatePayload, BusinessVersionAckPayload,
@@ -291,6 +292,21 @@ struct PairStringPayload {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     platform: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedPairString {
+    version: PairStringVersion,
+    device_id: String,
+    public_key: String,
+    token: String,
+    expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairStringVersion {
+    V1,
+    V2,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -725,23 +741,39 @@ impl LanManager {
         Ok(())
     }
 
-    pub fn create_pair_string(&self) -> AppResult<String> {
+    pub fn create_pair_string(&self, legacy: bool) -> AppResult<String> {
         let context = self.load_context()?;
         let now = unix_now_millis();
         let expires_at = now + PAIR_STRING_RECOMMENDED_TTL_MILLIS;
         let mut token_bytes = [0_u8; 32];
         OsRng.fill_bytes(&mut token_bytes);
         let token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let payload = PairStringPayload {
-            device_id: context.device.device_id.clone(),
-            public_key: context.device.public_key.clone(),
-            token: token.clone(),
-            expires_at,
-            name: Some(context.device.name.clone()),
-            platform: Some(context.device.device_type.clone()),
+        let pair_string = if legacy {
+            let payload = PairStringPayload {
+                device_id: context.device.device_id.clone(),
+                public_key: context.device.public_key.clone(),
+                token: token.clone(),
+                expires_at,
+                name: Some(context.device.name.clone()),
+                platform: Some(context.device.device_type.clone()),
+            };
+            let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload)?);
+            format!("colink://pair/v1?data={encoded}")
+        } else {
+            let device_id = Uuid::parse_str(&context.device.device_id)
+                .map_err(|_| AppError::message("Device identity is invalid"))?;
+            let public_key = STANDARD
+                .decode(&context.device.public_key)
+                .map_err(|_| AppError::message("Device identity is invalid"))?;
+            if public_key.len() != 32 {
+                return Err(AppError::message("Device identity is invalid"));
+            }
+            let mut payload = Vec::with_capacity(80);
+            payload.extend_from_slice(device_id.as_bytes());
+            payload.extend_from_slice(&public_key);
+            payload.extend_from_slice(&token_bytes);
+            format!("colink://pair/v2?d={}", URL_SAFE_NO_PAD.encode(payload))
         };
-        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload)?);
-        let pair_string = format!("colink://pair/v1?data={encoded}");
         let mut inner = self.inner.lock_unpoisoned();
         inner.pair_strings.retain(|_, record| {
             record.expires_at > now
@@ -750,8 +782,8 @@ impl LanManager {
         inner.pair_strings.insert(
             token,
             PairStringRecord {
-                device_id: payload.device_id,
-                public_key: payload.public_key,
+                device_id: context.device.device_id,
+                public_key: context.device.public_key,
                 expires_at,
                 state: PairStringState::Active,
             },
@@ -770,7 +802,7 @@ impl LanManager {
         let Some(record) = inner.pair_strings.get_mut(&payload.token) else {
             return Err(PairStringFailure::Invalid);
         };
-        if record.expires_at <= now || payload.expires_at <= now {
+        if record.expires_at <= now || payload.expires_at.is_some_and(|expires_at| expires_at <= now) {
             record.state = PairStringState::Cancelled;
             return Err(PairStringFailure::Expired);
         }
@@ -778,7 +810,7 @@ impl LanManager {
             || payload.device_id != context.device.device_id
             || !same_public_key(&record.public_key, &payload.public_key)
             || !same_public_key(&context.device.public_key, &payload.public_key)
-            || record.expires_at != payload.expires_at
+            || payload.expires_at.is_some_and(|expires_at| record.expires_at != expires_at)
         {
             return Err(PairStringFailure::Invalid);
         }
@@ -2924,37 +2956,61 @@ impl LanManager {
     }
 }
 
-fn parse_pair_string(value: &str) -> Result<PairStringPayload, PairStringFailure> {
+fn parse_pair_string(value: &str) -> Result<ParsedPairString, PairStringFailure> {
     let url = Url::parse(value).map_err(|_| PairStringFailure::Invalid)?;
-    if url.scheme() != "colink" || url.host_str() != Some("pair") || url.path() != "/v1" {
+    if url.scheme() != "colink" || url.host_str() != Some("pair") {
         return Err(PairStringFailure::Invalid);
     }
-    let mut data = None;
+    let expected_key = match url.path() {
+        "/v1" => "data",
+        "/v2" => "d",
+        _ => return Err(PairStringFailure::Invalid),
+    };
+    let mut encoded = None;
     for (key, value) in url.query_pairs() {
-        if key != "data" || data.replace(value.into_owned()).is_some() {
+        if key != expected_key || encoded.replace(value.into_owned()).is_some() {
             return Err(PairStringFailure::Invalid);
         }
     }
-    let data = data.ok_or(PairStringFailure::Invalid)?;
-    let payload = URL_SAFE_NO_PAD
-        .decode(data)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<PairStringPayload>(&bytes).ok())
-        .ok_or(PairStringFailure::Invalid)?;
-    if payload.device_id.trim().is_empty()
-        || payload.token.is_empty()
-        || STANDARD
-            .decode(&payload.public_key)
-            .map(|value| value.len() != 32)
-            .unwrap_or(true)
-        || URL_SAFE_NO_PAD
-            .decode(&payload.token)
-            .map(|value| value.len() != 32)
-            .unwrap_or(true)
-    {
-        return Err(PairStringFailure::Invalid);
+    let encoded = encoded.ok_or(PairStringFailure::Invalid)?;
+    match url.path() {
+        "/v1" => {
+            let payload = URL_SAFE_NO_PAD
+                .decode(encoded)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<PairStringPayload>(&bytes).ok())
+                .ok_or(PairStringFailure::Invalid)?;
+            if payload.device_id.trim().is_empty()
+                || payload.token.is_empty()
+                || STANDARD.decode(&payload.public_key).map(|value| value.len() != 32).unwrap_or(true)
+                || URL_SAFE_NO_PAD.decode(&payload.token).map(|value| value.len() != 32).unwrap_or(true)
+            {
+                return Err(PairStringFailure::Invalid);
+            }
+            Ok(ParsedPairString {
+                version: PairStringVersion::V1,
+                device_id: payload.device_id,
+                public_key: payload.public_key,
+                token: payload.token,
+                expires_at: Some(payload.expires_at),
+            })
+        }
+        "/v2" => {
+            let payload = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| PairStringFailure::Invalid)?;
+            if payload.len() != 80 {
+                return Err(PairStringFailure::Invalid);
+            }
+            let device_id = Uuid::from_slice(&payload[..16]).map_err(|_| PairStringFailure::Invalid)?;
+            Ok(ParsedPairString {
+                version: PairStringVersion::V2,
+                device_id: device_id.to_string(),
+                public_key: STANDARD.encode(&payload[16..48]),
+                token: URL_SAFE_NO_PAD.encode(&payload[48..]),
+                expires_at: None,
+            })
+        }
+        _ => Err(PairStringFailure::Invalid),
     }
-    Ok(payload)
 }
 
 fn same_public_key(left: &str, right: &str) -> bool {
@@ -3781,7 +3837,13 @@ where
             continue;
         };
         if let Some(pair_string) = request.pair_string.as_deref() {
-            if !supports_lan_pair_string(peer_protocol_version) {
+            let supported = parse_pair_string(pair_string)
+                .map(|pair_string| match pair_string.version {
+                    PairStringVersion::V1 => supports_lan_pair_string(peer_protocol_version),
+                    PairStringVersion::V2 => supports_lan_pair_string_v2(peer_protocol_version),
+                })
+                .unwrap_or(false);
+            if !supported {
                 write_lan_message(
                     stream,
                     context,

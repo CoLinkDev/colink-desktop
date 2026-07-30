@@ -97,8 +97,8 @@ export function listLanPairingCandidates() {
   return invoke<LanPairingCandidate[]>('list_lan_pairing_candidates')
 }
 
-export function createPairString() {
-  return invoke<string>('create_pair_string')
+export function createPairString(legacy = false) {
+  return invoke<string>('create_pair_string', { legacy })
 }
 
 export function startLanPairing(deviceId: string) {

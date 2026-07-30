@@ -377,8 +377,8 @@ impl AppRuntime {
         self.inner.lan.list_pairing_candidates()
     }
 
-    pub fn create_pair_string(&self) -> AppResult<String> {
-        self.inner.lan.create_pair_string()
+    pub fn create_pair_string(&self, legacy: bool) -> AppResult<String> {
+        self.inner.lan.create_pair_string(legacy)
     }
 
     pub fn start_lan_pairing(&self, payload: StartLanPairingPayload) -> AppResult<()> {

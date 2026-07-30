@@ -54,10 +54,13 @@ pub async fn list_lan_pairing_candidates(
 }
 
 #[tauri::command]
-pub async fn create_pair_string(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn create_pair_string(
+    state: State<'_, AppState>,
+    legacy: Option<bool>,
+) -> Result<String, String> {
     state
         .runtime
-        .create_pair_string()
+        .create_pair_string(legacy.unwrap_or(false))
         .map_err(|error| error.to_string())
 }
 

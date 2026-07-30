@@ -46,6 +46,7 @@ export function DevicesPage() {
   const [sort, setSort] = useState<DeviceSort>({ key: 'name', direction: 'asc' })
   const [refreshing, setRefreshing] = useState(false)
   const [pairString, setPairString] = useState<string | null>(null)
+  const [legacyPairQr, setLegacyPairQr] = useState(false)
 
   const handleRefreshDevices = useCallback(async () => {
     setRefreshing(true)
@@ -164,7 +165,18 @@ export function DevicesPage() {
 
   async function handleCreatePairString() {
     try {
+      setLegacyPairQr(false)
       setPairString(await createPairString())
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    }
+  }
+
+  async function handleSwitchPairQr() {
+    const legacy = !legacyPairQr
+    try {
+      setPairString(await createPairString(legacy))
+      setLegacyPairQr(legacy)
     } catch (requestError) {
       toast.error(readErrorMessage(requestError))
     }
@@ -324,7 +336,10 @@ export function DevicesPage() {
             <div className="mt-5 flex justify-center rounded-xl bg-white p-4">
               <QRCodeSVG bgColor="#ffffff" fgColor="#111827" includeMargin size={256} value={pairString} />
             </div>
-            <div className="mt-6 flex justify-end">
+            <div className="mt-6 flex justify-end gap-2">
+              <Button onClick={handleSwitchPairQr} variant="secondary">
+                {legacyPairQr ? t('devices.switchToNewPairQr') : t('devices.switchToLegacyPairQr')}
+              </Button>
               <Button onClick={() => setPairString(null)} variant="secondary">{t('common.close')}</Button>
             </div>
           </div>
