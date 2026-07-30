@@ -63,7 +63,7 @@ use crate::{
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
 const MIN_LAN_PORT: u16 = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(240);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
@@ -79,7 +79,10 @@ const CAMERA_SEND_BUFFER_CAPACITY: usize = 3;
 const CAMERA_RECEIVE_BUFFER_CAPACITY: usize = 4;
 const REASON_AUTH_UNKNOWN_DEVICE: &str = "colink:auth.unknown_device.v1";
 const REASON_AUTH_KEY_CHANGED: &str = "colink:auth.key_changed.v1";
+const REASON_PAIRING_CANCELLED: &str = "colink:pairing.cancelled.v1";
 const REASON_PAIRING_USER_REJECTED: &str = "colink:pairing.user_rejected.v1";
+const REASON_PAIRING_TIMEOUT: &str = "colink:pairing.timeout.v1";
+const REASON_PAIRING_CONNECTION_CLOSED: &str = "colink:pairing.connection_closed.v1";
 const REASON_PAIRING_PAIR_STRING_INVALID: &str = "colink:pairing.pair_string_invalid.v1";
 const REASON_PAIRING_PAIR_STRING_EXPIRED: &str = "colink:pairing.pair_string_expired.v1";
 const REASON_PAIRING_PAIR_STRING_UNAVAILABLE: &str = "colink:pairing.pair_string_unavailable.v1";
@@ -90,7 +93,9 @@ const REASON_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str =
 const REASON_KEY_EXCHANGE_GENERIC: &str = "colink:key_exchange.generic.v1";
 const MESSAGE_AUTH_UNKNOWN_DEVICE: &str = "No trust record for this device";
 const MESSAGE_AUTH_KEY_CHANGED: &str = "Peer public key differs from stored trust record";
+const MESSAGE_PAIRING_CANCELLED: &str = "LAN pairing was cancelled";
 const MESSAGE_PAIRING_USER_REJECTED: &str = "User declined the pairing request";
+const MESSAGE_PAIRING_TIMEOUT: &str = "LAN pairing timed out";
 const MESSAGE_PAIRING_PAIR_STRING_INVALID: &str = "Pair string is invalid";
 const MESSAGE_PAIRING_PAIR_STRING_EXPIRED: &str = "Pair string has expired";
 const MESSAGE_PAIRING_PAIR_STRING_UNAVAILABLE: &str = "Pair string is unavailable";
@@ -99,6 +104,17 @@ const MESSAGE_KEY_EXCHANGE_SIGNATURE_INVALID: &str =
     "Ephemeral key signature verification failed";
 const MESSAGE_KEY_EXCHANGE_TIMESTAMP_EXPIRED: &str = "Ephemeral key timestamp expired";
 const MESSAGE_KEY_EXCHANGE_GENERIC: &str = "Ephemeral key exchange failed";
+
+fn pairing_rejection(payload: serde_json::Value) -> (String, String) {
+    serde_json::from_value::<LanRejectPayload>(payload)
+        .map(|rejection| (rejection.reason, rejection.message))
+        .unwrap_or_else(|_| {
+            (
+                REASON_PAIRING_USER_REJECTED.to_string(),
+                "pairing rejected".to_string(),
+            )
+        })
+}
 
 enum TransferStreamEvent {
     Activity,
@@ -239,6 +255,13 @@ struct PeerProof {
 struct PairingDecision {
     request_id: String,
     accepted: bool,
+    reason: Option<String>,
+    message: Option<String>,
+}
+
+struct PairingPrompt {
+    request_id: String,
+    response: oneshot::Receiver<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -691,6 +714,7 @@ impl LanManager {
         let ip = ip
             .parse::<IpAddr>()
             .map_err(|_| AppError::message(self.user_text(TextKey::LanDeviceAddressInvalid)))?;
+        self.detach_peer(generation, device_id);
         let manager = self.clone();
         let device_id = device_id.to_string();
         tauri::async_runtime::spawn(async move {
@@ -2410,14 +2434,15 @@ impl LanManager {
         record.trusted_by_lan || record.trusted_by_cloud
     }
 
-    async fn request_pairing(
+    fn open_pairing_prompt(
         &self,
         device_id: &str,
         name: &str,
         public_key: &str,
         code: &str,
         reason: &str,
-    ) -> AppResult<PairingDecision> {
+        initiated_locally: bool,
+    ) -> PairingPrompt {
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -2433,27 +2458,81 @@ impl LanManager {
                 code: code.to_string(),
                 reason: reason.to_string(),
                 public_key: public_key.to_string(),
+                initiated_locally,
             }));
+        PairingPrompt {
+            request_id,
+            response: rx,
+        }
+    }
 
-        let result = timeout(PAIRING_TIMEOUT, rx).await;
-        self.inner
-            .lock_unpoisoned()
-            .pending_pairings
-            .remove(&request_id);
+    fn finish_pairing_prompt(&self, request_id: &str) {
+        self.inner.lock_unpoisoned().pending_pairings.remove(request_id);
+    }
+
+    async fn request_pairing(
+        &self,
+        device_id: &str,
+        name: &str,
+        public_key: &str,
+        code: &str,
+        reason: &str,
+    ) -> PairingDecision {
+        let PairingPrompt {
+            request_id,
+            response,
+        } = self.open_pairing_prompt(device_id, name, public_key, code, reason, false);
+
+        let result = timeout(PAIRING_TIMEOUT, response).await;
+        self.finish_pairing_prompt(&request_id);
         match result {
-            Ok(Ok(accepted)) => Ok(PairingDecision {
+            Ok(Ok(true)) => PairingDecision {
                 request_id,
-                accepted,
-            }),
+                accepted: true,
+                reason: None,
+                message: None,
+            },
+            Ok(Ok(false)) => {
+                self.emit_pairing_failed(
+                    &request_id,
+                    device_id,
+                    REASON_PAIRING_USER_REJECTED,
+                    MESSAGE_PAIRING_USER_REJECTED,
+                );
+                PairingDecision {
+                    request_id,
+                    accepted: false,
+                    reason: Some(REASON_PAIRING_USER_REJECTED.to_string()),
+                    message: Some(MESSAGE_PAIRING_USER_REJECTED.to_string()),
+                }
+            }
             Ok(Err(_)) => {
-                let reason = "LAN pairing was cancelled";
-                self.emit_pairing_failed(&request_id, device_id, reason);
-                Err(AppError::message(reason))
+                self.emit_pairing_failed(
+                    &request_id,
+                    device_id,
+                    REASON_PAIRING_CANCELLED,
+                    MESSAGE_PAIRING_CANCELLED,
+                );
+                PairingDecision {
+                    request_id,
+                    accepted: false,
+                    reason: Some(REASON_PAIRING_CANCELLED.to_string()),
+                    message: Some(MESSAGE_PAIRING_CANCELLED.to_string()),
+                }
             }
             Err(_) => {
-                let reason = "LAN pairing timed out";
-                self.emit_pairing_failed(&request_id, device_id, reason);
-                Err(AppError::message(reason))
+                self.emit_pairing_failed(
+                    &request_id,
+                    device_id,
+                    REASON_PAIRING_TIMEOUT,
+                    MESSAGE_PAIRING_TIMEOUT,
+                );
+                PairingDecision {
+                    request_id,
+                    accepted: false,
+                    reason: Some(REASON_PAIRING_TIMEOUT.to_string()),
+                    message: Some(MESSAGE_PAIRING_TIMEOUT.to_string()),
+                }
             }
         }
     }
@@ -2498,13 +2577,20 @@ impl LanManager {
             }));
     }
 
-    fn emit_pairing_failed(&self, request_id: &str, device_id: &str, reason: impl Into<String>) {
+    fn emit_pairing_failed(
+        &self,
+        request_id: &str,
+        device_id: &str,
+        reason: impl Into<String>,
+        message: impl Into<String>,
+    ) {
         let _ = self
             .event_tx
             .send(RuntimeEvent::LanPairingFailed(LanPairingFailed {
                 request_id: request_id.to_string(),
                 device_id: device_id.to_string(),
                 reason: reason.into(),
+                message: message.into(),
             }));
     }
 
@@ -3286,7 +3372,7 @@ where
                         &code,
                         "unknown_device",
                     )
-                    .await?;
+                    .await;
                 if !decision.accepted {
                     write_lan_message(
                         stream,
@@ -3296,13 +3382,17 @@ where
                         Some(envelope.id.clone()),
                         outbound_seq,
                         &LanRejectPayload {
-                            reason: REASON_PAIRING_USER_REJECTED.to_string(),
-                            message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
+                            reason: decision
+                                .reason
+                                .unwrap_or_else(|| REASON_PAIRING_USER_REJECTED.to_string()),
+                            message: decision
+                                .message
+                                .unwrap_or_else(|| MESSAGE_PAIRING_USER_REJECTED.to_string()),
                             details: None,
                         },
                     )
                     .await?;
-                    continue;
+                    return Err(AppError::message(MESSAGE_PAIRING_USER_REJECTED));
                 }
                 write_lan_message(
                     stream,
@@ -3336,13 +3426,11 @@ where
                             });
                         }
                         "pairing.v1.reject" => {
-                            let message =
-                                serde_json::from_value::<LanRejectPayload>(complete.payload)
-                                    .map(|payload| payload.message)
-                                    .unwrap_or_else(|_| "pairing rejected".to_string());
+                            let (reason, message) = pairing_rejection(complete.payload);
                             manager.emit_pairing_failed(
                                 &decision.request_id,
                                 &record.device_id,
+                                reason,
                                 message,
                             );
                             break;
@@ -3512,17 +3600,92 @@ where
     )
     .await?;
 
-    let mut pairing_request_id = None;
+    let mut pairing_prompt: Option<PairingPrompt> = None;
     let mut peer_identity: Option<PairingIdentityPayload> = None;
     loop {
-        let envelope = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
-            .await
-            .map_err(|_| AppError::message("LAN pairing timed out"))??;
+        let envelope = if let Some(prompt) = pairing_prompt.as_mut() {
+            tokio::select! {
+                response = &mut prompt.response => {
+                    let request_id = prompt.request_id.clone();
+                    let _ = response;
+                    manager.finish_pairing_prompt(&request_id);
+                    manager.emit_pairing_failed(
+                        &request_id,
+                        expected_device_id,
+                        REASON_PAIRING_CANCELLED,
+                        MESSAGE_PAIRING_CANCELLED,
+                    );
+                    write_lan_message(
+                        stream,
+                        context,
+                        expected_device_id,
+                        "pairing.v1.reject",
+                        None,
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_PAIRING_CANCELLED.to_string(),
+                            message: MESSAGE_PAIRING_CANCELLED.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    return Err(AppError::message(MESSAGE_PAIRING_CANCELLED));
+                }
+                result = timeout(PAIRING_TIMEOUT, read_lan_message(stream)) => {
+                    match result {
+                        Ok(Ok(envelope)) => envelope,
+                        Ok(Err(error)) => {
+                            let request_id = prompt.request_id.clone();
+                            manager.finish_pairing_prompt(&request_id);
+                            manager.emit_pairing_failed(
+                                &request_id,
+                                expected_device_id,
+                                REASON_PAIRING_CONNECTION_CLOSED,
+                                error.to_string(),
+                            );
+                            return Err(error);
+                        }
+                        Err(_) => {
+                            let request_id = prompt.request_id.clone();
+                            manager.finish_pairing_prompt(&request_id);
+                            manager.emit_pairing_failed(
+                                &request_id,
+                                expected_device_id,
+                                REASON_PAIRING_TIMEOUT,
+                                MESSAGE_PAIRING_TIMEOUT,
+                            );
+                            write_lan_message(
+                                stream,
+                                context,
+                                expected_device_id,
+                                "pairing.v1.reject",
+                                None,
+                                outbound_seq,
+                                &LanRejectPayload {
+                                    reason: REASON_PAIRING_TIMEOUT.to_string(),
+                                    message: MESSAGE_PAIRING_TIMEOUT.to_string(),
+                                    details: None,
+                                },
+                            )
+                            .await?;
+                            return Err(AppError::message(MESSAGE_PAIRING_TIMEOUT));
+                        }
+                    }
+                }
+            }
+        } else {
+            timeout(PAIRING_TIMEOUT, read_lan_message(stream))
+                .await
+                .map_err(|_| AppError::message(MESSAGE_PAIRING_TIMEOUT))??
+        };
         if envelope.to != context.device.device_id || envelope.from != expected_device_id {
             continue;
         }
         match envelope.message_type.as_str() {
             "pairing.v1.exchange" => {
+                if pairing_prompt.is_some() {
+                    continue;
+                }
                 let Ok(payload) =
                     serde_json::from_value::<PairingIdentityPayload>(envelope.payload)
                 else {
@@ -3534,37 +3697,18 @@ where
                     &local_nonce,
                     &payload.nonce,
                 );
-                let decision = manager
-                    .request_pairing(
-                        expected_device_id,
-                        &payload.name,
-                        &payload.public_key,
-                        &code,
-                        "unknown_device",
-                    )
-                    .await?;
-                pairing_request_id = Some(decision.request_id);
-                if !decision.accepted {
-                    write_lan_message(
-                        stream,
-                        context,
-                        expected_device_id,
-                        "pairing.v1.reject",
-                        Some(envelope.id.clone()),
-                        outbound_seq,
-                        &LanRejectPayload {
-                            reason: REASON_PAIRING_USER_REJECTED.to_string(),
-                            message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
-                            details: None,
-                        },
-                    )
-                    .await?;
-                    continue;
-                }
+                pairing_prompt = Some(manager.open_pairing_prompt(
+                    expected_device_id,
+                    &payload.name,
+                    &payload.public_key,
+                    &code,
+                    "unknown_device",
+                    true,
+                ));
                 peer_identity = Some(payload);
             }
             "pairing.v1.confirm" => {
-                let Some(request_id) = pairing_request_id.as_deref() else {
+                let Some(prompt) = pairing_prompt.take() else {
                     continue;
                 };
                 let Some(peer_identity) = peer_identity else {
@@ -3575,7 +3719,8 @@ where
                     public_key: peer_identity.public_key.clone(),
                     name: peer_identity.name.clone(),
                 })?;
-                manager.emit_pairing_completed(request_id, expected_device_id);
+                manager.finish_pairing_prompt(&prompt.request_id);
+                manager.emit_pairing_completed(&prompt.request_id, expected_device_id);
                 write_lan_message(
                     stream,
                     context,
@@ -3592,13 +3737,17 @@ where
                 });
             }
             "pairing.v1.reject" => {
-                if let Some(request_id) = pairing_request_id.as_deref() {
-                    let message = serde_json::from_value::<LanRejectPayload>(envelope.payload)
-                        .map(|payload| payload.message)
-                        .unwrap_or_else(|_| "pairing rejected".to_string());
-                    manager.emit_pairing_failed(request_id, expected_device_id, message);
+                if let Some(prompt) = pairing_prompt.take() {
+                    let (reason, message) = pairing_rejection(envelope.payload);
+                    manager.finish_pairing_prompt(&prompt.request_id);
+                    manager.emit_pairing_failed(
+                        &prompt.request_id,
+                        expected_device_id,
+                        reason,
+                        message.clone(),
+                    );
+                    return Err(AppError::message(message));
                 }
-                continue;
             }
             _ => {}
         }
@@ -3703,31 +3852,103 @@ where
             &request.nonce,
             &local_nonce,
         );
-        let decision = manager
-            .request_pairing(
-                expected_device_id,
-                &request.name,
-                &request.public_key,
-                &code,
-                "unknown_device",
-            )
-            .await?;
-        if !decision.accepted {
-            write_lan_message(
-                stream,
-                context,
-                expected_device_id,
-                "pairing.v1.reject",
-                Some(envelope.id.clone()),
-                outbound_seq,
-                &LanRejectPayload {
-                    reason: REASON_PAIRING_USER_REJECTED.to_string(),
-                    message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
-                    details: None,
-                },
-            )
-            .await?;
-            continue;
+        let PairingPrompt {
+            request_id,
+            mut response,
+        } = manager.open_pairing_prompt(
+            expected_device_id,
+            &request.name,
+            &request.public_key,
+            &code,
+            "unknown_device",
+            false,
+        );
+        loop {
+            tokio::select! {
+                decision = &mut response => {
+                    match decision {
+                        Ok(true) => break,
+                        Ok(false) | Err(_) => {
+                            manager.finish_pairing_prompt(&request_id);
+                            manager.emit_pairing_failed(
+                                &request_id,
+                                expected_device_id,
+                                REASON_PAIRING_USER_REJECTED,
+                                MESSAGE_PAIRING_USER_REJECTED,
+                            );
+                            write_lan_message(
+                                stream,
+                                context,
+                                expected_device_id,
+                                "pairing.v1.reject",
+                                Some(envelope.id.clone()),
+                                outbound_seq,
+                                &LanRejectPayload {
+                                    reason: REASON_PAIRING_USER_REJECTED.to_string(),
+                                    message: MESSAGE_PAIRING_USER_REJECTED.to_string(),
+                                    details: None,
+                                },
+                            )
+                            .await?;
+                            let _ = timeout(Duration::from_secs(1), read_lan_message(stream)).await;
+                            return Err(AppError::message(MESSAGE_PAIRING_USER_REJECTED));
+                        }
+                    }
+                }
+                result = timeout(PAIRING_TIMEOUT, read_lan_message(stream)) => {
+                    let pairing_message = match result {
+                        Ok(Ok(pairing_message)) => pairing_message,
+                        Ok(Err(error)) => {
+                            manager.finish_pairing_prompt(&request_id);
+                            manager.emit_pairing_failed(
+                                &request_id,
+                                expected_device_id,
+                                REASON_PAIRING_CONNECTION_CLOSED,
+                                error.to_string(),
+                            );
+                            return Err(error);
+                        }
+                        Err(_) => {
+                            manager.finish_pairing_prompt(&request_id);
+                            manager.emit_pairing_failed(
+                                &request_id,
+                                expected_device_id,
+                                REASON_PAIRING_TIMEOUT,
+                                MESSAGE_PAIRING_TIMEOUT,
+                            );
+                            write_lan_message(
+                                stream,
+                                context,
+                                expected_device_id,
+                                "pairing.v1.reject",
+                                Some(envelope.id.clone()),
+                                outbound_seq,
+                                &LanRejectPayload {
+                                    reason: REASON_PAIRING_TIMEOUT.to_string(),
+                                    message: MESSAGE_PAIRING_TIMEOUT.to_string(),
+                                    details: None,
+                                },
+                            )
+                            .await?;
+                            return Err(AppError::message(MESSAGE_PAIRING_TIMEOUT));
+                        }
+                    };
+                    if pairing_message.to != context.device.device_id || pairing_message.from != expected_device_id {
+                        continue;
+                    }
+                    if pairing_message.message_type == "pairing.v1.reject" {
+                        let (reason, message) = pairing_rejection(pairing_message.payload);
+                        manager.finish_pairing_prompt(&request_id);
+                        manager.emit_pairing_failed(
+                            &request_id,
+                            expected_device_id,
+                            reason,
+                            message.clone(),
+                        );
+                        return Err(AppError::message(message));
+                    }
+                }
+            }
         }
         write_lan_message(
             stream,
@@ -3740,9 +3961,41 @@ where
         )
         .await?;
         loop {
-            let complete = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
-                .await
-                .map_err(|_| AppError::message("LAN pairing timed out"))??;
+            let complete = match timeout(PAIRING_TIMEOUT, read_lan_message(stream)).await {
+                Ok(Ok(complete)) => complete,
+                Ok(Err(error)) => {
+                    manager.emit_pairing_failed(
+                        &request_id,
+                        expected_device_id,
+                        REASON_PAIRING_CONNECTION_CLOSED,
+                        error.to_string(),
+                    );
+                    return Err(error);
+                }
+                Err(_) => {
+                    manager.emit_pairing_failed(
+                        &request_id,
+                        expected_device_id,
+                        REASON_PAIRING_TIMEOUT,
+                        MESSAGE_PAIRING_TIMEOUT,
+                    );
+                    write_lan_message(
+                        stream,
+                        context,
+                        expected_device_id,
+                        "pairing.v1.reject",
+                        Some(envelope.id.clone()),
+                        outbound_seq,
+                        &LanRejectPayload {
+                            reason: REASON_PAIRING_TIMEOUT.to_string(),
+                            message: MESSAGE_PAIRING_TIMEOUT.to_string(),
+                            details: None,
+                        },
+                    )
+                    .await?;
+                    return Err(AppError::message(MESSAGE_PAIRING_TIMEOUT));
+                }
+            };
             if complete.to != context.device.device_id || complete.from != expected_device_id {
                 continue;
             }
@@ -3753,18 +4006,21 @@ where
                         public_key: request.public_key.clone(),
                         name: request.name.clone(),
                     })?;
-                    manager.emit_pairing_completed(&decision.request_id, expected_device_id);
+                    manager.emit_pairing_completed(&request_id, expected_device_id);
                     return Ok(LanPeerSession {
                         peer_device_id: expected_device_id.to_string(),
                         peer_public_key: request.public_key,
                     });
                 }
                 "pairing.v1.reject" => {
-                    let message = serde_json::from_value::<LanRejectPayload>(complete.payload)
-                        .map(|payload| payload.message)
-                        .unwrap_or_else(|_| "pairing rejected".to_string());
-                    manager.emit_pairing_failed(&decision.request_id, expected_device_id, message);
-                    continue;
+                    let (reason, message) = pairing_rejection(complete.payload);
+                    manager.emit_pairing_failed(
+                        &request_id,
+                        expected_device_id,
+                        reason,
+                        message.clone(),
+                    );
+                    return Err(AppError::message(message));
                 }
                 _ => {}
             }
@@ -3817,7 +4073,7 @@ where
         loop {
             let complete = timeout(PAIRING_TIMEOUT, read_lan_message(stream))
                 .await
-                .map_err(|_| AppError::message("LAN pairing timed out"))??;
+                .map_err(|_| AppError::message(MESSAGE_PAIRING_TIMEOUT))??;
             if complete.to != context.device.device_id || complete.from != expected_device_id {
                 continue;
             }

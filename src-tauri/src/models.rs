@@ -200,6 +200,7 @@ pub struct LanPairingRequest {
     pub code: String,
     pub reason: String,
     pub public_key: String,
+    pub initiated_locally: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +216,7 @@ pub struct LanPairingFailed {
     pub request_id: String,
     pub device_id: String,
     pub reason: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

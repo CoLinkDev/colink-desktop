@@ -240,6 +240,13 @@ impl AppRuntime {
         Ok(())
     }
 
+    pub fn restart_lan_after_key_rotation(&self) -> AppResult<()> {
+        self.inner.lan.stop();
+        self.inner.lan.start()?;
+        self.reconcile_device_routes()?;
+        Ok(())
+    }
+
     pub fn deactivate(&self) -> AppResult<()> {
         for session_id in self.inner.camera.close_all_host_sessions() {
             self.inner.camera_capture.stop(&session_id);
@@ -639,8 +646,11 @@ impl AppRuntime {
                     TextKey::PairingRequestBody,
                     &[("name", device_name), ("code", request.code.clone())],
                 );
+                let initiated_locally = request.initiated_locally;
                 let _ = self.inner.app.emit(LAN_PAIRING_REQUESTED_EVENT, request);
-                let _ = self.notify(TextKey::PairingRequestTitle, &[], &body);
+                if !initiated_locally {
+                    let _ = self.notify(TextKey::PairingRequestTitle, &[], &body);
+                }
                 let _ = crate::shell::show_main_window(&self.inner.app, None);
             }
             RuntimeEvent::LanPairingCompleted(payload) => {

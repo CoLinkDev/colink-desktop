@@ -271,6 +271,7 @@ pub async fn rotate_device_key(
             identity.private_key = generated.private_key;
             identity.cloud_key_sync_pending = true;
             state.database.save_device_identity(&identity)?;
+            state.runtime.restart_lan_after_key_rotation()?;
             if state.cloud.is_connected() {
                 if let Some(session) = current_session_if_available(state).await? {
                     if identity.user_id.as_deref() == Some(session.user_id.as_str()) {

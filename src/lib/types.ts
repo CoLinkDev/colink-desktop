@@ -59,6 +59,8 @@ export interface LanPairingRequest {
   code: string
   reason: 'unknown_device' | string
   publicKey: string
+  initiatedLocally: boolean
+  error?: string
 }
 
 export interface LanPairingCompleted {
@@ -70,6 +72,7 @@ export interface LanPairingFailed {
   requestId: string
   deviceId: string
   reason: string
+  message: string
 }
 
 export interface CloudStatus {
