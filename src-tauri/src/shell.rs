@@ -40,12 +40,20 @@ const LINUX_AUTOSTART_FILE: &str = "dev.colink.desktop.desktop";
 
 pub struct ShellState {
     allow_exit: AtomicBool,
+    tray_menu: TrayMenu,
+}
+
+struct TrayMenu {
+    open: MenuItem<tauri::Wry>,
+    settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
 }
 
 impl ShellState {
-    pub fn new() -> Self {
+    fn new(tray_menu: TrayMenu) -> Self {
         Self {
             allow_exit: AtomicBool::new(false),
+            tray_menu,
         }
     }
 
@@ -59,8 +67,8 @@ impl ShellState {
 }
 
 pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellState> {
-    let shell = ShellState::new();
-    let menu = build_tray_menu(app)?;
+    let (menu, tray_menu) = build_tray_menu(app)?;
+    let shell = ShellState::new(tray_menu);
     let icon = build_tray_icon("disconnected");
 
     let _tray = TrayIconBuilder::with_id(TRAY_ID)
@@ -112,10 +120,17 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
         "disconnected"
     };
 
-    let menu = build_tray_menu(app)?;
-    let _ = tray.set_menu(Some(menu));
     let _ = tray.set_icon(Some(build_tray_icon(icon_state)));
     let _ = tray.set_tooltip(Some(tray_tooltip(app, &cloud, &devices)));
+    Ok(())
+}
+
+pub fn refresh_tray_menu_labels(app: &AppHandle, language: &str) -> AppResult<()> {
+    let menu = &app.state::<ShellState>().tray_menu;
+    menu.open.set_text(i18n::text(language, TextKey::TrayOpen))?;
+    menu.settings
+        .set_text(i18n::text(language, TextKey::TraySettings))?;
+    menu.quit.set_text(i18n::text(language, TextKey::TrayQuit))?;
     Ok(())
 }
 
@@ -277,7 +292,7 @@ pub fn quit_app(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
+fn build_tray_menu(app: &AppHandle) -> AppResult<(Menu<tauri::Wry>, TrayMenu)> {
     let language = app
         .try_state::<AppState>()
         .and_then(|state| state.database.load_settings().ok().flatten())
@@ -306,7 +321,15 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<Menu<tauri::Wry>> {
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
 
-    Menu::with_items(app, &[&open, &settings, &separator, &quit]).map_err(Into::into)
+    let menu = Menu::with_items(app, &[&open, &settings, &separator, &quit])?;
+    Ok((
+        menu,
+        TrayMenu {
+            open,
+            settings,
+            quit,
+        },
+    ))
 }
 
 fn main_window(app: &AppHandle) -> AppResult<WebviewWindow<tauri::Wry>> {

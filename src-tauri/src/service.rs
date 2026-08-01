@@ -321,6 +321,7 @@ pub fn get_settings(state: &AppState) -> AppResult<AppSettings> {
 }
 
 pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<AppSettings> {
+    let current = load_settings(state)?;
     let normalized = settings.normalize();
 
     if normalized.download_path.is_empty() {
@@ -341,6 +342,9 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
 
     state.database.save_settings(&normalized)?;
     shell::apply_auto_start(normalized.auto_start)?;
+    if current.language != normalized.language {
+        shell::refresh_tray_menu_labels(&state.app, &normalized.language)?;
+    }
 
     if state.database.load_session()?.is_some() {
         state.cloud.restart();
