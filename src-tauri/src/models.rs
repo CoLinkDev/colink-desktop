@@ -382,6 +382,8 @@ pub struct AppUpdateAsset {
     pub name: String,
     pub size: i64,
     pub download_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

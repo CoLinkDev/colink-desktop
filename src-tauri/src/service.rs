@@ -11,6 +11,8 @@ use url::{form_urlencoded, Url};
 use tauri::Emitter;
 #[cfg(target_os = "windows")]
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(target_os = "windows")]
+use sha2::{Digest, Sha256};
 
 use crate::{
     api::{DeviceListResponse, DEVICES_PATH},
@@ -446,8 +448,8 @@ pub async fn install_tauri_update(
         let progress_window = window.clone();
         let installing_window = window.clone();
         let mut downloaded = 0_u64;
-        update
-            .download_and_install(
+        let bytes = update
+            .download(
                 move |chunk_length, content_length| {
                     downloaded = downloaded.saturating_add(chunk_length as u64);
                     if let Some(total) = content_length.filter(|total| *total > 0) {
@@ -460,6 +462,10 @@ pub async fn install_tauri_update(
                 },
             )
             .await
+            .map_err(|error| AppError::message(format!("download updater: {error}")))?;
+        verify_tauri_update_sha256(&update, &bytes)?;
+        update
+            .install(bytes)
             .map_err(|error| AppError::message(format!("install updater: {error}")))?;
 
         app.restart();
@@ -527,6 +533,29 @@ async fn check_tauri_update(
         .check()
         .await
         .map_err(|error| AppError::message(format!("check updater: {error}")))
+}
+
+#[cfg(target_os = "windows")]
+fn verify_tauri_update_sha256(
+    update: &tauri_plugin_updater::Update,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let Some(expected) = update
+        .raw_json
+        .get("sha256")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(AppError::message("update SHA-256 mismatch"))
+    }
 }
 
 pub fn open_update_download_url(url: &str) -> AppResult<()> {

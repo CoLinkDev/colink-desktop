@@ -105,6 +105,7 @@ export interface AppUpdateAsset {
   name: string
   size: number
   downloadUrl: string
+  sha256?: string
 }
 
 export interface LoginPayload {
