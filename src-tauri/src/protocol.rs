@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.11.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.12.1";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
@@ -778,6 +778,15 @@ pub struct SystemControlResultPayload {
     pub muted: Option<Option<bool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playback: Option<Option<String>>,
+    #[serde(rename = "pending-power", skip_serializing_if = "Option::is_none")]
+    pub pending_power: Option<Option<PendingPowerActionPayload>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPowerActionPayload {
+    pub action: String,
+    pub remaining_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1158,8 +1167,9 @@ pub struct SwimGossip {
 mod tests {
     use super::{
         BusinessEnvelope, CameraDataFrame, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
-        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, SystemControlAction,
-        SystemControlCommandPayload, MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
+        MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, PendingPowerActionPayload,
+        SystemControlAction, SystemControlCommandPayload, SystemControlResultPayload,
+        MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
     #[test]
@@ -1211,6 +1221,25 @@ mod tests {
                 delay: None,
                 volume: None,
                 target_mac: None,
+            })
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn serializes_pending_power_query_result() {
+        assert_eq!(
+            serde_json::json!({
+                "pending-power": {"action": "shutdown", "remainingMs": 42_000}
+            }),
+            serde_json::to_value(SystemControlResultPayload {
+                volume: None,
+                muted: None,
+                playback: None,
+                pending_power: Some(Some(PendingPowerActionPayload {
+                    action: "shutdown".to_string(),
+                    remaining_ms: 42_000,
+                })),
             })
             .unwrap(),
         );

@@ -140,6 +140,7 @@ pub fn query_system_control(fields: &[String]) -> io::Result<SystemControlResult
         volume: queries_volume.then_some(audio_state.map(|(volume, _)| volume)),
         muted: queries_muted.then_some(audio_state.map(|(_, muted)| muted)),
         playback: queries_playback.then_some(playback),
+        pending_power: None,
     })
 }
 
@@ -479,6 +480,7 @@ mod tests {
             volume: Some(None),
             muted: Some(Some(true)),
             playback: None,
+            pending_power: None,
         };
 
         assert_eq!(

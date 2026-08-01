@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{
     sync::{mpsc, oneshot, Mutex as AsyncMutex, Notify},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -62,7 +62,8 @@ use crate::{
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
         FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
-        SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, SystemControlAction,
+        SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, PendingPowerActionPayload,
+        SystemControlAction,
         SystemControlCommandPayload, SystemControlErrorPayload, SystemControlQueryPayload,
         TERMINAL_CLOSE_TYPE, TERMINAL_DATA_TYPE, TERMINAL_OPEN_ACK_TYPE, TERMINAL_OPEN_TYPE,
         TERMINAL_RESIZE_TYPE, TerminalClosePayload, TerminalDataPayload, TerminalOpenAckPayload,
@@ -141,6 +142,8 @@ struct PowerActionConnection {
 
 struct PendingPowerAction {
     generation: u64,
+    action: SystemControlAction,
+    deadline: Instant,
     cancel_tx: oneshot::Sender<()>,
 }
 
@@ -420,7 +423,6 @@ impl AppRuntime {
                     self.append_log("info", "cloud", "cloud connection established".to_string());
             }
             RuntimeEvent::CloudDisconnected(reason) => {
-                self.cancel_pending_power_actions_for_route("cloud");
                 warn!(
                     reason = reason.as_deref().unwrap_or("unknown"),
                     "runtime received cloud disconnected"
@@ -463,7 +465,6 @@ impl AppRuntime {
                 if !online {
                     self.inner.terminal.close_for_device(&device_id);
                     self.handle_camera_device_disconnected(&device_id);
-                    self.cancel_pending_power_action(&device_id, "cloud");
                 }
                 let _ = device_presence::update_one(
                     &self.inner.database,
@@ -530,7 +531,6 @@ impl AppRuntime {
                 );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
-                self.cancel_pending_power_action(&device_id, "lan");
                 warn!(%device_id, "runtime received lan disconnected");
                 let _ = self.reconcile_device_routes();
                 let _ = self.append_log(
@@ -703,6 +703,8 @@ impl AppRuntime {
             device_id: device_id.to_string(),
             route: route.to_string(),
         };
+        let delay = Duration::from_secs(delay_seconds);
+        let deadline = Instant::now() + delay;
         let (generation, cancel_rx, replaced_action) = {
             let mut state = self.inner.state.lock_unpoisoned();
             state.next_power_action_generation = state.next_power_action_generation.wrapping_add(1);
@@ -712,6 +714,8 @@ impl AppRuntime {
                 connection.clone(),
                 PendingPowerAction {
                     generation,
+                    action,
+                    deadline,
                     cancel_tx,
                 },
             );
@@ -723,7 +727,7 @@ impl AppRuntime {
         let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(delay_seconds)) => {}
+                _ = tokio::time::sleep_until(deadline) => {}
                 _ = cancel_rx => return,
             }
             if !runtime.take_pending_power_action(&connection, generation) {
@@ -748,25 +752,6 @@ impl AppRuntime {
         }
     }
 
-    fn cancel_pending_power_actions_for_route(&self, route: &str) {
-        let pending_actions = {
-            let mut state = self.inner.state.lock_unpoisoned();
-            let connections = state
-                .pending_power_actions
-                .keys()
-                .filter(|connection| connection.route == route)
-                .cloned()
-                .collect::<Vec<_>>();
-            connections
-                .into_iter()
-                .filter_map(|connection| state.pending_power_actions.remove(&connection))
-                .collect::<Vec<_>>()
-        };
-        for pending_action in pending_actions {
-            let _ = pending_action.cancel_tx.send(());
-        }
-    }
-
     fn take_pending_power_action(
         &self,
         connection: &PowerActionConnection,
@@ -782,6 +767,26 @@ impl AppRuntime {
         }
         state.pending_power_actions.remove(connection);
         true
+    }
+
+    fn pending_power_action(
+        &self,
+        device_id: &str,
+        route: &str,
+    ) -> Option<PendingPowerActionPayload> {
+        let state = self.inner.state.lock_unpoisoned();
+        let pending_action = state.pending_power_actions.get(&PowerActionConnection {
+            device_id: device_id.to_string(),
+            route: route.to_string(),
+        })?;
+        let remaining_ms = pending_action.deadline.saturating_duration_since(Instant::now())
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        Some(PendingPowerActionPayload {
+            action: pending_action.action.as_str().to_string(),
+            remaining_ms,
+        })
     }
 
     fn execute_system_control_command(
@@ -1026,13 +1031,18 @@ impl AppRuntime {
                     .await;
                     return;
                 }
+                let queries_pending_power = payload.fields.iter().any(|field| field == "pending-power");
                 let runtime = self.clone();
                 let from = from.to_string();
+                let route = route.to_string();
                 tauri::async_runtime::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || query_system_control(&payload.fields))
                         .await;
                     match result {
-                        Ok(Ok(payload)) => {
+                        Ok(Ok(mut payload)) => {
+                            if queries_pending_power {
+                                payload.pending_power = Some(runtime.pending_power_action(&from, &route));
+                            }
                             runtime
                                 .send_system_control_query_result(&from, &request_id, payload)
                                 .await;
