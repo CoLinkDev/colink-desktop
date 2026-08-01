@@ -184,6 +184,17 @@ pub async fn list_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
+pub async fn refresh_devices(state: &AppState) -> AppResult<Vec<DeviceInfo>> {
+    let (lan_result, devices_result) = tokio::join!(
+        state.runtime.refresh_lan_for_device_list(),
+        list_devices(state),
+    );
+    if let Err(error) = lan_result {
+        warn!(%error, "failed to refresh lan devices");
+    }
+    devices_result
+}
+
 pub async fn update_device_name(
     state: &AppState,
     payload: DeviceNameUpdatePayload,

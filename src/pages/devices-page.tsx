@@ -30,7 +30,6 @@ export function DevicesPage() {
   const {
     devices,
     device,
-    cloud,
     rotateDeviceKey,
     refreshDevices,
     setHeaderActions,
@@ -92,7 +91,7 @@ export function DevicesPage() {
         <button
           aria-label={t('common.refresh')}
           className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
-          disabled={!cloud.connected || refreshing}
+          disabled={refreshing}
           onClick={handleRefreshDevices}
           title={t('common.refresh')}
           type="button"
@@ -129,7 +128,7 @@ export function DevicesPage() {
     )
 
     return () => setHeaderActions(null)
-  }, [cloud.connected, handleRefreshDevices, refreshing, setHeaderActions, t, viewMode])
+  }, [handleRefreshDevices, refreshing, setHeaderActions, t, viewMode])
 
   function handleInitiateRotate(deviceId: string) {
     setRotateConfirmId(deviceId)

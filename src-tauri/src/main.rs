@@ -28,6 +28,7 @@ use commands::{
     delete_device, forget_lan_trust, get_castboard_status, get_music_providers, get_saved_login,
     get_settings, handle_castboard_window_event, list_available_music_providers,
     create_pair_string, list_castboard_monitors, list_devices, list_lan_pairing_candidates, list_logs,
+    refresh_devices,
     list_remote_filesystem, list_remote_filesystem_downloads, list_remote_filesystem_roots, login, logout,
     install_tauri_update, open_castboard_on_monitor, open_received_file, open_update_download,
     pending_file_offers,
@@ -46,11 +47,12 @@ use tauri::{Manager, WindowEvent};
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = shell::show_main_window(app, None);
-        }));
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        let _ = shell::show_main_window(app, None);
+    }));
 
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -101,6 +103,7 @@ fn main() {
             clear_saved_login,
             list_logs,
             list_devices,
+            refresh_devices,
             update_device_name,
             delete_device,
             forget_lan_trust,

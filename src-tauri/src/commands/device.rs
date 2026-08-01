@@ -17,6 +17,13 @@ pub async fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>,
 }
 
 #[tauri::command]
+pub async fn refresh_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
+    service::refresh_devices(state.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn update_device_name(
     state: State<'_, AppState>,
     payload: DeviceNameUpdatePayload,

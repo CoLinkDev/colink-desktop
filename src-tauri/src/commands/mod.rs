@@ -21,6 +21,7 @@ pub use castboard::{
 };
 pub use device::{
     create_pair_string, delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,
+    refresh_devices,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,
 };
 pub use logs::list_logs;

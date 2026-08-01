@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
     time::{interval, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
@@ -127,14 +127,16 @@ pub struct LanManager {
     database: Database,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     inner: Arc<Mutex<LanState>>,
+    swim_probe_lock: Arc<AsyncMutex<()>>,
 }
 
 struct LanState {
     generation: u64,
     active_device: Option<DeviceIdentity>,
     cancel: Option<watch::Sender<bool>>,
-    discovery_refresh_tx: Option<mpsc::UnboundedSender<String>>,
+    discovery_refresh_tx: Option<mpsc::UnboundedSender<DiscoveryRefreshRequest>>,
     discovery_refresh_at: HashMap<String, i64>,
+    high_priority_probe: bool,
     peers: HashMap<String, PeerEntry>,
     peer_endpoints: HashMap<String, (String, u16)>,
     peer_names: HashMap<String, String>,
@@ -294,6 +296,11 @@ struct PairStringPayload {
     platform: Option<String>,
 }
 
+struct DiscoveryRefreshRequest {
+    label: String,
+    completion: Option<oneshot::Sender<()>>,
+}
+
 #[derive(Debug, Clone)]
 struct ParsedPairString {
     version: PairStringVersion,
@@ -380,6 +387,7 @@ impl LanManager {
                 cancel: None,
                 discovery_refresh_tx: None,
                 discovery_refresh_at: HashMap::new(),
+                high_priority_probe: false,
                 peers: HashMap::new(),
                 peer_endpoints: HashMap::new(),
                 peer_names: HashMap::new(),
@@ -400,6 +408,7 @@ impl LanManager {
                 pairing_candidates: HashMap::new(),
                 pair_strings: HashMap::new(),
             })),
+            swim_probe_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -438,6 +447,7 @@ impl LanManager {
             inner.cancel = Some(cancel_tx);
             inner.discovery_refresh_tx = None;
             inner.discovery_refresh_at.clear();
+            inner.high_priority_probe = false;
             inner.peers.clear();
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
@@ -484,6 +494,7 @@ impl LanManager {
             inner.active_device = None;
             inner.discovery_refresh_tx = None;
             inner.discovery_refresh_at.clear();
+            inner.high_priority_probe = false;
             inner.peer_endpoints.clear();
             inner.peer_names.clear();
             inner.peer_types.clear();
@@ -576,6 +587,76 @@ impl LanManager {
         self.is_swim_alive(device_id)
             && self.is_lan_authorized(device_id)
             && self.peer_endpoint(device_id).is_some()
+    }
+
+    async fn refresh_discovery(&self) {
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let refresh_tx = self.inner.lock_unpoisoned().discovery_refresh_tx.clone();
+        let Some(refresh_tx) = refresh_tx else {
+            return;
+        };
+        if refresh_tx
+            .send(DiscoveryRefreshRequest {
+                label: "manual".to_string(),
+                completion: Some(completion_tx),
+            })
+            .is_err()
+        {
+            return;
+        }
+        let _ = completion_rx.await;
+    }
+
+    pub async fn refresh_for_device_list(&self) -> AppResult<()> {
+        let ((), swim_result) = tokio::join!(
+            self.refresh_discovery(),
+            self.refresh_swim_for_device_list(),
+        );
+        swim_result
+    }
+
+    async fn refresh_swim_for_device_list(&self) -> AppResult<()> {
+        let _probe_guard = self.swim_probe_lock.lock().await;
+        let context = match self.load_context() {
+            Ok(context) => context,
+            Err(error) => {
+                debug!(%error, "lan refresh skipped because the lan context is unavailable");
+                return Ok(());
+            }
+        };
+        let generation = self.current_generation();
+        let targets = {
+            let mut inner = self.inner.lock_unpoisoned();
+            inner.high_priority_probe = true;
+            inner
+                .members
+                .iter()
+                .filter(|(device_id, member)| {
+                    device_id.as_str() != context.device.device_id
+                        && matches!(member.state, MemberState::Alive | MemberState::Suspect)
+                        && inner.peer_endpoints.contains_key(*device_id)
+                })
+                .map(|(device_id, _)| device_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let mut probes = FuturesUnordered::new();
+        for target in targets {
+            let manager = self.clone();
+            let context = context.clone();
+            probes.push(async move {
+                manager
+                    .probe_member(generation, context, target)
+                    .await;
+            });
+        }
+        while probes.next().await.is_some() {}
+
+        let mut inner = self.inner.lock_unpoisoned();
+        if inner.generation == generation {
+            inner.high_priority_probe = false;
+        }
+        Ok(())
     }
 
     pub fn peer_business_version(&self, device_id: &str) -> Option<String> {
@@ -1043,18 +1124,25 @@ impl LanManager {
                         self.handle_service_resolved(generation, context.clone(), *service);
                     }
                 }
-                device_id = discovery_refresh_rx.recv() => {
-                    let Some(device_id) = device_id else {
+                request = discovery_refresh_rx.recv() => {
+                    let Some(request) = request else {
                         continue;
                     };
-                    debug!(%device_id, "refreshing mdns browse after swim source change");
+                    debug!(label = %request.label, "refreshing mdns browse");
+                    let completion = request.completion;
                     if let Err(error) = mdns.stop_browse(SERVICE_TYPE) {
                         warn!(%error, "mdns browse refresh stop failed");
+                        if let Some(completion) = completion {
+                            let _ = completion.send(());
+                        }
                         continue;
                     }
                     match mdns.browse(SERVICE_TYPE) {
                         Ok(next_browse_rx) => browse_rx = next_browse_rx,
                         Err(error) => warn!(%error, "mdns browse refresh start failed"),
+                    }
+                    if let Some(completion) = completion {
+                        let _ = completion.send(());
                     }
                 }
                 _ = swim_interval.tick() => {
@@ -1172,6 +1260,9 @@ impl LanManager {
 
         let port = service.get_port();
         debug!(device_id = %device_id, %ip, port = port, "resolved mdns peer");
+        let endpoint_changed = self.peer_endpoint(&device_id)
+            != Some((ip.to_string(), port));
+        let should_probe = endpoint_changed || !self.is_swim_alive(&device_id);
         self.remember_peer_endpoint(&device_id, ip, port);
         if let Some(name) = name {
             self.remember_peer_name(&device_id, name);
@@ -1185,6 +1276,10 @@ impl LanManager {
             port,
             source: "mdns".to_string(),
         });
+
+        if !should_probe {
+            return;
+        }
 
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -2017,12 +2112,13 @@ impl LanManager {
     }
 
     fn schedule_probe_next_member(&self, generation: u64, context: LanContext) {
-        let targets = self.next_probe_targets(&context.device.device_id);
-        if targets.is_empty() {
-            return;
-        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
+            let _probe_guard = manager.swim_probe_lock.lock().await;
+            let targets = manager.next_probe_targets(&context.device.device_id);
+            if targets.is_empty() {
+                return;
+            }
             for target in targets {
                 manager
                     .probe_member(generation, context.clone(), target.clone())
@@ -2089,6 +2185,9 @@ impl LanManager {
 
     fn next_probe_targets(&self, local_device_id: &str) -> Vec<String> {
         let mut inner = self.inner.lock_unpoisoned();
+        if inner.high_priority_probe {
+            return Vec::new();
+        }
         if !inner.probe_in_flight.is_empty() {
             return Vec::new();
         }
@@ -2762,7 +2861,10 @@ impl LanManager {
             inner.discovery_refresh_tx.clone()
         };
         if let Some(refresh_tx) = refresh_tx {
-            let _ = refresh_tx.send(device_id.to_string());
+            let _ = refresh_tx.send(DiscoveryRefreshRequest {
+                label: device_id.to_string(),
+                completion: None,
+            });
         }
     }
 
@@ -2942,6 +3044,7 @@ impl LanManager {
         inner.active_device = None;
         inner.cancel = None;
         inner.discovery_refresh_tx = None;
+        inner.high_priority_probe = false;
     }
 
     fn user_text(&self, key: TextKey) -> String {

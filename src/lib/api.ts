@@ -68,6 +68,10 @@ export function listDevices() {
   return invoke<DeviceInfo[]>('list_devices')
 }
 
+export function refreshDevices() {
+  return invoke<DeviceInfo[]>('refresh_devices')
+}
+
 export function updateDeviceName(deviceId: string, name: string) {
   return invoke<DeviceInfo[]>('update_device_name', {
     payload: {

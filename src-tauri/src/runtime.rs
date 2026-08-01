@@ -1442,6 +1442,12 @@ impl AppRuntime {
         Ok(devices)
     }
 
+    pub async fn refresh_lan_for_device_list(&self) -> AppResult<()> {
+        self.inner.lan.refresh_for_device_list().await?;
+        self.reconcile_device_routes()?;
+        Ok(())
+    }
+
     pub(super) fn current_language(&self) -> String {
         self.inner
             .database

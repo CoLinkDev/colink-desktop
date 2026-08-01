@@ -18,7 +18,7 @@ import {
   clearTransfers as clearTransfersRequest,
   deleteDevice as deleteDeviceRequest,
   getSettings,
-  listDevices,
+  refreshDevices as refreshDevicesRequest,
   login as loginRequest,
   logout as logoutRequest,
   pickDownloadDirectory as pickDownloadDirectoryRequest,
@@ -360,7 +360,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   }, [refreshBootstrap])
 
   const refreshDevices = useCallback(async () => {
-    const nextDevices = await listDevices()
+    const nextDevices = await refreshDevicesRequest()
     setDevices(nextDevices)
   }, [])
 
