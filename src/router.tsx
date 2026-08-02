@@ -9,7 +9,6 @@ import { MessagesPage } from './pages/messages-page'
 import { TransfersPage } from './pages/transfers-page'
 import { SettingsPage } from './pages/settings-page'
 import { ClipboardPage } from './pages/clipboard-page'
-import { LogsPage } from './pages/logs-page'
 import { CastBoardPage } from './pages/castboard-page'
 import { FilesPage } from './pages/files-page'
 import { TerminalPage } from './pages/terminal-page'
@@ -20,7 +19,7 @@ function RootRedirect() {
   const { t } = useTranslation()
 
   if (status === 'booting') {
-    return <LoadingScreen label={t('logs.loadingState')} />
+    return <LoadingScreen label={t('common.loading')} />
   }
 
   return <Navigate replace to="/devices" />
@@ -31,7 +30,7 @@ function ProtectedShell() {
   const { t } = useTranslation()
 
   if (status === 'booting') {
-    return <LoadingScreen label={t('logs.preparingState')} />
+    return <LoadingScreen label={t('common.loading')} />
   }
 
   return (
@@ -65,10 +64,6 @@ export const router = createHashRouter([
       {
         path: '/files',
         element: <FilesPage />,
-      },
-      {
-        path: '/logs',
-        element: <LogsPage />,
       },
       {
         path: '/settings',

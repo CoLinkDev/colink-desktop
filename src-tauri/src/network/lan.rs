@@ -1045,11 +1045,6 @@ impl LanManager {
             Ok(value) => value,
             Err(error) => {
                 warn!(preferred_port = LAN_PORT, %error, "lan listener bind failed");
-                let _ = self.event_tx.send(RuntimeEvent::Log {
-                    level: "warn".to_string(),
-                    source: "lan".to_string(),
-                    message: "local LAN listener could not bind an available port".to_string(),
-                });
                 self.finalize_generation(generation);
                 return;
             }
@@ -1058,11 +1053,6 @@ impl LanManager {
 
         let Ok(mdns) = ServiceDaemon::new() else {
             warn!("mdns daemon initialization failed");
-            let _ = self.event_tx.send(RuntimeEvent::Log {
-                level: "warn".to_string(),
-                source: "lan".to_string(),
-                message: "mDNS service initialization failed".to_string(),
-            });
             self.finalize_generation(generation);
             return;
         };
@@ -1072,11 +1062,6 @@ impl LanManager {
             Ok(receiver) => receiver,
             Err(error) => {
                 warn!(%error, "mdns browse failed");
-                let _ = self.event_tx.send(RuntimeEvent::Log {
-                    level: "warn".to_string(),
-                    source: "lan".to_string(),
-                    message: format!("mDNS browse failed to start: {error}"),
-                });
                 self.finalize_generation(generation);
                 return;
             }
@@ -1093,11 +1078,6 @@ impl LanManager {
             Ok(receiver) => Some(receiver),
             Err(error) => {
                 warn!(%error, "mdns monitor failed to start");
-                let _ = self.event_tx.send(RuntimeEvent::Log {
-                    level: "warn".to_string(),
-                    source: "lan".to_string(),
-                    message: format!("mDNS monitor failed to start: {error}"),
-                });
                 None
             }
         };
@@ -1175,11 +1155,6 @@ impl LanManager {
                             }
                             DaemonEvent::Error(error) => {
                                 warn!(%error, "mdns daemon error");
-                                let _ = self.event_tx.send(RuntimeEvent::Log {
-                                    level: "warn".to_string(),
-                                    source: "lan".to_string(),
-                                    message: format!("mDNS daemon error: {error}"),
-                                });
                             }
                             DaemonEvent::NameChange(change) => {
                                 warn!(
@@ -1188,14 +1163,6 @@ impl LanManager {
                                     interface = %change.intf_name,
                                     "mdns name conflict resolved"
                                 );
-                                let _ = self.event_tx.send(RuntimeEvent::Log {
-                                    level: "warn".to_string(),
-                                    source: "lan".to_string(),
-                                    message: format!(
-                                        "mDNS name conflict on {}: {} -> {}",
-                                        change.intf_name, change.original, change.new_name
-                                    ),
-                                });
                             }
                             _ => {}
                         }
@@ -1258,11 +1225,6 @@ impl LanManager {
             Ok(()) => info!(port, device_id = %context.device.device_id, "mdns service registration requested"),
             Err(error) => {
                 warn!(port, device_id = %context.device.device_id, %error, "mdns service registration failed");
-                let _ = self.event_tx.send(RuntimeEvent::Log {
-                    level: "warn".to_string(),
-                    source: "lan".to_string(),
-                    message: format!("mDNS service registration failed on port {port}: {error}"),
-                });
             }
         }
     }

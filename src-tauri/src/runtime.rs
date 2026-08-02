@@ -44,7 +44,7 @@ use crate::{
     error::{AppError, AppResult},
     i18n::{self, TextKey},
     models::{
-        unix_now_millis, AppLogEntry, DeviceInfo, FileTransferRecord, LanPairingCandidate,
+        unix_now_millis, DeviceInfo, FileTransferRecord, LanPairingCandidate,
         LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
         RemoteFilesystemDownload, MAX_TEXT_LENGTH,
     },
@@ -84,7 +84,6 @@ pub const MESSAGES_UPDATED_EVENT: &str = "messages-updated";
 pub const TRANSFERS_UPDATED_EVENT: &str = "transfers-updated";
 pub const TRANSFER_PROGRESS_EVENT: &str = "transfer-progress";
 pub const TRANSFER_PREPARING_EVENT: &str = "transfer-preparing";
-pub const LOGS_UPDATED_EVENT: &str = "logs-updated";
 pub const LAN_PAIRING_REQUESTED_EVENT: &str = "lan-pairing-requested";
 pub const LAN_PAIRING_COMPLETED_EVENT: &str = "lan-pairing-completed";
 pub const LAN_PAIRING_FAILED_EVENT: &str = "lan-pairing-failed";
@@ -196,13 +195,8 @@ impl AppRuntime {
             event_tx.clone(),
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
-        let music = MusicService::new(
-            app.clone(),
-            database.clone(),
-            transport.clone(),
-            event_tx.clone(),
-        );
-        let sysinfo = SysInfoService::new(app.clone(), transport.clone(), event_tx.clone());
+        let music = MusicService::new(app.clone(), database.clone(), transport.clone());
+        let sysinfo = SysInfoService::new(app.clone(), transport.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
@@ -323,11 +317,7 @@ impl AppRuntime {
         };
         self.inner.database.save_message(&record)?;
         self.emit_messages()?;
-        self.append_log(
-            "info",
-            "message",
-            format!("sent text message to {}", payload.device_id),
-        )?;
+        info!(device_id = %payload.device_id, "text message sent");
         Ok(record)
     }
 
@@ -414,23 +404,15 @@ impl AppRuntime {
         match event {
             RuntimeEvent::AuthInvalidated(message) => {
                 warn!(%message, "runtime received auth invalidation");
-                let _ = self.append_log("warn", "auth", message);
             }
             RuntimeEvent::CloudConnected => {
                 info!("runtime received cloud connected");
                 let _ = self.activate();
-                let _ =
-                    self.append_log("info", "cloud", "cloud connection established".to_string());
             }
             RuntimeEvent::CloudDisconnected(reason) => {
                 warn!(
                     reason = reason.as_deref().unwrap_or("unknown"),
                     "runtime received cloud disconnected"
-                );
-                let _ = self.append_log(
-                    "warn",
-                    "cloud",
-                    reason.unwrap_or_else(|| "cloud connection disconnected".to_string()),
                 );
             }
             RuntimeEvent::CloudUnavailable => {
@@ -476,26 +458,6 @@ impl AppRuntime {
                     online,
                     payload.clone(),
                 );
-                let device_name = self
-                    .inner
-                    .database
-                    .load_cached_devices()
-                    .ok()
-                    .and_then(|items| {
-                        items
-                            .into_iter()
-                            .find(|item| item.device_id == device_id)
-                            .map(|item| item.name)
-                    })
-                    .or_else(|| payload.map(|item| item.name))
-                    .unwrap_or(device_id);
-
-                let body = if online {
-                    format!("{device_name} is online")
-                } else {
-                    format!("{device_name} is offline")
-                };
-                let _ = self.append_log("info", "device", body);
             }
             RuntimeEvent::DevicesSnapshot(devices) => {
                 debug!(count = devices.len(), "runtime received devices snapshot");
@@ -511,36 +473,15 @@ impl AppRuntime {
                 port,
                 source,
             } => {
-                debug!(%device_id, %ip, port = port, %source, "runtime received lan discovery");
-                let _ = self.append_log(
-                    "info",
-                    "lan",
-                    format!("discovered LAN device {device_id} @ {ip}:{port} ({source})"),
-                );
+                info!(%device_id, %ip, port = port, %source, "LAN device discovered");
             }
             RuntimeEvent::LanConnected { device_id } => {
                 info!(%device_id, "runtime received lan connected");
                 let _ = self.reconcile_device_routes();
-                let _ = self.append_log(
-                    "info",
-                    "lan",
-                    format!(
-                        "LAN direct connection established: {}",
-                        self.lookup_device_name(&device_id)
-                    ),
-                );
             }
             RuntimeEvent::LanDisconnected { device_id } => {
                 warn!(%device_id, "runtime received lan disconnected");
                 let _ = self.reconcile_device_routes();
-                let _ = self.append_log(
-                    "warn",
-                    "lan",
-                    format!(
-                        "LAN connection disconnected: {}",
-                        self.lookup_device_name(&device_id)
-                    ),
-                );
             }
             RuntimeEvent::LanDeviceReachable { device_id } => {
                 debug!(%device_id, "runtime received lan device reachable");
@@ -563,11 +504,6 @@ impl AppRuntime {
                         "deviceId": device_id,
                         "name": name,
                     }),
-                );
-                let _ = self.append_log(
-                    "warn",
-                    "lan",
-                    "LAN device key changed; LAN trust was revoked".to_string(),
                 );
             }
             RuntimeEvent::LanSendFailed {
@@ -681,14 +617,6 @@ impl AppRuntime {
                     .app
                     .emit(LAN_PAIRING_CANDIDATES_UPDATED_EVENT, candidates);
             }
-            RuntimeEvent::Log {
-                level,
-                source,
-                message,
-            } => {
-                debug!(%level, %source, "runtime received app log event");
-                let _ = self.append_log(&level, &source, message);
-            }
         }
     }
 
@@ -796,7 +724,6 @@ impl AppRuntime {
         volume: Option<i32>,
         target_mac: Option<String>,
     ) {
-        let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 execute_system_control(action, volume, target_mac.as_deref())
@@ -804,11 +731,7 @@ impl AppRuntime {
             .await;
             match result {
                 Ok(Ok(SystemControlExecution::Executed)) => {
-                    let _ = runtime.append_log(
-                        "info",
-                        "system-control",
-                        format!("executed {} command from {from}", action.as_str()),
-                    );
+                    info!(%from, action = action.as_str(), "system control command executed");
                 }
                 Ok(Ok(SystemControlExecution::Ignored)) => {}
                 Ok(Err(error)) => {
@@ -842,21 +765,16 @@ impl AppRuntime {
                     };
                     let _ = self.inner.database.save_message(&record);
                     let _ = self.emit_messages();
-                    let sender_name = self.lookup_device_name(from);
                     let _ = self.notify(
                         TextKey::MessageFromTitle,
-                        &[("name", sender_name.clone())],
+                        &[("name", self.lookup_device_name(from))],
                         &payload.text,
                     );
                     let _ = crate::shell::show_main_window(
                         &self.inner.app,
                         Some(&self.device_route("/messages", from)),
                     );
-                    let _ = self.append_log(
-                        "info",
-                        "message",
-                        format!("received text message from {sender_name}"),
-                    );
+                    info!(%from, %route, "text message received");
                 }
             }
             FILE_OFFER_TYPE => {
@@ -1256,7 +1174,7 @@ impl AppRuntime {
 
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
         self.inner.transport.broadcast_cloud(envelope, None)?;
-        self.append_log("info", "clipboard", "synced local clipboard".to_string())?;
+        debug!(content_type = %payload.content_type, "local clipboard synced");
         Ok(())
     }
 
@@ -1288,11 +1206,7 @@ impl AppRuntime {
         }
 
         self.inner.state.lock_unpoisoned().clipboard_suppressed_hash = Some(hash);
-        self.append_log(
-            "info",
-            "clipboard",
-            format!("applied clipboard from {}", self.lookup_device_name(from)),
-        )?;
+        debug!(%from, content_type = %payload.content_type, "remote clipboard applied");
         Ok(())
     }
 
@@ -1367,18 +1281,6 @@ impl AppRuntime {
         format!("{path}?{query}")
     }
 
-    fn append_log(&self, level: &str, source: &str, message: String) -> AppResult<()> {
-        let entry = AppLogEntry {
-            id: Uuid::new_v4().to_string(),
-            level: level.to_string(),
-            source: source.to_string(),
-            message,
-            created_at: unix_now_millis(),
-        };
-        self.inner.database.append_log(&entry)?;
-        self.emit_logs()
-    }
-
     fn emit_messages(&self) -> AppResult<()> {
         let messages = self.inner.database.load_messages(200)?;
         let _ = self.inner.app.emit(MESSAGES_UPDATED_EVENT, messages);
@@ -1388,12 +1290,6 @@ impl AppRuntime {
     fn emit_transfers(&self) -> AppResult<()> {
         let transfers = self.inner.database.load_transfers(200)?;
         let _ = self.inner.app.emit(TRANSFERS_UPDATED_EVENT, transfers);
-        Ok(())
-    }
-
-    fn emit_logs(&self) -> AppResult<()> {
-        let logs = self.inner.database.load_logs(200)?;
-        let _ = self.inner.app.emit(LOGS_UPDATED_EVENT, logs);
         Ok(())
     }
 

@@ -3,7 +3,6 @@ mod auth;
 mod castboard;
 mod device;
 mod filesystem;
-mod logs;
 mod message;
 mod music;
 mod settings;
@@ -24,7 +23,6 @@ pub use device::{
     refresh_devices,
     respond_lan_pairing, rotate_device_key, start_lan_pairing, update_device_name,
 };
-pub use logs::list_logs;
 pub use message::{
     cancel_transfer, clear_transfers, open_received_file, pending_file_offers, pick_files,
     respond_file_offer, reveal_received_file, send_files, send_text,

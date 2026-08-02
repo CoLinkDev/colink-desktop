@@ -114,7 +114,6 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         cloud: state.cloud.snapshot(),
         messages: state.database.load_messages(200)?,
         transfers: state.database.load_transfers(200)?,
-        logs: state.database.load_logs(200)?,
     })
 }
 
@@ -633,7 +632,6 @@ async fn save_session_and_bootstrap(
         cloud: state.cloud.snapshot(),
         messages: state.database.load_messages(200)?,
         transfers: state.database.load_transfers(200)?,
-        logs: state.database.load_logs(200)?,
     })
 }
 

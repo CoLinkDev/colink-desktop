@@ -8,7 +8,6 @@ import type {
   BootstrapPayload,
   DeviceInfo,
   LanPairingCandidate,
-  LogPageResult,
   LoginPayload,
   MusicProviderConfig,
   MusicProviderMeta,
@@ -53,15 +52,6 @@ export function saveSavedLogin(payload: SavedLoginCredentials) {
 
 export function clearSavedLogin() {
   return invoke<void>('clear_saved_login')
-}
-
-export function listLogs(page: number, pageSize: number) {
-  return invoke<LogPageResult>('list_logs', {
-    payload: {
-      page,
-      pageSize,
-    },
-  })
 }
 
 export function listDevices() {

@@ -11,7 +11,7 @@ use tokio::{
     sync::oneshot,
     time::{sleep, timeout},
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -137,11 +137,7 @@ impl AppRuntime {
             sleep(FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT).await;
             runtime.expire_remote_filesystem_download(&request_id);
         });
-        let _ = self.append_log(
-            "info",
-            "filesystem",
-            format!("requested remote file download from {device_id}"),
-        );
+        info!(%device_id, request_id = %download.request_id, "remote filesystem download requested");
         Ok(download)
     }
 
@@ -233,11 +229,7 @@ impl AppRuntime {
                     {
                         Ok(_) => {
                             let _ = self.emit_transfers();
-                            let _ = self.append_log(
-                                "info",
-                                "filesystem",
-                                format!("sent file offer for {}", path.display()),
-                            );
+                            info!(%from, request_id = %request_id, "remote filesystem file offer sent");
                         }
                         Err(error) => {
                             warn!(%from, %error, path = %path.display(), "filesystem download offer failed");

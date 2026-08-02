@@ -31,7 +31,6 @@ import {
   updateSettings as updateSettingsRequest,
 } from '../lib/api'
 import {
-  type AppLogEntry,
   defaultCloudStatus,
   defaultSettings,
   type AppSettings,
@@ -62,7 +61,6 @@ interface AppStateValue {
   messages: TextMessageRecord[]
   transfers: FileTransferRecord[]
   transferSpeeds: Record<string, number>
-  logs: AppLogEntry[]
   theme: 'light' | 'dark' | 'auto'
   setTheme: (theme: 'light' | 'dark' | 'auto') => void
   refreshBootstrap: () => Promise<void>
@@ -149,7 +147,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [messages, setMessages] = useState<TextMessageRecord[]>([])
   const [transfers, setTransfers] = useState<FileTransferRecord[]>([])
   const [transferSpeeds, setTransferSpeeds] = useState<Record<string, number>>({})
-  const [logs, setLogs] = useState<AppLogEntry[]>([])
 
   const [theme, setThemeState] = useState<'light' | 'dark' | 'auto'>(() => {
     const saved = localStorage.getItem('colink-theme')
@@ -218,7 +215,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setMessages(payload.messages)
     setTransfers(payload.transfers)
     setTransferSpeeds({})
-    setLogs(payload.logs)
   }, [])
 
   const refreshBootstrap = useCallback(async () => {
@@ -264,7 +260,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     let unlistenMessages: (() => void) | null = null
     let unlistenTransfers: (() => void) | null = null
     let unlistenTransferProgress: (() => void) | null = null
-    let unlistenLogs: (() => void) | null = null
 
     void (async () => {
       try {
@@ -312,11 +307,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
           }
         })
 
-        unlistenLogs = await listen<AppLogEntry[]>('logs-updated', (event) => {
-          if (!disposed) {
-            setLogs(event.payload)
-          }
-        })
       } catch {
         // Ignore browser-mode event failures. The desktop runtime provides these events.
       }
@@ -330,7 +320,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       unlistenMessages?.()
       unlistenTransfers?.()
       unlistenTransferProgress?.()
-      unlistenLogs?.()
     }
   }, [refreshBootstrap])
 
@@ -425,7 +414,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       messages,
       transfers,
       transferSpeeds,
-      logs,
       theme,
       setTheme,
       refreshBootstrap,
@@ -461,7 +449,6 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       messages,
       transfers,
       transferSpeeds,
-      logs,
       theme,
       setTheme,
       refreshBootstrap,

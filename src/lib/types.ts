@@ -90,7 +90,6 @@ export interface BootstrapPayload {
   cloud: CloudStatus
   messages: TextMessageRecord[]
   transfers: FileTransferRecord[]
-  logs: AppLogEntry[]
 }
 
 export interface AppUpdateRelease {
@@ -166,19 +165,6 @@ export interface TransferProgressPayload {
 
 export interface TransferPreparingPayload {
   current: number
-  total: number
-}
-
-export interface AppLogEntry {
-  id: string
-  level: string
-  source: string
-  message: string
-  createdAt: number
-}
-
-export interface LogPageResult {
-  logs: AppLogEntry[]
   total: number
 }
 

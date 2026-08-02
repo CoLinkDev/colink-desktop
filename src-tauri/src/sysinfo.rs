@@ -5,7 +5,7 @@ use std::{
 };
 
 use tokio::{
-    sync::{mpsc, watch},
+    sync::watch,
     time::Instant,
 };
 use tauri::{AppHandle, Manager};
@@ -14,7 +14,6 @@ use tracing::{info, warn};
 use crate::{
     network::transport::TransportManager,
     protocol::{BusinessEnvelope, SysInfoStatsPayload, SYSINFO_STATS_TYPE},
-    runtime_events::RuntimeEvent,
     sync::MutexExt,
 };
 
@@ -26,7 +25,6 @@ const ERROR_SUCCESS: u32 = 0;
 pub struct SysInfoService {
     app: AppHandle,
     transport: TransportManager,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Arc<Mutex<SysInfoState>>,
 }
 
@@ -45,12 +43,10 @@ impl SysInfoService {
     pub fn new(
         app: AppHandle,
         transport: TransportManager,
-        event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) -> Self {
         Self {
             app,
             transport,
-            event_tx,
             state: Arc::new(Mutex::new(SysInfoState {
                 running: false,
                 cancel: None,
@@ -228,11 +224,7 @@ impl SysInfoService {
     }
 
     fn log_info(&self, message: impl Into<String>) {
-        let _ = self.event_tx.send(RuntimeEvent::Log {
-            level: "info".to_string(),
-            source: "sysinfo".to_string(),
-            message: message.into(),
-        });
+        info!(message = %message.into(), "sysinfo sync event");
     }
 
     fn dispatch_to_local(&self, snapshot: &SysInfoStatsPayload) {

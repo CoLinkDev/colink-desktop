@@ -25,7 +25,6 @@ use crate::{
         BusinessEnvelope, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
         MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     },
-    runtime_events::RuntimeEvent,
     store::db::Database,
     sync::MutexExt,
 };
@@ -42,7 +41,6 @@ const FAR_PROGRESS_PUBLISH_INTERVAL: Duration = Duration::from_secs(2);
 pub struct MusicService {
     app: AppHandle,
     database: Database,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     send_tx: mpsc::UnboundedSender<MusicSendJob>,
     config_tx: watch::Sender<()>,
     state: Arc<Mutex<MusicState>>,
@@ -154,16 +152,14 @@ impl MusicService {
         app: AppHandle,
         database: Database,
         transport: TransportManager,
-        event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) -> Self {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         let (config_tx, _) = watch::channel(());
-        spawn_music_sender(transport.clone(), event_tx.clone(), send_rx);
+        spawn_music_sender(transport.clone(), send_rx);
 
         Self {
             app,
             database,
-            event_tx,
             send_tx,
             config_tx,
             state: Arc::new(Mutex::new(MusicState {
@@ -719,19 +715,11 @@ impl MusicService {
     }
 
     fn log_info(&self, message: impl Into<String>) {
-        let _ = self.event_tx.send(RuntimeEvent::Log {
-            level: "info".to_string(),
-            source: "music".to_string(),
-            message: message.into(),
-        });
+        info!(message = %message.into(), "music sync event");
     }
 
     fn log_warn(&self, message: impl Into<String>) {
-        let _ = self.event_tx.send(RuntimeEvent::Log {
-            level: "warn".to_string(),
-            source: "music".to_string(),
-            message: message.into(),
-        });
+        warn!(message = %message.into(), "music sync event");
     }
 
     fn dispatch_snapshot_to_local(&self, window_label: &str, snapshot: &MusicSnapshot) {
@@ -928,7 +916,6 @@ fn spawn_lyric_fetch(
 
 fn spawn_music_sender(
     transport: TransportManager,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     mut send_rx: mpsc::UnboundedReceiver<MusicSendJob>,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -937,28 +924,14 @@ fn spawn_music_sender(
                 .send(&job.device_id, job.envelope, None, job.correlation_id)
                 .await
             {
-                emit_music_log(
-                    &event_tx,
-                    "warn",
-                    format!(
-                        "failed to send music {} to {}: {}",
-                        job.label, job.device_id, error
-                    ),
+                warn!(
+                    label = %job.label,
+                    device_id = %job.device_id,
+                    %error,
+                    "music send failed"
                 );
             }
         }
-    });
-}
-
-fn emit_music_log(
-    event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
-    level: &str,
-    message: impl Into<String>,
-) {
-    let _ = event_tx.send(RuntimeEvent::Log {
-        level: level.to_string(),
-        source: "music".to_string(),
-        message: message.into(),
     });
 }
 

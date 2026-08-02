@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use crate::{
     error::{AppError, AppResult},
     models::{
-        unix_now, unix_now_millis, AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo,
+        unix_now, unix_now_millis, AppSettings, DeviceIdentity, DeviceInfo,
         FileTransferRecord, MusicProviderConfig, SessionRecord, TextMessageRecord,
         TrustedPeerKeyRecord,
     },
@@ -19,7 +19,6 @@ const SESSION_KEY: &str = "session";
 const DEVICE_IDENTITY_KEY: &str = "device_identity";
 const DEVICE_CACHE_KEY: &str = "device_cache";
 const LAN_TRUST_KEY: &str = "lan_trust";
-const MAX_LOG_ENTRIES: i64 = 1000;
 
 type MigrationFn = fn(&Transaction<'_>) -> AppResult<()>;
 
@@ -115,6 +114,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_auto_accept_file_offers_setting",
         run: migrate_17_add_auto_accept_file_offers_setting,
     },
+    Migration {
+        version: 18,
+        name: "drop_app_logs",
+        run: migrate_18_drop_app_logs,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -155,15 +159,6 @@ CREATE TABLE IF NOT EXISTS file_transfers (
 CREATE INDEX IF NOT EXISTS idx_file_transfers_device_updated_at
     ON file_transfers (device_id, updated_at);
 
-CREATE TABLE IF NOT EXISTS app_logs (
-    id TEXT PRIMARY KEY,
-    level TEXT NOT NULL,
-    source TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_app_logs_created_at
-    ON app_logs (created_at DESC);
 ";
 
 const TRUSTED_PEER_KEYS_SCHEMA_SQL: &str = "
@@ -604,77 +599,6 @@ impl Database {
                 transfer.created_at,
                 transfer.updated_at
             ],
-        )?;
-        Ok(())
-    }
-
-    pub fn load_logs(&self, limit: usize) -> AppResult<Vec<AppLogEntry>> {
-        self.load_logs_page(limit, 0)
-    }
-
-    pub fn count_logs(&self) -> AppResult<usize> {
-        let connection = self.open()?;
-        let total = connection.query_row("SELECT COUNT(*) FROM app_logs", [], |row| {
-            row.get::<_, i64>(0)
-        })?;
-        Ok(total.max(0) as usize)
-    }
-
-    pub fn load_logs_page(&self, limit: usize, offset: usize) -> AppResult<Vec<AppLogEntry>> {
-        let connection = self.open()?;
-        let mut statement = connection.prepare(
-            "
-            SELECT
-                id,
-                level,
-                source,
-                message,
-                created_at
-            FROM app_logs
-            ORDER BY created_at DESC
-            LIMIT ?1
-            OFFSET ?2
-            ",
-        )?;
-
-        let rows = statement.query_map(params![limit as i64, offset as i64], |row| {
-            Ok(AppLogEntry {
-                id: row.get(0)?,
-                level: row.get(1)?,
-                source: row.get(2)?,
-                message: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        })?;
-
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    pub fn append_log(&self, entry: &AppLogEntry) -> AppResult<()> {
-        let connection = self.open()?;
-        connection.execute(
-            "
-            INSERT INTO app_logs (id, level, source, message, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ",
-            params![
-                entry.id,
-                entry.level,
-                entry.source,
-                entry.message,
-                entry.created_at
-            ],
-        )?;
-        connection.execute(
-            "
-            DELETE FROM app_logs
-            WHERE id NOT IN (
-                SELECT id FROM app_logs
-                ORDER BY created_at DESC
-                LIMIT ?1
-            )
-            ",
-            params![MAX_LOG_ENTRIES],
         )?;
         Ok(())
     }
@@ -1162,6 +1086,11 @@ fn migrate_17_add_auto_accept_file_offers_setting(transaction: &Transaction<'_>)
     migrate_json_record(transaction, SETTINGS_KEY, normalize_current_settings_json)
 }
 
+fn migrate_18_drop_app_logs(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute_batch("DROP TABLE IF EXISTS app_logs;")?;
+    Ok(())
+}
+
 fn canonicalize_music_providers(providers: &[MusicProviderConfig]) -> Vec<MusicProviderConfig> {
     let mut normalized = Vec::new();
     for provider in providers {
@@ -1497,8 +1426,8 @@ mod tests {
 
     use super::Database;
     use crate::models::{
-        AppLogEntry, AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord,
-        MusicProviderConfig, TextMessageRecord, TrustedPeerKeyRecord,
+        AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord, MusicProviderConfig,
+        TextMessageRecord, TrustedPeerKeyRecord,
     };
 
     #[test]
@@ -1551,52 +1480,35 @@ mod tests {
             .expect("save transfer");
         assert_eq!(database.load_transfers(10).expect("transfers").len(), 1);
 
-        database
-            .append_log(&AppLogEntry {
-                id: "l1".to_string(),
-                level: "info".to_string(),
-                source: "test".to_string(),
-                message: "ok".to_string(),
-                created_at: 1,
-            })
-            .expect("save log");
-        assert_eq!(database.load_logs(10).expect("logs").len(), 1);
-
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn paginates_logs_and_keeps_latest_thousand_entries() {
-        let path = std::env::temp_dir().join(format!("colink-db-{}.sqlite", Uuid::new_v4()));
-        let database = Database::new(path.clone());
-        database.initialize().expect("db init");
+    fn migration_18_discards_legacy_ui_logs() {
+        let path = temp_db_path();
+        let connection = Connection::open(&path).expect("open legacy database");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);
+                INSERT INTO schema_migrations (version, name, applied_at) VALUES (17, 'add_auto_accept_file_offers_setting', 0);
+                CREATE TABLE app_logs (id TEXT PRIMARY KEY, level TEXT NOT NULL, source TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL);
+                INSERT INTO app_logs (id, level, source, message, created_at) VALUES ('legacy', 'info', 'test', 'legacy log', 0);
+                ",
+            )
+            .expect("create legacy logs");
+        drop(connection);
 
-        for index in 0..1005 {
-            database
-                .append_log(&AppLogEntry {
-                    id: format!("l{index}"),
-                    level: "info".to_string(),
-                    source: "test".to_string(),
-                    message: format!("log {index}"),
-                    created_at: index,
-                })
-                .expect("save log");
-        }
-
-        assert_eq!(database.count_logs().expect("count logs"), 1000);
-        let first_page = database.load_logs_page(20, 0).expect("first page");
-        assert_eq!(first_page.len(), 20);
-        assert_eq!(first_page[0].id, "l1004");
-        assert_eq!(first_page[19].id, "l985");
-
-        let second_page = database.load_logs_page(20, 20).expect("second page");
-        assert_eq!(second_page.len(), 20);
-        assert_eq!(second_page[0].id, "l984");
-
-        let last_page = database.load_logs_page(20, 980).expect("last page");
-        assert_eq!(last_page.len(), 20);
-        assert_eq!(last_page[19].id, "l5");
-
+        Database::new(path.clone()).initialize().expect("run migration");
+        let connection = Connection::open(&path).expect("open migrated database");
+        let table_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_logs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check app logs table");
+        assert_eq!(table_exists, 0);
         let _ = fs::remove_file(path);
     }
 

@@ -330,30 +330,6 @@ pub struct FileOfferDecisionPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppLogEntry {
-    pub id: String,
-    pub level: String,
-    pub source: String,
-    pub message: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogPagePayload {
-    pub page: usize,
-    pub page_size: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogPageResult {
-    pub logs: Vec<AppLogEntry>,
-    pub total: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {
     pub settings: AppSettings,
     pub session: Option<SessionSummary>,
@@ -362,7 +338,6 @@ pub struct BootstrapPayload {
     pub cloud: CloudStatus,
     pub messages: Vec<TextMessageRecord>,
     pub transfers: Vec<FileTransferRecord>,
-    pub logs: Vec<AppLogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

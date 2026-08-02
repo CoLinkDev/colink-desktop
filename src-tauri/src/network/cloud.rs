@@ -350,11 +350,6 @@ impl CloudConnectionManager {
                     if self.update_status_if_current(generation, status.clone()) {
                         self.emit_status(status);
                     }
-                    let _ = self.event_tx.send(RuntimeEvent::Log {
-                        level: "warn".to_string(),
-                        source: "cloud".to_string(),
-                        message,
-                    });
                     let _ = self.event_tx.send(RuntimeEvent::CloudUnavailable);
                     if wait_or_cancel(backoff_delay(attempt), &mut cancel_rx).await {
                         return;

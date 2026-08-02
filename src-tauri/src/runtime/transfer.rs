@@ -41,7 +41,7 @@ use super::{
     TRANSFER_PROGRESS_INTERVAL_MS,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum ChunkTransport {
     Relay,
     Lan,
@@ -86,11 +86,7 @@ impl AppRuntime {
         }
 
         self.emit_transfers()?;
-        self.append_log(
-            "info",
-            "file",
-            format!("sent {} file offer(s)", records.len()),
-        )?;
+        info!(device_id = %payload.device_id, count = records.len(), "file offers sent");
         Ok(records)
     }
 
@@ -244,7 +240,7 @@ impl AppRuntime {
             self.emit_transfers()?;
         }
 
-        self.append_log("info", "file", format!("cancelled transfer {file_id}"))?;
+        info!(%file_id, "file transfer cancelled");
         Ok(())
     }
 
@@ -710,14 +706,7 @@ impl AppRuntime {
         }
 
         self.send_transport_finish(&file_id, &record, transport)?;
-        self.append_log(
-            "info",
-            "file",
-            format!(
-                "file {} was sent; waiting for confirmation",
-                record.file_name
-            ),
-        )?;
+        info!(file_id = %record.file_id, transport = ?transport, "file transfer sent; waiting for confirmation");
         Ok(())
     }
 

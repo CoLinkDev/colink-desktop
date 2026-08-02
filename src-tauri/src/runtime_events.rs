@@ -98,9 +98,4 @@ pub enum RuntimeEvent {
     LanPairingFailed(LanPairingFailed),
     LanPairingCandidatesUpdated(Vec<LanPairingCandidate>),
     ClipboardChanged(ClipboardSyncPayload),
-    Log {
-        level: String,
-        source: String,
-        message: String,
-    },
 }
