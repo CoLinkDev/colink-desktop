@@ -1089,13 +1089,24 @@ impl LanManager {
             }
             inner.discovery_refresh_tx = Some(discovery_refresh_tx);
         }
-        let monitor_rx = mdns.monitor().ok();
+        let monitor_rx = match mdns.monitor() {
+            Ok(receiver) => Some(receiver),
+            Err(error) => {
+                warn!(%error, "mdns monitor failed to start");
+                let _ = self.event_tx.send(RuntimeEvent::Log {
+                    level: "warn".to_string(),
+                    source: "lan".to_string(),
+                    message: format!("mDNS monitor failed to start: {error}"),
+                });
+                None
+            }
+        };
         let mut swim_interval = interval(SWIM_PERIOD);
         swim_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut suspect_interval = interval(Duration::from_millis(500));
         suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let _ = self.register_service(&mdns, &context, port);
+        self.register_mdns_service(&mdns, &context, port);
         info!(generation = generation, "lan discovery loop started");
 
         loop {
@@ -1156,11 +1167,35 @@ impl LanManager {
                         match event {
                             DaemonEvent::IpAdd(ip) if ip.is_ipv4() => {
                                 debug!(%ip, "mdns address added");
-                                let _ = self.register_service(&mdns, &context, port);
+                                self.register_mdns_service(&mdns, &context, port);
                             }
                             DaemonEvent::IpDel(_) => {
                                 debug!("mdns address removed");
-                                let _ = self.register_service(&mdns, &context, port);
+                                self.register_mdns_service(&mdns, &context, port);
+                            }
+                            DaemonEvent::Error(error) => {
+                                warn!(%error, "mdns daemon error");
+                                let _ = self.event_tx.send(RuntimeEvent::Log {
+                                    level: "warn".to_string(),
+                                    source: "lan".to_string(),
+                                    message: format!("mDNS daemon error: {error}"),
+                                });
+                            }
+                            DaemonEvent::NameChange(change) => {
+                                warn!(
+                                    original = %change.original,
+                                    new_name = %change.new_name,
+                                    interface = %change.intf_name,
+                                    "mdns name conflict resolved"
+                                );
+                                let _ = self.event_tx.send(RuntimeEvent::Log {
+                                    level: "warn".to_string(),
+                                    source: "lan".to_string(),
+                                    message: format!(
+                                        "mDNS name conflict on {}: {} -> {}",
+                                        change.intf_name, change.original, change.new_name
+                                    ),
+                                });
                             }
                             _ => {}
                         }
@@ -1216,6 +1251,20 @@ impl LanManager {
         );
         mdns.register(info)
             .map_err(|error| AppError::message(error.to_string()))
+    }
+
+    fn register_mdns_service(&self, mdns: &ServiceDaemon, context: &LanContext, port: u16) {
+        match self.register_service(mdns, context, port) {
+            Ok(()) => info!(port, device_id = %context.device.device_id, "mdns service registration requested"),
+            Err(error) => {
+                warn!(port, device_id = %context.device.device_id, %error, "mdns service registration failed");
+                let _ = self.event_tx.send(RuntimeEvent::Log {
+                    level: "warn".to_string(),
+                    source: "lan".to_string(),
+                    message: format!("mDNS service registration failed on port {port}: {error}"),
+                });
+            }
+        }
     }
 
     fn handle_service_resolved(
