@@ -6,9 +6,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+
 use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
 use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
-use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{DaemonEvent, DaemonStatus, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::{rngs::OsRng, seq::SliceRandom, RngCore};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -29,6 +32,15 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 use url::{form_urlencoded, Url};
 use uuid::Uuid;
+#[cfg(target_os = "windows")]
+use windows::Win32::{
+    Foundation::HANDLE,
+    System::Power::{
+        DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY, PowerRegisterSuspendResumeNotification,
+        PowerUnregisterSuspendResumeNotification,
+    },
+    UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_APMRESUMEAUTOMATIC},
+};
 
 use crate::{
     crypto::{
@@ -62,6 +74,10 @@ use crate::{
 };
 
 const SERVICE_TYPE: &str = "_colink._tcp.local.";
+const MDNS_PORT: u16 = 5_353;
+const MDNS_SD_VERSION: &str = "0.20.3";
+const MDNS_REBUILD_DEBOUNCE: Duration = Duration::from_secs(2);
+const SYSTEM_RESUME_REBUILD_DELAY: Duration = Duration::from_secs(5);
 const MIN_LAN_PORT: u16 = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(240);
@@ -299,6 +315,101 @@ struct PairStringPayload {
 struct DiscoveryRefreshRequest {
     label: String,
     completion: Option<oneshot::Sender<()>>,
+}
+
+struct PendingMdnsRebuild {
+    reason: &'static str,
+    deadline: Instant,
+}
+
+fn schedule_mdns_rebuild(
+    pending_rebuild: &mut Option<PendingMdnsRebuild>,
+    reason: &'static str,
+) {
+    schedule_mdns_rebuild_after(pending_rebuild, reason, MDNS_REBUILD_DEBOUNCE);
+}
+
+fn schedule_mdns_rebuild_after(
+    pending_rebuild: &mut Option<PendingMdnsRebuild>,
+    reason: &'static str,
+    delay: Duration,
+) {
+    let deadline = Instant::now() + delay;
+    match pending_rebuild {
+        Some(pending) => {
+            pending.reason = reason;
+            pending.deadline = pending.deadline.max(deadline);
+        }
+        None => {
+            *pending_rebuild = Some(PendingMdnsRebuild { reason, deadline });
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct SystemResumeNotification {
+    registration: HPOWERNOTIFY,
+    _recipient: Box<DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS>,
+    _sender: Box<mpsc::UnboundedSender<()>>,
+}
+
+// The callback state is immutable after registration. Windows guarantees that
+// PowerUnregisterSuspendResumeNotification stops callbacks before this owner drops it.
+#[cfg(target_os = "windows")]
+unsafe impl Send for SystemResumeNotification {}
+
+#[cfg(target_os = "windows")]
+impl SystemResumeNotification {
+    fn register(sender: mpsc::UnboundedSender<()>) -> Option<Self> {
+        let mut sender = Box::new(sender);
+        let mut recipient = Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(system_resume_callback),
+            Context: sender.as_mut() as *mut mpsc::UnboundedSender<()> as *mut c_void,
+        });
+        let mut registration = std::ptr::null_mut();
+        let status = unsafe {
+            PowerRegisterSuspendResumeNotification(
+                DEVICE_NOTIFY_CALLBACK,
+                HANDLE(recipient.as_mut() as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as *mut c_void),
+                &mut registration,
+            )
+        };
+        let registration = HPOWERNOTIFY(registration as isize);
+        if !status.is_ok() || registration.is_invalid() {
+            warn!(error_code = status.0, "windows system resume notification registration failed");
+            return None;
+        }
+
+        info!("windows system resume notification registered");
+        Some(Self {
+            registration,
+            _recipient: recipient,
+            _sender: sender,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SystemResumeNotification {
+    fn drop(&mut self) {
+        let status = unsafe { PowerUnregisterSuspendResumeNotification(self.registration) };
+        if !status.is_ok() {
+            warn!(error_code = status.0, "windows system resume notification unregistration failed");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn system_resume_callback(
+    context: *const c_void,
+    event_type: u32,
+    _setting: *const c_void,
+) -> u32 {
+    if event_type == PBT_APMRESUMEAUTOMATIC && !context.is_null() {
+        let sender = unsafe { &*(context as *const mpsc::UnboundedSender<()>) };
+        let _ = sender.send(());
+    }
+    0
 }
 
 #[derive(Debug, Clone)]
@@ -1051,21 +1162,15 @@ impl LanManager {
         };
         info!(port, preferred_port = LAN_PORT, "lan listener bound");
 
-        let Ok(mdns) = ServiceDaemon::new() else {
-            warn!("mdns daemon initialization failed");
-            self.finalize_generation(generation);
-            return;
-        };
-
-        let _ = mdns.set_ip_check_interval(5);
-        let mut browse_rx = match mdns.browse(SERVICE_TYPE) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                warn!(%error, "mdns browse failed");
-                self.finalize_generation(generation);
-                return;
-            }
-        };
+        let (mut mdns, mut browse_rx, mut monitor_rx) =
+            match self.start_mdns(generation, &context, port) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    warn!(%error, "mdns daemon initialization failed");
+                    self.finalize_generation(generation);
+                    return;
+                }
+            };
         let (discovery_refresh_tx, mut discovery_refresh_rx) = mpsc::unbounded_channel();
         {
             let mut inner = self.inner.lock_unpoisoned();
@@ -1074,19 +1179,18 @@ impl LanManager {
             }
             inner.discovery_refresh_tx = Some(discovery_refresh_tx);
         }
-        let monitor_rx = match mdns.monitor() {
-            Ok(receiver) => Some(receiver),
-            Err(error) => {
-                warn!(%error, "mdns monitor failed to start");
-                None
-            }
-        };
         let mut swim_interval = interval(SWIM_PERIOD);
         swim_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut suspect_interval = interval(Duration::from_millis(500));
         suspect_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        self.register_mdns_service(&mdns, &context, port);
+        let mut mdns_rebuild_interval = interval(Duration::from_millis(250));
+        mdns_rebuild_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let (system_resume_tx, mut system_resume_rx) = mpsc::unbounded_channel();
+        #[cfg(target_os = "windows")]
+        let _system_resume_notification = SystemResumeNotification::register(system_resume_tx);
+        #[cfg(not(target_os = "windows"))]
+        let _system_resume_tx = system_resume_tx;
+        let mut pending_mdns_rebuild = None;
         info!(generation = generation, "lan discovery loop started");
 
         loop {
@@ -1142,16 +1246,51 @@ impl LanManager {
                 _ = suspect_interval.tick() => {
                     self.promote_expired_suspects(generation);
                 }
+                Some(()) = system_resume_rx.recv() => {
+                    info!(delay_secs = SYSTEM_RESUME_REBUILD_DELAY.as_secs(), "windows system resume detected; scheduling mdns rebuild");
+                    schedule_mdns_rebuild_after(
+                        &mut pending_mdns_rebuild,
+                        "system_resume",
+                        SYSTEM_RESUME_REBUILD_DELAY,
+                    );
+                }
+                _ = mdns_rebuild_interval.tick(), if pending_mdns_rebuild.is_some() => {
+                    let Some(pending) = pending_mdns_rebuild.take() else {
+                        continue;
+                    };
+                    if Instant::now() < pending.deadline {
+                        pending_mdns_rebuild = Some(pending);
+                        continue;
+                    }
+
+                    self.shutdown_mdns(&mdns, generation, pending.reason).await;
+                    match self.start_mdns(generation, &context, port) {
+                        Ok((next_mdns, next_browse_rx, next_monitor_rx)) => {
+                            mdns = next_mdns;
+                            browse_rx = next_browse_rx;
+                            monitor_rx = next_monitor_rx;
+                            info!(reason = pending.reason, generation, "mdns daemon rebuilt");
+                        }
+                        Err(error) => {
+                            warn!(reason = pending.reason, generation, %error, "mdns daemon rebuild failed");
+                            self.finalize_generation(generation);
+                            return;
+                        }
+                    }
+                }
                 event = recv_monitor_event(&monitor_rx), if monitor_rx.is_some() => {
                     if let Some(event) = event {
                         match event {
-                            DaemonEvent::IpAdd(ip) if ip.is_ipv4() => {
-                                debug!(%ip, "mdns address added");
-                                self.register_mdns_service(&mdns, &context, port);
+                            DaemonEvent::IpAdd(ip) => {
+                                info!(%ip, "mdns network address added; scheduling daemon rebuild");
+                                schedule_mdns_rebuild(&mut pending_mdns_rebuild, "network_change");
                             }
-                            DaemonEvent::IpDel(_) => {
-                                debug!("mdns address removed");
-                                self.register_mdns_service(&mdns, &context, port);
+                            DaemonEvent::IpDel(ip) => {
+                                info!(%ip, "mdns network address removed; scheduling daemon rebuild");
+                                schedule_mdns_rebuild(&mut pending_mdns_rebuild, "network_change");
+                            }
+                            DaemonEvent::Announce(service, interface) => {
+                                info!(%service, %interface, "mdns service announced");
                             }
                             DaemonEvent::Error(error) => {
                                 warn!(%error, "mdns daemon error");
@@ -1171,10 +1310,57 @@ impl LanManager {
             }
         }
 
-        let _ = mdns.shutdown();
+        self.shutdown_mdns(&mdns, generation, "lan_manager_stop").await;
         self.finalize_generation(generation);
         self.clear_peers_for_generation(generation);
         info!(generation = generation, "lan discovery loop stopped");
+    }
+
+    fn start_mdns(
+        &self,
+        generation: u64,
+        context: &LanContext,
+        port: u16,
+    ) -> AppResult<(
+        ServiceDaemon,
+        mdns_sd::Receiver<ServiceEvent>,
+        Option<mdns_sd::Receiver<DaemonEvent>>,
+    )> {
+        let mdns = ServiceDaemon::new().map_err(|error| AppError::message(error.to_string()))?;
+        mdns.set_ip_check_interval(5)
+            .map_err(|error| AppError::message(error.to_string()))?;
+        let browse_rx = mdns
+            .browse(SERVICE_TYPE)
+            .map_err(|error| AppError::message(error.to_string()))?;
+        let monitor_rx = match mdns.monitor() {
+            Ok(receiver) => Some(receiver),
+            Err(error) => {
+                warn!(%error, "mdns monitor failed to start");
+                None
+            }
+        };
+
+        info!(
+            generation,
+            mdns_version = MDNS_SD_VERSION,
+            mdns_port = MDNS_PORT,
+            service_port = port,
+            "mdns daemon created"
+        );
+        self.register_mdns_service(&mdns, context, port);
+        Ok((mdns, browse_rx, monitor_rx))
+    }
+
+    async fn shutdown_mdns(&self, mdns: &ServiceDaemon, generation: u64, reason: &str) {
+        info!(generation, reason, "mdns daemon closing");
+        match mdns.shutdown() {
+            Ok(status_rx) => match status_rx.recv_async().await {
+                Ok(DaemonStatus::Shutdown) => info!(generation, reason, "mdns daemon closed"),
+                Ok(status) => warn!(generation, reason, ?status, "unexpected mdns daemon shutdown status"),
+                Err(error) => warn!(generation, reason, %error, "mdns daemon shutdown status unavailable"),
+            },
+            Err(error) => warn!(generation, reason, %error, "mdns daemon shutdown failed"),
+        }
     }
 
     fn register_service(

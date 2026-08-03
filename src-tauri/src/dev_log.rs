@@ -61,7 +61,7 @@ fn default_log_filter() -> EnvFilter {
     if cfg!(debug_assertions) {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::new("info")
+        EnvFilter::new("info,colink_desktop::network::lan=debug,mdns_sd=debug")
     }
 }
 
