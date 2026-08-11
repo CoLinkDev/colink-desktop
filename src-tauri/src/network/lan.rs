@@ -18,7 +18,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
-    time::{interval, timeout, Instant, MissedTickBehavior},
+    time::{interval, sleep, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
@@ -868,6 +868,67 @@ impl LanManager {
                 .await
                 .map_err(|_| AppError::message(self.user_text(TextKey::LanPeerUnavailable)))?;
         }
+    }
+
+    /// Ensures a LAN peer connection is established (and the business protocol
+    /// version negotiated) before a caller that depends on it proceeds, for
+    /// example checksum algorithm selection for a file transfer. Returns
+    /// immediately when the peer is already connected.
+    pub async fn ensure_peer_connected(&self, device_id: &str) -> AppResult<()> {
+        if self.peer_business_version(device_id).is_some() {
+            return Ok(());
+        }
+
+        let context = self.load_context()?;
+        let generation = self.current_generation();
+        let (ip, port) = self
+            .peer_endpoint(device_id)
+            .ok_or_else(|| AppError::message(self.user_text(TextKey::LanDeviceNotFound)))?;
+        let ip = ip
+            .parse::<IpAddr>()
+            .map_err(|_| AppError::message(self.user_text(TextKey::LanDeviceAddressInvalid)))?;
+
+        {
+            let mut inner = self.inner.lock_unpoisoned();
+            if inner.generation != generation {
+                return Err(AppError::message(
+                    self.user_text(TextKey::LanPeerUnavailable),
+                ));
+            }
+            if !inner.peers.contains_key(device_id) {
+                inner.peers.insert(
+                    device_id.to_string(),
+                    PeerEntry::Connecting(VecDeque::new()),
+                );
+                let manager = self.clone();
+                let device_id = device_id.to_string();
+                tauri::async_runtime::spawn(async move {
+                    manager
+                        .connect_pending_peer(generation, context, device_id, ip, port)
+                        .await;
+                });
+            }
+        }
+
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        while Instant::now() < deadline {
+            if self.peer_business_version(device_id).is_some() {
+                return Ok(());
+            }
+            let still_connecting = matches!(
+                self.inner.lock_unpoisoned().peers.get(device_id),
+                Some(PeerEntry::Connecting(_))
+            );
+            if !still_connecting && self.peer_business_version(device_id).is_none() {
+                return Err(AppError::message(
+                    self.user_text(TextKey::LanPeerUnavailable),
+                ));
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        Err(AppError::message(
+            self.user_text(TextKey::LanPeerUnavailable),
+        ))
     }
 
     pub fn peer_endpoint(&self, device_id: &str) -> Option<(String, u16)> {

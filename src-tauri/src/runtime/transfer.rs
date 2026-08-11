@@ -134,6 +134,11 @@ impl AppRuntime {
         } else {
             (file_size + chunk_size - 1) / chunk_size
         };
+        if self.inner.lan.is_available(device_id) {
+            if let Err(error) = self.inner.lan.ensure_peer_connected(device_id).await {
+                warn!(%device_id, %error, "lan peer connection failed before checksum selection");
+            }
+        }
         let algorithm =
             select_file_checksum_algorithm(self.peer_business_version(device_id).as_deref())?;
         let checksum = build_file_checksum_with_algorithm(&source_path, algorithm)?;
