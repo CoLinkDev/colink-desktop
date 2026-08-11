@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
-const DEFAULT_FILE_CHECKSUM_ALGORITHM: FileChecksumAlgorithm = FileChecksumAlgorithm::Blake3;
 const FILE_HASH_BUFFER_SIZE: usize = 1_048_576;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,11 +108,7 @@ impl FileChecksumHasher {
     }
 }
 
-pub(super) fn build_file_checksum(path: &Path) -> AppResult<String> {
-    build_file_checksum_with_algorithm(path, DEFAULT_FILE_CHECKSUM_ALGORITHM)
-}
-
-fn build_file_checksum_with_algorithm(
+pub(super) fn build_file_checksum_with_algorithm(
     path: &Path,
     algorithm: FileChecksumAlgorithm,
 ) -> AppResult<String> {

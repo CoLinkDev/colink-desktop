@@ -34,7 +34,10 @@ use super::{
         TransferPreparingPayload, TransferProgressPayload,
     },
     route::TransferRoute,
-    utils::{build_file_checksum, unique_download_path, FileChecksumVerifier},
+    utils::{
+        build_file_checksum_with_algorithm, unique_download_path, FileChecksumAlgorithm,
+        FileChecksumVerifier,
+    },
     AppRuntime, IncomingFileState, OutgoingFileState, PendingFileOfferState,
     FILE_OFFER_ENDED_EVENT, FILE_OFFER_REQUESTED_EVENT, LAN_SEND_WINDOW_CHUNKS,
     RELAY_SEND_WINDOW_CHUNKS, TRANSFER_PREPARING_EVENT, TRANSFER_PROGRESS_EVENT,
@@ -60,6 +63,23 @@ fn transfer_error_message(reason: &str) -> String {
         REASON_TRANSFER_CHECKSUM_MISMATCH => "File checksum verification failed".to_string(),
         REASON_TRANSFER_GENERIC => "Generic transfer failure".to_string(),
         _ => reason.to_string(),
+    }
+}
+
+fn select_file_checksum_algorithm(
+    peer_business_version: Option<&str>,
+) -> AppResult<FileChecksumAlgorithm> {
+    match peer_business_version {
+        Some(version) if supports_business_protocol_at_least(version, 1, 3, 0) => {
+            Ok(FileChecksumAlgorithm::None)
+        }
+        Some(version) if supports_business_protocol_at_least(version, 1, 2, 0) => {
+            Ok(FileChecksumAlgorithm::Blake3)
+        }
+        Some(_) => Err(AppError::message(
+            "peer does not support any file checksum algorithm",
+        )),
+        None => Ok(FileChecksumAlgorithm::Blake3),
     }
 }
 
@@ -114,7 +134,9 @@ impl AppRuntime {
         } else {
             (file_size + chunk_size - 1) / chunk_size
         };
-        let checksum = build_file_checksum(&source_path)?;
+        let algorithm =
+            select_file_checksum_algorithm(self.peer_business_version(device_id).as_deref())?;
+        let checksum = build_file_checksum_with_algorithm(&source_path, algorithm)?;
         let file_name = source_path
             .file_name()
             .and_then(|value| value.to_str())

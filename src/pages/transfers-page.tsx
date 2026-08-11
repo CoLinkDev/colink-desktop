@@ -1,14 +1,15 @@
-import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2, ExternalLink, FolderOpen } from 'lucide-react'
+import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2, ExternalLink, FolderOpen, Info } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '../components/ui/button'
+import { TransferDetailDialog } from '../components/transfer-detail-dialog'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { openReceivedFile, revealReceivedFile } from '../lib/api'
 import { cn, formatBytes, formatPlatformName } from '../lib/utils'
-import type { TransferPreparingPayload } from '../lib/types'
+import type { FileTransferRecord, TransferPreparingPayload } from '../lib/types'
 
 const TRANSFER_PREPARING_EVENT = 'transfer-preparing'
 
@@ -20,6 +21,7 @@ export function TransfersPage() {
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [detailTransfer, setDetailTransfer] = useState<FileTransferRecord | null>(null)
 
   const targetDevices = useMemo(
     () => devices.filter((i) => i.deviceId !== device?.deviceId && i.online),
@@ -344,6 +346,15 @@ export function TransfersPage() {
                         <Button
                           variant="secondary"
                           size="sm"
+                          onClick={() => setDetailTransfer(item)}
+                          title={t('transfers.detailsTitle')}
+                          className="h-7 w-7 px-0"
+                        >
+                          <Info className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           disabled={!canOpenReceivedFile}
                           onClick={() => void handleOpenReceivedFile(item.fileId)}
                           title={t('transfers.openFile')}
@@ -384,6 +395,14 @@ export function TransfersPage() {
           </div>
         </div>
       </div>
+
+      {detailTransfer && (
+        <TransferDetailDialog
+          transfer={detailTransfer}
+          deviceName={devices.find((item) => item.deviceId === detailTransfer.deviceId)?.name ?? null}
+          onClose={() => setDetailTransfer(null)}
+        />
+      )}
     </div>
   )
 }
