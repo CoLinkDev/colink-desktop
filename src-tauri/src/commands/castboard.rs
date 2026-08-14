@@ -111,6 +111,7 @@ pub async fn open_castboard_on_monitor(
     app: AppHandle,
     state: State<'_, AppState>,
     monitor_id: String,
+    language: String,
 ) -> Result<(), String> {
     info!(%monitor_id, "castboard open requested");
     let (monitor, position, size, index) = resolve_monitor(&app, &monitor_id).map_err(|error| {
@@ -136,15 +137,15 @@ pub async fn open_castboard_on_monitor(
             error
         })?;
         let _ = window.set_focus();
-        if let Err(error) = window.eval("window.location.reload();") {
-            warn!(%error, "castboard window reload failed");
-        }
+        let mut url = window.url().map_err(|error| error.to_string())?;
+        set_castboard_language(&mut url, &language);
+        window.navigate(url).map_err(|error| error.to_string())?;
         start_local_castboard_session(&state);
         set_castboard_status(&app, "open", Some(monitor), None);
         return Ok(());
     }
 
-    let (url, url_label) = castboard_url().map_err(|error| {
+    let (url, url_label) = castboard_url(&language).map_err(|error| {
         set_castboard_status(&app, "failed", Some(monitor.clone()), Some(error.clone()));
         error
     })?;
@@ -406,27 +407,42 @@ fn set_castboard_status(
     next
 }
 
-fn castboard_url() -> Result<(WebviewUrl, String), String> {
+fn castboard_url(language: &str) -> Result<(WebviewUrl, String), String> {
     let dev_url = std::env::var("COLINK_CASTBOARD_DEV_URL")
         .unwrap_or_default()
         .trim()
         .to_string();
     if !dev_url.is_empty() {
-        return Url::parse(&dev_url)
-            .map(WebviewUrl::External)
-            .map(|url| (url, dev_url))
-            .map_err(|error| error.to_string());
+        let mut url = Url::parse(&dev_url).map_err(|error| error.to_string())?;
+        set_castboard_language(&mut url, language);
+        return Ok((WebviewUrl::External(url.clone()), url.to_string()));
     }
 
     if cfg!(debug_assertions) {
-        return Url::parse(DEFAULT_CASTBOARD_DEV_URL)
-            .map(WebviewUrl::External)
-            .map(|url| (url, DEFAULT_CASTBOARD_DEV_URL.to_string()))
-            .map_err(|error| error.to_string());
+        let mut url = Url::parse(DEFAULT_CASTBOARD_DEV_URL).map_err(|error| error.to_string())?;
+        set_castboard_language(&mut url, language);
+        return Ok((WebviewUrl::External(url.clone()), url.to_string()));
     }
 
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("lang", language);
+    let path = format!("castboard/index.html?{}", query.finish());
     Ok((
-        WebviewUrl::App("castboard/index.html".into()),
-        "app://castboard/index.html".to_string(),
+        WebviewUrl::App(path.clone().into()),
+        format!("app://{path}"),
     ))
+}
+
+fn set_castboard_language(url: &mut Url, language: &str) {
+    let existing_parameters = url
+        .query_pairs()
+        .filter(|(key, _)| key != "lang")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let mut query = url.query_pairs_mut();
+    query.clear();
+    for (key, value) in existing_parameters {
+        query.append_pair(&key, &value);
+    }
+    query.append_pair("lang", language);
 }

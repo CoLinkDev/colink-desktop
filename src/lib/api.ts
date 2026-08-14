@@ -141,8 +141,8 @@ export function getCastBoardStatus() {
   return invoke<CastBoardStatus>('get_castboard_status')
 }
 
-export function openCastBoardOnMonitor(monitorId: string) {
-  return invoke<void>('open_castboard_on_monitor', { monitorId })
+export function openCastBoardOnMonitor(monitorId: string, language: string) {
+  return invoke<void>('open_castboard_on_monitor', { monitorId, language })
 }
 
 export function stopCastBoard() {

@@ -17,7 +17,7 @@ const initialCastBoardStatus: CastBoardStatus = {
 }
 
 export function CastBoardPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { setHeaderActions } = useAppState()
   const [monitors, setMonitors] = useState<CastBoardMonitor[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -55,7 +55,7 @@ export function CastBoardPage() {
     }
     setOpening(true)
     try {
-      await openCastBoardOnMonitor(selectedMonitor.id)
+      await openCastBoardOnMonitor(selectedMonitor.id, i18n.resolvedLanguage ?? i18n.language)
       toast.success(t('castboard.started'))
     } catch (error) {
       toast.error(readErrorMessage(error))
