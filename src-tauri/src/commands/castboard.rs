@@ -28,6 +28,7 @@ use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 
 const CASTBOARD_WINDOW_LABEL: &str = "castboard";
 const CASTBOARD_STATUS_EVENT: &str = "castboard-status";
+const CASTBOARD_ACTION_HOST: &str = "castboard-action.invalid";
 const DEFAULT_CASTBOARD_DEV_URL: &str = "http://127.0.0.1:5173/index.html?debug=1";
 
 #[derive(Clone, Serialize)]
@@ -138,7 +139,7 @@ pub async fn open_castboard_on_monitor(
         })?;
         let _ = window.set_focus();
         let mut url = window.url().map_err(|error| error.to_string())?;
-        set_castboard_language(&mut url, &language);
+        set_castboard_parameters(&mut url, &language);
         window.navigate(url).map_err(|error| error.to_string())?;
         start_local_castboard_session(&state);
         set_castboard_status(&app, "open", Some(monitor), None);
@@ -150,6 +151,7 @@ pub async fn open_castboard_on_monitor(
         error
     })?;
     let runtime = state.runtime.clone();
+    let context_action_app = app.clone();
     info!(%url_label, "castboard window build starting");
     let window = WebviewWindowBuilder::new(&app, CASTBOARD_WINDOW_LABEL, url)
         .title("CastBoard")
@@ -158,6 +160,7 @@ pub async fn open_castboard_on_monitor(
         .resizable(false)
         .inner_size(size.width as f64, size.height as f64)
         .position(position.x as f64, position.y as f64)
+        .on_navigation(move |url| handle_castboard_navigation(&context_action_app, url))
         .on_page_load(move |_window, payload| {
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 runtime.begin_local_castboard(CASTBOARD_WINDOW_LABEL);
@@ -175,8 +178,6 @@ pub async fn open_castboard_on_monitor(
         set_castboard_status(&app, "failed", Some(monitor.clone()), Some(error.clone()));
         error
     })?;
-    #[cfg(debug_assertions)]
-    window.open_devtools();
     let _ = window.set_focus();
     info!("castboard window focused");
 
@@ -414,29 +415,29 @@ fn castboard_url(language: &str) -> Result<(WebviewUrl, String), String> {
         .to_string();
     if !dev_url.is_empty() {
         let mut url = Url::parse(&dev_url).map_err(|error| error.to_string())?;
-        set_castboard_language(&mut url, language);
+        set_castboard_parameters(&mut url, language);
         return Ok((WebviewUrl::External(url.clone()), url.to_string()));
     }
 
     if cfg!(debug_assertions) {
         let mut url = Url::parse(DEFAULT_CASTBOARD_DEV_URL).map_err(|error| error.to_string())?;
-        set_castboard_language(&mut url, language);
+        set_castboard_parameters(&mut url, language);
         return Ok((WebviewUrl::External(url.clone()), url.to_string()));
     }
 
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    query.append_pair("lang", language);
-    let path = format!("castboard/index.html?{}", query.finish());
+    let path = format!("castboard/index.html?{}", castboard_parameters(language));
     Ok((
         WebviewUrl::App(path.clone().into()),
         format!("app://{path}"),
     ))
 }
 
-fn set_castboard_language(url: &mut Url, language: &str) {
+fn set_castboard_parameters(url: &mut Url, language: &str) {
     let existing_parameters = url
         .query_pairs()
-        .filter(|(key, _)| key != "lang")
+        .filter(|(key, _)| {
+            key != "lang" && key != "castboard-desktop" && key != "castboard-devtools"
+        })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
     let mut query = url.query_pairs_mut();
@@ -444,5 +445,46 @@ fn set_castboard_language(url: &mut Url, language: &str) {
     for (key, value) in existing_parameters {
         query.append_pair(&key, &value);
     }
-    query.append_pair("lang", language);
+    for (key, value) in castboard_parameter_pairs(language) {
+        query.append_pair(key, value);
+    }
+}
+
+fn castboard_parameters(language: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in castboard_parameter_pairs(language) {
+        query.append_pair(key, value);
+    }
+    query.finish()
+}
+
+fn castboard_parameter_pairs(language: &str) -> Vec<(&str, &str)> {
+    let mut parameters = vec![("lang", language), ("castboard-desktop", "1")];
+    if cfg!(debug_assertions) {
+        parameters.push(("castboard-devtools", "1"));
+    }
+    parameters
+}
+
+fn handle_castboard_navigation(app: &AppHandle, url: &Url) -> bool {
+    if url.host_str() != Some(CASTBOARD_ACTION_HOST) {
+        return true;
+    }
+
+    let Some(window) = app.get_webview_window(CASTBOARD_WINDOW_LABEL) else {
+        return false;
+    };
+    match url.path() {
+        "/close" => {
+            if let Err(error) = window.close() {
+                warn!(%error, "castboard context menu close failed");
+            }
+        }
+        "/open-devtools" => {
+            #[cfg(debug_assertions)]
+            window.open_devtools();
+        }
+        _ => {}
+    }
+    false
 }
