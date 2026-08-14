@@ -520,6 +520,7 @@ impl MusicService {
 
     async fn publish_track_change(&self, track: &ActiveTrack) {
         let track_payload = build_track_payload(track);
+        let empty_lyric = empty_lyric_payload(track.track_id.as_deref());
         let progress = build_progress_payload(track);
         {
             let mut guard = self.state.lock_unpoisoned();
@@ -531,11 +532,17 @@ impl MusicService {
         let active_ids = self.prune_active_receivers();
         for device_id in active_ids {
             self.send_track_message(&device_id, &track_payload).await;
+            if let Some(empty_lyric) = &empty_lyric {
+                self.send_lyric_message(&device_id, empty_lyric).await;
+            }
             if let Some(progress) = &progress {
                 self.send_progress_message(&device_id, progress).await;
             }
         }
         self.dispatch_to_local(MUSIC_TRACK_TYPE, &track_payload);
+        if let Some(empty_lyric) = &empty_lyric {
+            self.dispatch_to_local(MUSIC_LYRIC_TYPE, empty_lyric);
+        }
         if let Some(progress) = &progress {
             self.dispatch_to_local(MUSIC_PROGRESS_TYPE, progress);
         }
@@ -965,6 +972,14 @@ fn empty_track_payload() -> MusicTrackPayload {
     }
 }
 
+fn empty_lyric_payload(track_id: Option<&str>) -> Option<MusicLyricPayload> {
+    Some(MusicLyricPayload {
+        track_id: non_empty(track_id?)?,
+        lines: None,
+        translated_lines: None,
+    })
+}
+
 fn build_progress_payload(track: &ActiveTrack) -> Option<MusicProgressPayload> {
     let track_id = track.track_id.clone()?;
     Some(MusicProgressPayload {
@@ -1076,9 +1091,24 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        crossed_lyric_line, should_push_progress, LastProgressPush, MusicLyricPayload,
-        MusicProgressPayload,
+        crossed_lyric_line, empty_lyric_payload, should_push_progress, LastProgressPush,
+        MusicLyricPayload, MusicProgressPayload,
     };
+
+    #[test]
+    fn creates_an_empty_lyric_event_for_a_valid_track_id() {
+        let payload = empty_lyric_payload(Some("  track-id  ")).expect("payload");
+
+        assert_eq!(payload.track_id, "track-id");
+        assert!(payload.lines.is_none());
+        assert!(payload.translated_lines.is_none());
+    }
+
+    #[test]
+    fn skips_empty_lyric_event_without_a_track_id() {
+        assert!(empty_lyric_payload(None).is_none());
+        assert!(empty_lyric_payload(Some("   ")).is_none());
+    }
 
     #[test]
     fn pushes_progress_when_crossing_lyric_line() {
