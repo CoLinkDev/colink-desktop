@@ -28,7 +28,7 @@ pub use message::{
     respond_file_offer, reveal_received_file, send_files, send_text,
 };
 pub use filesystem::{
-    download_remote_filesystem_file, list_remote_filesystem, list_remote_filesystem_downloads,
+    download_remote_filesystem_file, upload_remote_filesystem_file, list_remote_filesystem, list_remote_filesystem_downloads, list_remote_filesystem_uploads,
     list_remote_filesystem_roots,
 };
 pub use music::{get_music_providers, list_available_music_providers, update_music_providers};

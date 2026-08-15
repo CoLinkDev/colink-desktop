@@ -24,6 +24,8 @@ import {
   LoaderCircle,
   LockKeyhole,
   RefreshCw,
+  Upload,
+  X,
 } from 'lucide-react'
 
 import { Button } from '../components/ui/button'
@@ -32,23 +34,27 @@ import {
   downloadRemoteFilesystemFile,
   listRemoteFilesystem,
   listRemoteFilesystemDownloads,
+  listRemoteFilesystemUploads,
   listRemoteFilesystemRoots,
   openReceivedFile,
   revealReceivedFile,
+  uploadRemoteFilesystemFile,
 } from '../lib/api'
 import type {
   RemoteFilesystemDownload,
   RemoteFilesystemEntry,
   RemoteFilesystemRoot,
+  RemoteFilesystemUpload,
 } from '../lib/types'
 import { cn, formatBytes, formatPlatformName, formatTimestamp } from '../lib/utils'
 
 const REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT = 'remote-filesystem-downloads-updated'
+const REMOTE_FILESYSTEM_UPLOADS_UPDATED_EVENT = 'remote-filesystem-uploads-updated'
 const REMOTE_FILESYSTEM_UNSUPPORTED_ERROR = 'colink:filesystem.unsupported.v1'
 
 export function FilesPage() {
   const { t } = useTranslation()
-  const { devices, device, transfers, setHeaderActions } = useAppState()
+  const { devices, device, transfers, setHeaderActions, pickFiles, cancelTransfer } = useAppState()
   const [searchParams, setSearchParams] = useSearchParams()
   const [roots, setRoots] = useState<RemoteFilesystemRoot[]>([])
   const [entries, setEntries] = useState<RemoteFilesystemEntry[]>([])
@@ -60,7 +66,9 @@ export function FilesPage() {
   const [unsupported, setUnsupported] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [downloads, setDownloads] = useState<RemoteFilesystemDownload[]>([])
+  const [uploads, setUploads] = useState<RemoteFilesystemUpload[]>([])
   const generationRef = useRef(0)
+  const refreshedUploadSessionIds = useRef(new Set<string>())
 
   const targetDevices = useMemo(
     () => devices.filter((item) => item.deviceId !== device?.deviceId && item.online),
@@ -105,7 +113,7 @@ export function FilesPage() {
           setUnsupported(true)
           setError(null)
         } else {
-          setError(readErrorMessage(requestError))
+          setError(remoteFilesystemErrorMessage(requestError, t))
         }
       }
     } finally {
@@ -153,7 +161,7 @@ export function FilesPage() {
           setUnsupported(true)
           setError(null)
         } else {
-          setError(readErrorMessage(requestError))
+          setError(remoteFilesystemErrorMessage(requestError, t))
         }
       }
     } finally {
@@ -193,36 +201,33 @@ export function FilesPage() {
   }, [loadRoots, selectedDeviceKey])
 
   useEffect(() => {
-    setHeaderActions(
-      <button
-        aria-label={t('common.refresh')}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
-        disabled={!selectedDevice || loading || loadingMore || unsupported}
-        onClick={refresh}
-        title={t('common.refresh')}
-        type="button"
-      >
-        <RefreshCw className={cn('h-4 w-4', (loading || loadingMore) && 'animate-spin')} />
-      </button>,
-    )
-    return () => setHeaderActions(null)
-  }, [loading, loadingMore, refresh, selectedDevice, setHeaderActions, t, unsupported])
-
-  useEffect(() => {
     let disposed = false
-    let unlisten: (() => void) | null = null
+    let unlistenDownloads: (() => void) | null = null
+    let unlistenUploads: (() => void) | null = null
 
     void (async () => {
       try {
-        const initial = await listRemoteFilesystemDownloads()
+        const [initialDownloads, initialUploads] = await Promise.all([
+          listRemoteFilesystemDownloads(),
+          listRemoteFilesystemUploads(),
+        ])
         if (!disposed) {
-          setDownloads(initial)
+          setDownloads(initialDownloads)
+          setUploads(initialUploads)
         }
-        unlisten = await listen<RemoteFilesystemDownload[]>(
+        unlistenDownloads = await listen<RemoteFilesystemDownload[]>(
           REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT,
           (event) => {
             if (!disposed) {
               setDownloads(event.payload)
+            }
+          },
+        )
+        unlistenUploads = await listen<RemoteFilesystemUpload[]>(
+          REMOTE_FILESYSTEM_UPLOADS_UPDATED_EVENT,
+          (event) => {
+            if (!disposed) {
+              setUploads(event.payload)
             }
           },
         )
@@ -233,7 +238,8 @@ export function FilesPage() {
 
     return () => {
       disposed = true
-      unlisten?.()
+      unlistenDownloads?.()
+      unlistenUploads?.()
     }
   }, [])
 
@@ -251,6 +257,36 @@ export function FilesPage() {
     return result
   }, [downloads, selectedDeviceId])
 
+  const uploadsByPath = useMemo(() => {
+    const result = new Map<string, RemoteFilesystemUpload>()
+    for (const upload of uploads) {
+      if (upload.deviceId !== selectedDeviceId) {
+        continue
+      }
+      const previous = result.get(upload.remotePath)
+      if (!previous || previous.requestedAt < upload.requestedAt) {
+        result.set(upload.remotePath, upload)
+      }
+    }
+    return result
+  }, [selectedDeviceId, uploads])
+
+  useEffect(() => {
+    if (!currentPath) {
+      return
+    }
+    for (const upload of uploadsByPath.values()) {
+      if (remoteParent(upload.remotePath) !== currentPath || !upload.sessionId) {
+        continue
+      }
+      const transfer = transfers.find((item) => item.fileId === upload.sessionId)
+      if (transfer?.status === 'completed' && !refreshedUploadSessionIds.current.has(upload.sessionId)) {
+        refreshedUploadSessionIds.current.add(upload.sessionId)
+        refresh()
+      }
+    }
+  }, [currentPath, refresh, transfers, uploadsByPath])
+
   async function requestDownload(entry: RemoteFilesystemEntry) {
     if (!selectedDeviceId || !currentPath) {
       return
@@ -264,10 +300,60 @@ export function FilesPage() {
         setUnsupported(true)
         setError(null)
       } else {
-        setError(readErrorMessage(requestError))
+        setError(remoteFilesystemErrorMessage(requestError, t))
       }
     }
   }
+
+  const requestUpload = useCallback(async () => {
+    if (!selectedDeviceId || !currentPath) return
+    try {
+      const paths = await pickFiles(true)
+      for (const sourcePath of paths) {
+        const name = sourcePath.split(/[\\/]/).filter(Boolean).at(-1)
+        if (name) {
+          const upload = await uploadRemoteFilesystemFile(selectedDeviceId, remoteChild(currentPath, name), sourcePath)
+          setUploads((current) => mergeUpload(current, upload))
+        }
+      }
+    } catch (requestError) {
+      setError(remoteFilesystemErrorMessage(requestError, t))
+    }
+  }, [currentPath, pickFiles, selectedDeviceId, t])
+
+  const requestUploadCancel = useCallback((fileId: string) => {
+    void cancelTransfer(fileId).catch((requestError) => {
+      setError(remoteFilesystemErrorMessage(requestError, t))
+    })
+  }, [cancelTransfer, t])
+
+  useEffect(() => {
+    setHeaderActions(
+      <div className="flex items-center gap-1">
+        <button
+          aria-label={t('common.send')}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
+          disabled={!selectedDevice || !currentPath || loading || loadingMore || unsupported}
+          onClick={() => void requestUpload()}
+          title={t('common.send')}
+          type="button"
+        >
+          <Upload className="h-4 w-4" />
+        </button>
+        <button
+          aria-label={t('common.refresh')}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))] disabled:opacity-40"
+          disabled={!selectedDevice || loading || loadingMore || unsupported}
+          onClick={refresh}
+          title={t('common.refresh')}
+          type="button"
+        >
+          <RefreshCw className={cn('h-4 w-4', (loading || loadingMore) && 'animate-spin')} />
+        </button>
+      </div>,
+    )
+    return () => setHeaderActions(null)
+  }, [currentPath, loading, loadingMore, refresh, requestUpload, selectedDevice, setHeaderActions, t, unsupported])
 
   function selectDevice(deviceId: string) {
     setSearchParams({ deviceId })
@@ -354,10 +440,10 @@ export function FilesPage() {
             ) : currentPath === null ? (
               <RootsView roots={roots} onOpen={(path) => void loadDirectory(path)} />
             ) : (
-              <DirectoryView
-                currentPath={currentPath}
-                downloadsByPath={downloadsByPath}
-                entries={entries}
+                <DirectoryView
+                  currentPath={currentPath}
+                  downloadsByPath={downloadsByPath}
+                  entries={entries}
                 hasMore={hasMore}
                 loadingMore={loadingMore}
                 onDownload={requestDownload}
@@ -366,9 +452,11 @@ export function FilesPage() {
                   path,
                 ) => void loadDirectory(path)}
                 onNavigateUp={navigateUp}
-                onOpenDirectory={(entry) => void loadDirectory(remoteChild(currentPath, entry.name))}
-                total={total}
-                transfers={transfers}
+                  onOpenDirectory={(entry) => void loadDirectory(remoteChild(currentPath, entry.name))}
+                  onCancelUpload={requestUploadCancel}
+                  total={total}
+                  transfers={transfers}
+                  uploadsByPath={uploadsByPath}
               />
             )}
           </div>
@@ -453,6 +541,7 @@ function RootsView({ roots, onOpen }: { roots: RemoteFilesystemRoot[]; onOpen: (
 interface DirectoryViewProps {
   currentPath: string
   downloadsByPath: Map<string, RemoteFilesystemDownload>
+  uploadsByPath: Map<string, RemoteFilesystemUpload>
   entries: RemoteFilesystemEntry[]
   hasMore: boolean
   loadingMore: boolean
@@ -461,6 +550,7 @@ interface DirectoryViewProps {
   onNavigate: (path: string) => void
   onNavigateUp: () => void
   onOpenDirectory: (entry: RemoteFilesystemEntry) => void
+  onCancelUpload: (fileId: string) => void
   total: number
   transfers: ReturnType<typeof useAppState>['transfers']
 }
@@ -468,6 +558,7 @@ interface DirectoryViewProps {
 function DirectoryView({
   currentPath,
   downloadsByPath,
+  uploadsByPath,
   entries,
   hasMore,
   loadingMore,
@@ -476,11 +567,17 @@ function DirectoryView({
   onNavigate,
   onNavigateUp,
   onOpenDirectory,
+  onCancelUpload,
   total,
   transfers,
 }: DirectoryViewProps) {
   const { t } = useTranslation()
   const breadcrumbs = remoteBreadcrumbs(currentPath)
+  const pendingUploads = [...uploadsByPath.values()].filter((upload) =>
+    remoteParent(upload.remotePath) === currentPath
+      && !entries.some((entry) => remoteChild(currentPath, entry.name) === upload.remotePath)
+      && uploadTransferStatus(upload, transfers) !== 'completed',
+  )
 
   return (
     <section className="overflow-hidden rounded-xl border bg-[hsl(var(--panel))]">
@@ -517,7 +614,7 @@ function DirectoryView({
         </div>
       </div>
 
-      {entries.length === 0 ? (
+      {entries.length === 0 && pendingUploads.length === 0 ? (
         <EmptyContent message={t('files.directoryEmpty')} />
       ) : (
         <div className="overflow-x-auto">
@@ -533,17 +630,32 @@ function DirectoryView({
             <tbody className="divide-y">
               {entries.map((entry) => {
                 const path = remoteChild(currentPath, entry.name)
+                const upload = uploadsByPath.get(path)
                 return (
                   <FileEntryRow
                     download={downloadsByPath.get(path)}
                     entry={entry}
                     key={`${entry.kind}:${entry.name}`}
+                    onCancelUpload={onCancelUpload}
                     onDownload={() => void onDownload(entry)}
                     onOpenDirectory={() => onOpenDirectory(entry)}
                     transfers={transfers}
+                    upload={uploadTransferStatus(upload, transfers) === 'completed' ? undefined : upload}
                   />
                 )
               })}
+              {pendingUploads.map((upload) => (
+                <FileEntryRow
+                  download={undefined}
+                  entry={remoteUploadEntry(upload)}
+                  key={`upload:${upload.requestId}`}
+                  onCancelUpload={onCancelUpload}
+                  onDownload={() => undefined}
+                  onOpenDirectory={() => undefined}
+                  transfers={transfers}
+                  upload={upload}
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -564,15 +676,19 @@ function DirectoryView({
 function FileEntryRow({
   download,
   entry,
+  onCancelUpload,
   onDownload,
   onOpenDirectory,
   transfers,
+  upload,
 }: {
   download: RemoteFilesystemDownload | undefined
   entry: RemoteFilesystemEntry
+  onCancelUpload: (fileId: string) => void
   onDownload: () => void
   onOpenDirectory: () => void
   transfers: ReturnType<typeof useAppState>['transfers']
+  upload: RemoteFilesystemUpload | undefined
 }) {
   const { t } = useTranslation()
   const isDirectory = entry.kind === 'directory'
@@ -584,7 +700,23 @@ function FileEntryRow({
   const waitingForOffer = Boolean(download) && !sessionId && !hasDownloadError
   const waitingForApproval = Boolean(sessionId) && !transfer && !hasDownloadError
   const active = Boolean(transfer) && !failed && !completed
-  const status = downloadStatus(download, transfer?.status, t)
+  const uploadSessionId = upload?.sessionId
+  const uploadTransfer = uploadSessionId ? transfers.find((item) => item.fileId === uploadSessionId) : undefined
+  const uploadStatus = uploadTransfer?.status
+  const uploadFailed = Boolean(upload?.error) || ['failed', 'rejected', 'cancelled'].includes(uploadStatus ?? '')
+  const uploadCompleted = uploadStatus === 'completed'
+  const uploadWaitingForOffer = Boolean(upload) && !uploadSessionId && !upload?.error
+  const uploadWaitingForApproval = Boolean(uploadSessionId) && !uploadTransfer && !upload?.error
+  const uploadActive = Boolean(uploadTransfer) && !uploadFailed && !uploadCompleted
+  const uploadCancellable = uploadStatus === 'offered' || uploadStatus === 'accepted' || uploadStatus === 'sending'
+  const uploadProgress = uploadTransfer && uploadTransfer.fileSize > 0
+    ? Math.min(1, Math.max(0, uploadTransfer.transferredBytes / uploadTransfer.fileSize))
+    : 0
+  const status = upload
+    ? remoteUploadStatus(upload, uploadStatus, uploadTransfer?.transferredBytes, uploadTransfer?.fileSize, t)
+    : downloadStatus(download, transfer?.status, t)
+  const statusError = upload ? upload.error : download?.error
+  const statusFailed = upload ? uploadFailed : failed
 
   function openDirectoryFromRow() {
     if (isDirectory) {
@@ -624,7 +756,7 @@ function FileEntryRow({
             <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[hsl(var(--muted))]">
               {entry.readonly && <LockKeyhole className="h-3 w-3" aria-label={t('files.readonly')} />}
               {entry.hidden && <EyeOff className="h-3 w-3" aria-label={t('files.hidden')} />}
-              {status && <span className={cn(failed && 'text-[hsl(var(--danger))]', !failed && 'text-[hsl(var(--text-secondary))]')} title={download?.error || undefined}>{status}</span>}
+              {status && <span className={cn(statusFailed && 'text-[hsl(var(--danger))]', !statusFailed && 'text-[hsl(var(--text-secondary))]')} title={statusError ? remoteFilesystemErrorMessage(statusError, t) : undefined}>{status}</span>}
             </div>
           </div>
         </div>
@@ -634,7 +766,16 @@ function FileEntryRow({
       <td className="px-5 py-3.5">
         {entry.kind === 'file' && (
           <div className="flex justify-end gap-1.5">
-            {completed && transfer ? (
+            {upload ? (
+              <>
+                {(uploadActive || uploadWaitingForOffer || uploadWaitingForApproval) && (
+                  <TransferProgressIndicator progress={uploadProgress} title={status || undefined} />
+                )}
+                {uploadCancellable && uploadTransfer && (
+                  <ActionButton icon={X} label={t('transfers.cancelTitle')} onClick={() => onCancelUpload(uploadTransfer.fileId)} />
+                )}
+              </>
+            ) : completed && transfer ? (
               <>
                 <ActionButton icon={ExternalLink} label={t('files.open')} onClick={() => void openReceivedFile(transfer.fileId)} />
                 <ActionButton icon={FolderOpen} label={t('files.showInFolder')} onClick={() => void revealReceivedFile(transfer.fileId)} />
@@ -700,7 +841,74 @@ function downloadStatus(
   return t(`transfers.status.${transferStatus}`, { defaultValue: transferStatus })
 }
 
+function remoteUploadStatus(
+  upload: RemoteFilesystemUpload,
+  status: string | undefined,
+  transferredBytes: number | undefined,
+  fileSize: number | undefined,
+  t: TFunction,
+) {
+  if (upload.error) return t('transfers.status.failed')
+  if (!upload.sessionId) return t('files.waitingForOffer')
+  if (!status) return t('files.waitingForApproval')
+  if (status === 'sending') {
+    return `${t('transfers.status.sending')} ${formatBytes(transferredBytes ?? 0)} / ${formatBytes(fileSize ?? 0)}`
+  }
+  if (status === 'accepted') return t('transfers.status.offered')
+  return t(`transfers.status.${status}`, { defaultValue: status })
+}
+
+function uploadTransferStatus(
+  upload: RemoteFilesystemUpload | undefined,
+  transfers: ReturnType<typeof useAppState>['transfers'],
+) {
+  if (!upload || upload.error || !upload.sessionId) return null
+  return transfers.find((item) => item.fileId === upload.sessionId)?.status
+}
+
+function remoteUploadEntry(upload: RemoteFilesystemUpload): RemoteFilesystemEntry {
+  const name = upload.remotePath.split(/[\\/]/).filter(Boolean).at(-1) || upload.remotePath
+  return {
+    name,
+    kind: 'file',
+    readonly: false,
+    hidden: false,
+  }
+}
+
+function TransferProgressIndicator({ progress, title }: { progress: number; title?: string }) {
+  const radius = 8
+  const circumference = 2 * Math.PI * radius
+  const offset = circumference * (1 - progress)
+  return (
+    <span className="inline-flex h-8 w-8 items-center justify-center text-[hsl(var(--primary))]" title={title}>
+      <svg aria-hidden="true" className="h-4 w-4 -rotate-90" viewBox="0 0 20 20">
+        <circle className="text-[hsl(var(--panel-2))]" cx="10" cy="10" fill="none" r={radius} stroke="currentColor" strokeWidth="2" />
+        <circle
+          cx="10"
+          cy="10"
+          fill="none"
+          r={radius}
+          stroke="currentColor"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          strokeWidth="2"
+        />
+      </svg>
+    </span>
+  )
+}
+
 function mergeDownload(current: RemoteFilesystemDownload[], next: RemoteFilesystemDownload) {
+  const index = current.findIndex((item) => item.requestId === next.requestId)
+  if (index < 0) return [next, ...current]
+  const updated = [...current]
+  updated[index] = next
+  return updated
+}
+
+function mergeUpload(current: RemoteFilesystemUpload[], next: RemoteFilesystemUpload) {
   const index = current.findIndex((item) => item.requestId === next.requestId)
   if (index < 0) return [next, ...current]
   const updated = [...current]
@@ -710,6 +918,15 @@ function mergeDownload(current: RemoteFilesystemDownload[], next: RemoteFilesyst
 
 function isRemoteFilesystemUnsupportedError(error: unknown) {
   return readErrorMessage(error) === REMOTE_FILESYSTEM_UNSUPPORTED_ERROR
+}
+
+function remoteFilesystemErrorMessage(error: unknown, t: TFunction) {
+  const message = readErrorMessage(error)
+  const match = /^colink:fs\.([a-z_]+)\.v1$/.exec(message)
+  if (!match) {
+    return message || t('files.errors.generic')
+  }
+  return t(`files.errors.${match[1]}`, { defaultValue: t('files.errors.generic') })
 }
 
 function hasByteCount(value: unknown): value is number {
@@ -725,6 +942,7 @@ function remoteParent(path: string) {
   const trimmed = path.replace(/[\\/]+$/, '')
   if (!trimmed) return null
   const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  if (index === 0 && trimmed.startsWith('/')) return '/'
   if (index <= 0) return null
   if (index === 2 && trimmed[1] === ':') return `${trimmed.slice(0, 2)}\\`
   return trimmed.slice(0, index)

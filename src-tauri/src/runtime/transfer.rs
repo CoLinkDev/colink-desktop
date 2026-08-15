@@ -34,6 +34,7 @@ use super::{
         TransferPreparingPayload, TransferProgressPayload,
     },
     route::TransferRoute,
+    filesystem::{commit_filesystem_upload, create_filesystem_upload_temp},
     utils::{
         build_file_checksum_with_algorithm, unique_download_path, FileChecksumAlgorithm,
         FileChecksumVerifier,
@@ -292,6 +293,10 @@ impl AppRuntime {
             correlation_id.as_deref().or(envelope_id.as_deref()),
             &payload.session_id,
         );
+        let filesystem_upload = self.consume_filesystem_upload(
+            from,
+            correlation_id.as_deref().or(envelope_id.as_deref()),
+        );
         if !self.file_checksum_allowed_for_peer(&payload.checksum, from) {
             if let Some(request_id) = filesystem_download_id.as_deref() {
                 self.fail_remote_filesystem_download(
@@ -336,20 +341,37 @@ impl AppRuntime {
                 PendingFileOfferState {
                     from: from.to_string(),
                     route: route.to_string(),
-                    envelope_id,
+                    envelope_id: envelope_id.clone(),
                     filesystem_download_id: filesystem_download_id.clone(),
+                    filesystem_upload: filesystem_upload.clone(),
                     payload,
                 },
             );
         self.expire_pending_file_offer(session_id);
-        if filesystem_download_id.is_some() || auto_accept_file_offers {
-            return self
+        if filesystem_download_id.is_some() || filesystem_upload.is_some() || auto_accept_file_offers {
+            let accepted = self
                 .respond_file_offer(FileOfferDecisionPayload {
-                    session_id: request.session_id,
+                    session_id: request.session_id.clone(),
                     accepted: true,
                     destination_path: None,
                 })
                 .await;
+            if let Err(error) = accepted {
+                let envelope = BusinessEnvelope::from_payload(
+                    FILE_REJECT_TYPE,
+                    FileRejectPayload {
+                        session_id: request.session_id,
+                        reason: REASON_TRANSFER_GENERIC.to_string(),
+                        message: error.to_string(),
+                        details: None,
+                    },
+                )?;
+                let _ = self
+                    .send_business_message_with_correlation(from, envelope, envelope_id)
+                    .await;
+                return Err(error);
+            }
+            return Ok(());
         }
         let destination = if filesystem_download_id.is_some() {
             self.device_route("/files", from)
@@ -507,20 +529,27 @@ impl AppRuntime {
             route,
             envelope_id,
             filesystem_download_id,
+            filesystem_upload,
             payload,
         } = pending;
         let settings =
             self.inner.database.load_settings()?.ok_or_else(|| {
                 AppError::message(self.user_text(TextKey::SettingsNotInitialized))
             })?;
-        let download_path = crate::service::validate_receive_directory(
-            destination_path.unwrap_or(&settings.download_path),
-        )?;
+        let download_path = if let Some(destination) = filesystem_upload.as_ref() {
+            destination.parent.clone()
+        } else {
+            crate::service::validate_receive_directory(destination_path.unwrap_or(&settings.download_path))?
+        };
         let verifier = Arc::new(AsyncMutex::new(FileChecksumVerifier::new(
             &payload.checksum,
         )?));
         let temp_name = format!("{}.part", sanitize(&payload.file_name));
-        let temp_path = download_path.join(temp_name);
+        let temp_path = match filesystem_upload.as_ref() {
+            Some(destination) => create_filesystem_upload_temp(destination, payload.file_size)
+                .map_err(|error| AppError::message(error.message))?,
+            None => download_path.join(temp_name),
+        };
 
         let created_at = unix_now_millis();
         let record = FileTransferRecord {
@@ -551,7 +580,8 @@ impl AppRuntime {
                 received_chunks: 0,
                 lan_finish_received: false,
                 last_reported_bytes: 0,
-                last_progress_at: created_at,
+            last_progress_at: created_at,
+            filesystem_upload,
             },
         );
 
@@ -566,9 +596,25 @@ impl AppRuntime {
                 transfer_token,
             },
         )?;
-        let _ = self
+        if let Err(error) = self
             .send_business_message_with_correlation(&from, envelope, envelope_id)
-            .await?;
+            .await
+        {
+            self.inner
+                .state
+                .lock_unpoisoned()
+                .incoming_files
+                .remove(&record.file_id);
+            self.inner.lan.unregister_transfer(&record.file_id);
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            let mut failed = record.clone();
+            failed.status = "failed".to_string();
+            failed.error = Some(error.to_string());
+            failed.updated_at = unix_now_millis();
+            let _ = self.inner.database.save_transfer(&failed);
+            let _ = self.emit_transfers();
+            return Err(error);
+        }
         info!(
             from = %from,
             session_id = %record.file_id,
@@ -1061,18 +1107,33 @@ impl AppRuntime {
             .map(PathBuf::from)
             .ok_or_else(|| AppError::message("temporary file directory does not exist"))?;
 
-        let success = {
+        let checksum_matches = {
             let verifier = incoming.verifier.lock().await;
             verifier.verify()
         };
 
-        let final_path = if success {
-            let path = unique_download_path(&download_dir, &incoming.record.file_name);
-            tokio::fs::rename(&temp_path, &path).await?;
-            Some(path.to_string_lossy().to_string())
+        let (final_path, success, failure_message) = if checksum_matches {
+            if let Some(destination) = incoming.filesystem_upload.as_ref() {
+                match commit_filesystem_upload(destination, &temp_path) {
+                    Ok(path) => (Some(path.to_string_lossy().to_string()), true, None),
+                    Err(error) => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        (None, false, Some(error.message))
+                    }
+                }
+            } else {
+                let path = unique_download_path(&download_dir, &incoming.record.file_name);
+                match tokio::fs::rename(&temp_path, &path).await {
+                    Ok(()) => (Some(path.to_string_lossy().to_string()), true, None),
+                    Err(error) => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        (None, false, Some(error.to_string()))
+                    }
+                }
+            }
         } else {
             let _ = tokio::fs::remove_file(&temp_path).await;
-            None
+            (None, false, None)
         };
 
         let mut record = incoming.record;
@@ -1086,7 +1147,7 @@ impl AppRuntime {
         record.error = if success {
             None
         } else {
-            Some(REASON_TRANSFER_CHECKSUM_MISMATCH.to_string())
+            Some(failure_message.clone().unwrap_or_else(|| REASON_TRANSFER_CHECKSUM_MISMATCH.to_string()))
         };
         record.updated_at = unix_now_millis();
         self.inner.database.save_transfer(&record)?;
@@ -1100,12 +1161,16 @@ impl AppRuntime {
                 reason: if success {
                     None
                 } else {
-                    Some(REASON_TRANSFER_CHECKSUM_MISMATCH.to_string())
+                    Some(if checksum_matches {
+                        REASON_TRANSFER_GENERIC.to_string()
+                    } else {
+                        REASON_TRANSFER_CHECKSUM_MISMATCH.to_string()
+                    })
                 },
                 message: if success {
                     None
                 } else {
-                    Some(transfer_error_message(REASON_TRANSFER_CHECKSUM_MISMATCH))
+                    Some(failure_message.unwrap_or_else(|| transfer_error_message(REASON_TRANSFER_CHECKSUM_MISMATCH)))
                 },
                 details: None,
             },

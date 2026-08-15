@@ -46,7 +46,7 @@ use crate::{
     models::{
         unix_now_millis, DeviceInfo, FileTransferRecord, LanPairingCandidate,
         LanPairingDecisionPayload, SendTextPayload, StartLanPairingPayload, TextMessageRecord,
-        RemoteFilesystemDownload, MAX_TEXT_LENGTH,
+        RemoteFilesystemDownload, RemoteFilesystemUpload, MAX_TEXT_LENGTH,
     },
     music::MusicService,
     network::{
@@ -59,7 +59,8 @@ use crate::{
         FileRejectPayload, FileRetransmitPayload, TextMessagePayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
-        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE,
+        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE, FS_UPLOAD_TYPE,
+        FS_UPLOAD_READY_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
         FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
         SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, PendingPowerActionPayload,
@@ -91,6 +92,7 @@ pub const LAN_PAIRING_CANDIDATES_UPDATED_EVENT: &str = "lan-pairing-candidates-u
 pub const FILE_OFFER_REQUESTED_EVENT: &str = "file-offer-requested";
 pub const FILE_OFFER_ENDED_EVENT: &str = "file-offer-ended";
 pub const REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT: &str = "remote-filesystem-downloads-updated";
+pub const REMOTE_FILESYSTEM_UPLOADS_UPDATED_EVENT: &str = "remote-filesystem-uploads-updated";
 const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
@@ -124,7 +126,9 @@ struct RuntimeState {
     incoming_files: HashMap<String, IncomingFileState>,
     pending_file_offers: HashMap<String, PendingFileOfferState>,
     pending_filesystem_requests: HashMap<String, PendingFilesystemRequest>,
+    pending_filesystem_uploads: HashMap<String, PendingFilesystemUpload>,
     remote_filesystem_downloads: HashMap<String, RemoteFilesystemDownload>,
+    remote_filesystem_uploads: HashMap<String, RemoteFilesystemUpload>,
     pending_power_actions: HashMap<PowerActionConnection, PendingPowerAction>,
     next_power_action_generation: u64,
     cancelled_files: HashSet<String>,
@@ -163,6 +167,7 @@ struct IncomingFileState {
     lan_finish_received: bool,
     last_reported_bytes: i64,
     last_progress_at: i64,
+    filesystem_upload: Option<filesystem::FilesystemUploadDestination>,
 }
 
 #[derive(Clone)]
@@ -171,6 +176,7 @@ pub(super) struct PendingFileOfferState {
     route: String,
     envelope_id: Option<String>,
     filesystem_download_id: Option<String>,
+    filesystem_upload: Option<filesystem::FilesystemUploadDestination>,
     payload: FileOfferPayload,
 }
 
@@ -178,6 +184,12 @@ pub(super) struct PendingFilesystemRequest {
     pub(super) device_id: String,
     pub(super) expected_response_type: &'static str,
     pub(super) sender: oneshot::Sender<AppResult<BusinessEnvelope>>,
+}
+
+pub(super) struct PendingFilesystemUpload {
+    pub(super) device_id: String,
+    pub(super) route: String,
+    pub(super) destination: filesystem::FilesystemUploadDestination,
 }
 
 impl AppRuntime {
@@ -216,7 +228,9 @@ impl AppRuntime {
                     incoming_files: HashMap::new(),
                     pending_file_offers: HashMap::new(),
                     pending_filesystem_requests: HashMap::new(),
+                    pending_filesystem_uploads: HashMap::new(),
                     remote_filesystem_downloads: HashMap::new(),
+                    remote_filesystem_uploads: HashMap::new(),
                     pending_power_actions: HashMap::new(),
                     next_power_action_generation: 0,
                     cancelled_files: HashSet::new(),
@@ -264,7 +278,9 @@ impl AppRuntime {
         state.incoming_files.clear();
         state.pending_file_offers.clear();
         state.pending_filesystem_requests.clear();
+        state.pending_filesystem_uploads.clear();
         state.remote_filesystem_downloads.clear();
+        state.remote_filesystem_uploads.clear();
         drop(state);
         for notify in notifiers {
             notify.notify_one();
@@ -414,6 +430,7 @@ impl AppRuntime {
                     reason = reason.as_deref().unwrap_or("unknown"),
                     "runtime received cloud disconnected"
                 );
+                self.clear_filesystem_uploads_for_route("cloud");
             }
             RuntimeEvent::CloudUnavailable => {
                 debug!("runtime received cloud unavailable");
@@ -445,6 +462,7 @@ impl AppRuntime {
             } => {
                 debug!(%device_id, online = online, "runtime received device presence");
                 if !online {
+                    self.clear_filesystem_uploads(&device_id, "cloud");
                     self.inner.terminal.close_for_device(&device_id);
                     self.handle_camera_device_disconnected(&device_id);
                 }
@@ -481,6 +499,7 @@ impl AppRuntime {
             }
             RuntimeEvent::LanDisconnected { device_id } => {
                 warn!(%device_id, "runtime received lan disconnected");
+                self.clear_filesystem_uploads(&device_id, "lan");
                 let _ = self.reconcile_device_routes();
             }
             RuntimeEvent::LanDeviceReachable { device_id } => {
@@ -876,16 +895,17 @@ impl AppRuntime {
                     sysinfo.handle_alive(&from).await;
                 });
             }
-            FS_ROOTS_TYPE | FS_LIST_TYPE | FS_STAT_TYPE | FS_DOWNLOAD_TYPE => {
+            FS_ROOTS_TYPE | FS_LIST_TYPE | FS_STAT_TYPE | FS_DOWNLOAD_TYPE | FS_UPLOAD_TYPE => {
                 self
                     .handle_filesystem_message(
                         from,
+                        route,
                         envelope_id.or(correlation_id),
                         message,
                     )
                     .await;
             }
-            FS_ROOTS_RESULT_TYPE | FS_LIST_RESULT_TYPE | FS_STAT_RESULT_TYPE => {
+            FS_ROOTS_RESULT_TYPE | FS_LIST_RESULT_TYPE | FS_STAT_RESULT_TYPE | FS_UPLOAD_READY_TYPE => {
                 self.complete_filesystem_request(
                     from,
                     correlation_id.as_deref().or(envelope_id.as_deref()),

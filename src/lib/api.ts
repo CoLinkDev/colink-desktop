@@ -17,6 +17,7 @@ import type {
   RemoteFilesystemDownload,
   RemoteFilesystemListResult,
   RemoteFilesystemRootsResult,
+  RemoteFilesystemUpload,
   RemoteTerminalSupport,
   RemoteCameraSupport,
   CameraEntry,
@@ -193,8 +194,18 @@ export function downloadRemoteFilesystemFile(deviceId: string, path: string) {
   })
 }
 
+export function uploadRemoteFilesystemFile(deviceId: string, path: string, sourcePath: string) {
+  return invoke<RemoteFilesystemUpload>('upload_remote_filesystem_file', {
+    payload: { deviceId, path, sourcePath },
+  })
+}
+
 export function listRemoteFilesystemDownloads() {
   return invoke<RemoteFilesystemDownload[]>('list_remote_filesystem_downloads')
+}
+
+export function listRemoteFilesystemUploads() {
+  return invoke<RemoteFilesystemUpload[]>('list_remote_filesystem_uploads')
 }
 
 export function cancelTransfer(fileId: string) {

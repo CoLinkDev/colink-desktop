@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::{
-    models::{RemoteFilesystemDownload, RemoteFilesystemDownloadPayload, RemoteFilesystemListPayload},
+    models::{RemoteFilesystemDownload, RemoteFilesystemDownloadPayload, RemoteFilesystemListPayload, RemoteFilesystemUpload, RemoteFilesystemUploadPayload},
     protocol::{FsListResultPayload, FsRootsResultPayload},
     state::AppState,
 };
@@ -43,8 +43,30 @@ pub async fn download_remote_filesystem_file(
 }
 
 #[tauri::command]
+pub async fn upload_remote_filesystem_file(
+    state: State<'_, AppState>,
+    payload: RemoteFilesystemUploadPayload,
+) -> Result<RemoteFilesystemUpload, String> {
+    state
+        .runtime
+        .upload_remote_filesystem_file(
+            &payload.device_id,
+            payload.path,
+            std::path::PathBuf::from(payload.source_path),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn list_remote_filesystem_downloads(
     state: State<'_, AppState>,
 ) -> Vec<RemoteFilesystemDownload> {
     state.runtime.remote_filesystem_downloads()
+}
+
+#[tauri::command]
+pub fn list_remote_filesystem_uploads(
+    state: State<'_, AppState>,
+) -> Vec<RemoteFilesystemUpload> {
+    state.runtime.remote_filesystem_uploads()
 }

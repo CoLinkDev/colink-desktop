@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.12.1";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.13.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
@@ -29,6 +29,8 @@ pub const FS_LIST_RESULT_TYPE: &str = "fs.v1.list-result";
 pub const FS_STAT_TYPE: &str = "fs.v1.stat";
 pub const FS_STAT_RESULT_TYPE: &str = "fs.v1.stat-result";
 pub const FS_DOWNLOAD_TYPE: &str = "fs.v1.download";
+pub const FS_UPLOAD_TYPE: &str = "fs.v1.upload";
+pub const FS_UPLOAD_READY_TYPE: &str = "fs.v1.upload-ready";
 pub const FS_ERROR_TYPE: &str = "fs.v1.error";
 pub const SYSTEM_CONTROL_COMMAND_TYPE: &str = "system-control.v1.command";
 pub const SYSTEM_CONTROL_QUERY_TYPE: &str = "system-control.v1.query";
@@ -962,6 +964,16 @@ pub struct FsDownloadPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FsUploadPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsUploadReadyPayload {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FsErrorPayload {
     pub reason: String,
     pub message: String,
@@ -1169,6 +1181,7 @@ mod tests {
         BusinessEnvelope, CameraDataFrame, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
         MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, PendingPowerActionPayload,
         SystemControlAction, SystemControlCommandPayload, SystemControlResultPayload,
+        FsUploadPayload, FsUploadReadyPayload, FS_UPLOAD_READY_TYPE, FS_UPLOAD_TYPE,
         MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
 
@@ -1200,6 +1213,28 @@ mod tests {
         let frame = CameraDataFrame::new("h264", true, 42, 1_400, vec![0, 0, 0, 1, 0x65])
             .expect("supported codec");
         assert_eq!(CameraDataFrame::decode(&frame.encode()), Some(frame));
+    }
+
+    #[test]
+    fn serializes_filesystem_upload_messages() {
+        assert_eq!(
+            serde_json::json!({"type": "fs.v1.upload", "payload": {"path": "/remote/report.pdf"}}),
+            serde_json::to_value(
+                BusinessEnvelope::from_payload(FS_UPLOAD_TYPE, FsUploadPayload {
+                    path: "/remote/report.pdf".to_string(),
+                })
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            serde_json::json!({"type": "fs.v1.upload-ready", "payload": {}}),
+            serde_json::to_value(
+                BusinessEnvelope::from_payload(FS_UPLOAD_READY_TYPE, FsUploadReadyPayload {})
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
     }
 
     #[test]

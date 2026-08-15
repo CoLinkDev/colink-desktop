@@ -433,7 +433,26 @@ pub struct RemoteFilesystemDownloadPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoteFilesystemUploadPayload {
+    pub device_id: String,
+    pub path: String,
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteFilesystemDownload {
+    pub request_id: String,
+    pub device_id: String,
+    pub remote_path: String,
+    pub requested_at: i64,
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFilesystemUpload {
     pub request_id: String,
     pub device_id: String,
     pub remote_path: String,

@@ -1,7 +1,7 @@
 use std::{
     fs::{self, Metadata},
     io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,29 +19,38 @@ use windows::{core::PCWSTR, Win32::Storage::FileSystem::GetVolumeInformationW};
 
 use crate::{
     error::{AppError, AppResult},
-    models::{unix_now_millis, RemoteFilesystemDownload},
+    models::{unix_now_millis, RemoteFilesystemDownload, RemoteFilesystemUpload},
     protocol::{
         BusinessEnvelope, FsDownloadPayload, FsEntry, FsErrorPayload, FsListPayload,
         FsListResultPayload, FsRootEntry, FsRootsPayload, FsRootsResultPayload, FsStatPayload,
-        FsStatResultPayload, FS_DOWNLOAD_TYPE, FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE,
-        FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE, FS_STAT_RESULT_TYPE, FS_STAT_TYPE,
+        FsStatResultPayload, FsUploadPayload, FsUploadReadyPayload, FS_DOWNLOAD_TYPE, FS_ERROR_TYPE,
+        FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE, FS_STAT_RESULT_TYPE,
+        FS_STAT_TYPE, FS_UPLOAD_READY_TYPE, FS_UPLOAD_TYPE,
     },
     sync::MutexExt,
 };
 
 use super::{
-    AppRuntime, PendingFilesystemRequest, FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT,
+    AppRuntime, PendingFilesystemRequest, PendingFilesystemUpload, FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT,
     FILESYSTEM_REQUEST_TIMEOUT, REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT,
+    REMOTE_FILESYSTEM_UPLOADS_UPDATED_EVENT,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 200;
 const MAX_LIST_LIMIT: i64 = 1_000;
 pub const REMOTE_FILESYSTEM_UNSUPPORTED_ERROR: &str = "colink:filesystem.unsupported.v1";
+pub const REMOTE_FILESYSTEM_UPLOAD_UNSUPPORTED_ERROR: &str = "colink:filesystem.upload_unsupported.v1";
+
+#[derive(Debug, Clone)]
+pub(crate) struct FilesystemUploadDestination {
+    pub(super) parent: PathBuf,
+    pub(super) target: PathBuf,
+}
 
 #[derive(Debug)]
-struct FilesystemError {
-    reason: &'static str,
-    message: String,
+pub(super) struct FilesystemError {
+    pub(super) reason: &'static str,
+    pub(super) message: String,
 }
 
 impl FilesystemError {
@@ -141,6 +150,59 @@ impl AppRuntime {
         Ok(download)
     }
 
+    pub fn upload_remote_filesystem_file(
+        &self,
+        device_id: &str,
+        path: String,
+        source_path: PathBuf,
+    ) -> AppResult<RemoteFilesystemUpload> {
+        self.require_remote_filesystem_upload_support(device_id)?;
+        if !source_path.is_file() {
+            return Err(AppError::message("Selected file no longer exists"));
+        }
+
+        let upload = RemoteFilesystemUpload {
+            request_id: Uuid::new_v4().to_string(),
+            device_id: device_id.to_string(),
+            remote_path: path.clone(),
+            requested_at: unix_now_millis(),
+            session_id: None,
+            error: None,
+        };
+        self.remember_remote_filesystem_upload(upload.clone());
+
+        let runtime = self.clone();
+        let upload_id = upload.request_id.clone();
+        let device_id = device_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            let result = async {
+                let (request_id, _) = runtime
+                    .request_remote_filesystem_with_id(
+                        &device_id,
+                        BusinessEnvelope::from_payload(FS_UPLOAD_TYPE, FsUploadPayload { path })?,
+                        FS_UPLOAD_READY_TYPE,
+                        FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT,
+                    )
+                    .await?;
+                runtime
+                    .send_file_offer_from_path(&device_id, source_path, Some(request_id))
+                    .await
+            }
+            .await;
+
+            match result {
+                Ok(transfer) => {
+                    let _ = runtime.emit_transfers();
+                    runtime.update_remote_filesystem_upload(&upload_id, |upload| {
+                        upload.session_id = Some(transfer.file_id);
+                    });
+                }
+                Err(error) => runtime.fail_remote_filesystem_upload(&upload_id, error.to_string()),
+            }
+        });
+        Ok(upload)
+    }
+
     pub fn remote_filesystem_downloads(&self) -> Vec<RemoteFilesystemDownload> {
         let mut downloads = self
             .inner
@@ -154,9 +216,23 @@ impl AppRuntime {
         downloads
     }
 
+    pub fn remote_filesystem_uploads(&self) -> Vec<RemoteFilesystemUpload> {
+        let mut uploads = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .remote_filesystem_uploads
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        uploads.sort_by(|left, right| right.requested_at.cmp(&left.requested_at));
+        uploads
+    }
+
     pub(super) async fn handle_filesystem_message(
         &self,
         from: &str,
+        route: &str,
         envelope_id: Option<String>,
         message: BusinessEnvelope,
     ) {
@@ -244,6 +320,52 @@ impl AppRuntime {
                             .await;
                         }
                     },
+                    Err(error) => self.send_filesystem_error(from, &request_id, error).await,
+                }
+            }
+            FS_UPLOAD_TYPE => {
+                let request = match decode_request::<FsUploadPayload>(&message) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        self.send_filesystem_error(from, &request_id, error).await;
+                        return;
+                    }
+                };
+                let result = tokio::task::spawn_blocking(move || prepare_filesystem_upload(&request.path))
+                    .await
+                    .unwrap_or_else(|error| Err(FilesystemError::generic(error.to_string())));
+                match result {
+                    Ok(destination) => {
+                        if !self.reserve_filesystem_upload(from, route, &request_id, destination) {
+                            self.send_filesystem_error(
+                                from,
+                                &request_id,
+                                FilesystemError { reason: "already_exists", message: "upload destination is already reserved".to_string() },
+                            ).await;
+                            return;
+                        }
+                        let sent = match BusinessEnvelope::from_payload(
+                            FS_UPLOAD_READY_TYPE,
+                            FsUploadReadyPayload {},
+                        ) {
+                            Ok(message) => self
+                                .send_business_message_with_correlation(
+                                    from,
+                                    message,
+                                    Some(request_id.clone()),
+                                )
+                                .await
+                                .map(|_| ()),
+                            Err(error) => Err(AppError::from(error)),
+                        };
+                        match sent {
+                            Ok(_) => self.expire_filesystem_upload(request_id),
+                            Err(error) => {
+                                self.remove_filesystem_upload(&request_id);
+                                warn!(%from, %error, "filesystem upload-ready send failed");
+                            }
+                        }
+                    }
                     Err(error) => self.send_filesystem_error(from, &request_id, error).await,
                 }
             }
@@ -367,8 +489,8 @@ impl AppRuntime {
         };
         let result = if message.message_type == FS_ERROR_TYPE {
             let error = serde_json::from_value::<FsErrorPayload>(message.payload.clone())
-                .map(|payload| payload.message)
-                .unwrap_or_else(|_| "Remote filesystem request failed".to_string());
+                .map(filesystem_error_token)
+                .unwrap_or_else(|_| "colink:fs.io_error.v1".to_string());
             Err(AppError::message(error))
         } else {
             Ok(message.clone())
@@ -387,8 +509,8 @@ impl AppRuntime {
             return;
         };
         let error = serde_json::from_value::<FsErrorPayload>(message.payload.clone())
-            .map(|payload| payload.message)
-            .unwrap_or_else(|_| "Remote filesystem request failed".to_string());
+            .map(filesystem_error_token)
+            .unwrap_or_else(|_| "colink:fs.io_error.v1".to_string());
         let matched = self
             .inner
             .state
@@ -413,12 +535,37 @@ impl AppRuntime {
         Ok(())
     }
 
+    fn require_remote_filesystem_upload_support(&self, device_id: &str) -> AppResult<()> {
+        if !self
+            .peer_business_version(device_id)
+            .is_some_and(|version| crate::protocol::supports_business_protocol_at_least(&version, 1, 13, 0))
+        {
+            return Err(AppError::message(REMOTE_FILESYSTEM_UPLOAD_UNSUPPORTED_ERROR));
+        }
+        Ok(())
+    }
+
     async fn request_remote_filesystem(
         &self,
         device_id: &str,
         request: BusinessEnvelope,
         expected_response_type: &'static str,
     ) -> AppResult<BusinessEnvelope> {
+        self.request_remote_filesystem_with_id(
+            device_id,
+            request,
+            expected_response_type,
+            FILESYSTEM_REQUEST_TIMEOUT,
+        ).await.map(|(_, response)| response)
+    }
+
+    async fn request_remote_filesystem_with_id(
+        &self,
+        device_id: &str,
+        request: BusinessEnvelope,
+        expected_response_type: &'static str,
+        request_timeout: std::time::Duration,
+    ) -> AppResult<(String, BusinessEnvelope)> {
         let request_id = Uuid::new_v4().to_string();
         debug!(%device_id, %request_id, request_type = %request.message_type, %expected_response_type, "sending remote filesystem request");
         let (sender, receiver) = oneshot::channel();
@@ -443,8 +590,8 @@ impl AppRuntime {
             return Err(error);
         }
 
-        let result = match timeout(FILESYSTEM_REQUEST_TIMEOUT, receiver).await {
-            Ok(Ok(result)) => result,
+        let result = match timeout(request_timeout, receiver).await {
+            Ok(Ok(result)) => result.map(|response| (request_id.clone(), response)),
             Ok(Err(_)) => Err(AppError::message("Remote filesystem request ended unexpectedly")),
             Err(_) => Err(AppError::message("Remote device did not respond in time")),
         };
@@ -514,6 +661,123 @@ impl AppRuntime {
             .inner
             .app
             .emit(REMOTE_FILESYSTEM_DOWNLOADS_UPDATED_EVENT, self.remote_filesystem_downloads());
+    }
+
+    fn remember_remote_filesystem_upload(&self, upload: RemoteFilesystemUpload) {
+        {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state
+                .remote_filesystem_uploads
+                .insert(upload.request_id.clone(), upload);
+            trim_remote_filesystem_uploads(&mut state.remote_filesystem_uploads);
+        }
+        self.emit_remote_filesystem_uploads();
+    }
+
+    fn update_remote_filesystem_upload(
+        &self,
+        request_id: &str,
+        update: impl FnOnce(&mut RemoteFilesystemUpload),
+    ) {
+        let updated = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(upload) = state.remote_filesystem_uploads.get_mut(request_id) else {
+                return;
+            };
+            update(upload);
+            true
+        };
+        if updated {
+            self.emit_remote_filesystem_uploads();
+        }
+    }
+
+    fn fail_remote_filesystem_upload(&self, request_id: &str, error: String) {
+        self.update_remote_filesystem_upload(request_id, |upload| {
+            if upload.error.is_none() {
+                upload.error = Some(error);
+            }
+        });
+    }
+
+    fn emit_remote_filesystem_uploads(&self) {
+        let _ = self
+            .inner
+            .app
+            .emit(REMOTE_FILESYSTEM_UPLOADS_UPDATED_EVENT, self.remote_filesystem_uploads());
+    }
+
+    fn reserve_filesystem_upload(
+        &self,
+        device_id: &str,
+        route: &str,
+        request_id: &str,
+        destination: FilesystemUploadDestination,
+    ) -> bool {
+        let mut state = self.inner.state.lock_unpoisoned();
+        if state
+            .pending_filesystem_uploads
+            .values()
+            .any(|pending| pending.destination.target == destination.target)
+        {
+            return false;
+        }
+        state.pending_filesystem_uploads.insert(
+            request_id.to_string(),
+            PendingFilesystemUpload {
+                device_id: device_id.to_string(),
+                route: route.to_string(),
+                destination,
+            },
+        );
+        true
+    }
+
+    fn expire_filesystem_upload(&self, request_id: String) {
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            sleep(FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT).await;
+            runtime.remove_filesystem_upload(&request_id);
+        });
+    }
+
+    fn remove_filesystem_upload(&self, request_id: &str) {
+        self.inner
+            .state
+            .lock_unpoisoned()
+            .pending_filesystem_uploads
+            .remove(request_id);
+    }
+
+    pub(super) fn consume_filesystem_upload(
+        &self,
+        device_id: &str,
+        correlation_id: Option<&str>,
+    ) -> Option<FilesystemUploadDestination> {
+        let request_id = correlation_id?;
+        let mut state = self.inner.state.lock_unpoisoned();
+        let pending = state.pending_filesystem_uploads.get(request_id)?;
+        if pending.device_id != device_id {
+            return None;
+        }
+        state
+            .pending_filesystem_uploads
+            .remove(request_id)
+            .map(|pending| pending.destination)
+    }
+
+    pub(super) fn clear_filesystem_uploads(&self, device_id: &str, route: &str) {
+        self.inner.state.lock_unpoisoned().pending_filesystem_uploads.retain(|_, pending| {
+            pending.device_id != device_id || pending.route != route
+        });
+    }
+
+    pub(super) fn clear_filesystem_uploads_for_route(&self, route: &str) {
+        self.inner
+            .state
+            .lock_unpoisoned()
+            .pending_filesystem_uploads
+            .retain(|_, pending| pending.route != route);
     }
 }
 
@@ -678,6 +942,124 @@ fn filesystem_download_path(request: FsDownloadPayload) -> Result<PathBuf, Files
     Ok(path)
 }
 
+fn prepare_filesystem_upload(path: &str) -> Result<FilesystemUploadDestination, FilesystemError> {
+    let target = absolute_path(path)?;
+    let file_name = target
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| FilesystemError { reason: "invalid_path", message: "upload destination must be a file path".to_string() })?;
+    let parent = target.parent().ok_or_else(|| FilesystemError {
+        reason: "invalid_path",
+        message: "upload destination must have a parent directory".to_string(),
+    })?;
+    let parent = validate_upload_parent(parent)?;
+    let target = parent.join(file_name);
+    require_absent_upload_target(&target)?;
+    Ok(FilesystemUploadDestination { parent, target })
+}
+
+pub(super) fn create_filesystem_upload_temp(
+    destination: &FilesystemUploadDestination,
+    expected_size: i64,
+) -> Result<PathBuf, FilesystemError> {
+    let parent = revalidate_upload_parent(destination)?;
+    if expected_size < 0 || u64::try_from(expected_size).ok().is_none_or(|size| available_space(&parent) < size) {
+        return Err(FilesystemError { reason: "io_error", message: "insufficient storage for upload".to_string() });
+    }
+    let path = parent.join(format!(".colink-{}.part", Uuid::new_v4()));
+    fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(FilesystemError::from_io)?;
+    Ok(path)
+}
+
+pub(super) fn commit_filesystem_upload(
+    destination: &FilesystemUploadDestination,
+    temp_path: &Path,
+) -> Result<PathBuf, FilesystemError> {
+    let parent = revalidate_upload_parent(destination)?;
+    let target = parent.join(destination.target.file_name().unwrap_or_default());
+    require_absent_upload_target(&target)?;
+    fs::rename(temp_path, &target).map_err(FilesystemError::from_io)?;
+    Ok(target)
+}
+
+fn validate_upload_parent(parent: &Path) -> Result<PathBuf, FilesystemError> {
+    let metadata = fs::symlink_metadata(parent).map_err(FilesystemError::from_io)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || path_contains_link_or_reparse_point(parent)? {
+        return Err(FilesystemError { reason: "invalid_path", message: "upload directory must not contain links or reparse points".to_string() });
+    }
+    fs::canonicalize(parent).map_err(FilesystemError::from_io)
+}
+
+fn revalidate_upload_parent(destination: &FilesystemUploadDestination) -> Result<PathBuf, FilesystemError> {
+    let parent = validate_upload_parent(&destination.parent)?;
+    if parent != destination.parent {
+        return Err(FilesystemError { reason: "invalid_path", message: "upload directory changed after authorization".to_string() });
+    }
+    Ok(parent)
+}
+
+fn require_absent_upload_target(target: &Path) -> Result<(), FilesystemError> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => Err(FilesystemError { reason: "already_exists", message: "upload destination already exists".to_string() }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(FilesystemError::from_io(error)),
+    }
+}
+
+// Non-general filesystem errors remain stable protocol tokens until the UI maps them
+// to its own localized text. This avoids exposing host paths or OS error details.
+fn filesystem_error_token(payload: FsErrorPayload) -> String {
+    if matches!(payload.reason.as_str(), "general" | "generic") {
+        payload.message
+    } else {
+        format!("colink:fs.{}.v1", payload.reason)
+    }
+}
+
+fn trim_remote_filesystem_uploads(
+    uploads: &mut std::collections::HashMap<String, RemoteFilesystemUpload>,
+) {
+    if uploads.len() <= 100 {
+        return;
+    }
+    let mut stale = uploads
+        .values()
+        .map(|upload| (upload.request_id.clone(), upload.requested_at))
+        .collect::<Vec<_>>();
+    stale.sort_by(|left, right| right.1.cmp(&left.1));
+    for (request_id, _) in stale.into_iter().skip(100) {
+        uploads.remove(&request_id);
+    }
+}
+
+fn available_space(path: &Path) -> u64 {
+    fs2::available_space(path).unwrap_or_default()
+}
+
+fn path_contains_link_or_reparse_point(path: &Path) -> Result<bool, FilesystemError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&current).map_err(FilesystemError::from_io)?;
+        if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &Metadata) -> bool { false }
+
 fn absolute_path(raw_path: &str) -> Result<PathBuf, FilesystemError> {
     let path = PathBuf::from(raw_path);
     if !path.is_absolute() {
@@ -735,7 +1117,11 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{compare_filesystem_entries, filesystem_list, FsEntry, FsListPayload};
+    use super::{
+        commit_filesystem_upload, compare_filesystem_entries, create_filesystem_upload_temp,
+        filesystem_error_token, filesystem_list, prepare_filesystem_upload, FsEntry, FsErrorPayload,
+        FsListPayload,
+    };
     #[cfg(windows)]
     use super::volume_label_from_utf16;
 
@@ -838,5 +1224,55 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.reason, "generic");
+    }
+
+    #[test]
+    fn filesystem_errors_prefer_structured_codes() {
+        assert_eq!(
+            filesystem_error_token(FsErrorPayload {
+                reason: "permission_denied".to_string(),
+                message: "internal path must not be exposed".to_string(),
+                details: None,
+            }),
+            "colink:fs.permission_denied.v1",
+        );
+        assert_eq!(
+            filesystem_error_token(FsErrorPayload {
+                reason: "general".to_string(),
+                message: "remote filesystem request failed".to_string(),
+                details: None,
+            }),
+            "remote filesystem request failed",
+        );
+    }
+
+    #[test]
+    fn commits_authorized_upload_without_overwriting() {
+        let root = std::env::temp_dir().join(format!("colink-upload-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("report.txt");
+        let destination = prepare_filesystem_upload(&target.to_string_lossy()).unwrap();
+        let temp = create_filesystem_upload_temp(&destination, 5).unwrap();
+        fs::write(&temp, b"hello").unwrap();
+        let committed = commit_filesystem_upload(&destination, &temp).unwrap();
+        assert_eq!(fs::read(&committed).unwrap(), b"hello");
+        assert!(prepare_filesystem_upload(&target.to_string_lossy()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upload_commit_preserves_a_file_created_after_authorization() {
+        let root = std::env::temp_dir().join(format!("colink-upload-race-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("report.txt");
+        let destination = prepare_filesystem_upload(&target.to_string_lossy()).unwrap();
+        let temp = create_filesystem_upload_temp(&destination, 5).unwrap();
+        fs::write(&temp, b"hello").unwrap();
+        fs::write(&target, b"existing").unwrap();
+
+        assert!(commit_filesystem_upload(&destination, &temp).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"existing");
+        fs::remove_file(temp).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }

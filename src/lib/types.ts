@@ -246,6 +246,15 @@ export interface RemoteFilesystemDownload {
   error: string | null
 }
 
+export interface RemoteFilesystemUpload {
+  requestId: string
+  deviceId: string
+  remotePath: string
+  requestedAt: number
+  sessionId: string | null
+  error: string | null
+}
+
 export type RemoteTerminalSupport = 'unknown' | 'supported' | 'unsupported'
 export type RemoteCameraSupport = RemoteTerminalSupport
 
