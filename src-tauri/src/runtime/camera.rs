@@ -458,6 +458,9 @@ impl CameraManager {
 impl AppRuntime {
     pub(super) fn handle_camera_device_disconnected(&self, device_id: &str) {
         let (remote_ids, host_ids) = self.inner.camera.close_for_device(device_id);
+        for _ in 0..remote_ids.len() + host_ids.len() {
+            self.inner.indicator.remove_session();
+        }
         for session_id in remote_ids {
             self.inner.lan.unregister_camera(&session_id);
             self.emit_camera_event(CameraUiEvent {
@@ -536,6 +539,7 @@ impl AppRuntime {
             self.inner.camera.discard_remote_session(&session_id);
             return Err(error);
         }
+        self.inner.indicator.add_session();
         Ok(session_id)
     }
 
@@ -551,6 +555,7 @@ impl AppRuntime {
         if !self.inner.camera.close_remote_session(device_id, session_id) {
             return Ok(());
         }
+        self.inner.indicator.remove_session();
         self.inner.lan.unregister_camera(session_id);
         self.send_business_message(device_id, BusinessEnvelope::from_payload(CAMERA_CLOSE_TYPE, CameraClosePayload {
             session_id: session_id.to_string(), reason: None, message: None,
@@ -573,6 +578,7 @@ impl AppRuntime {
     pub(super) async fn handle_camera_open_ack(&self, from: &str, correlation_id: Option<&str>, payload: CameraOpenAckPayload) {
         if !payload.accepted {
             self.inner.camera.discard_remote_session(&payload.session_id);
+            self.inner.indicator.remove_session();
             self.emit_camera_event(CameraUiEvent {
                 session_id: payload.session_id,
                 kind: "failed".to_string(),
@@ -614,6 +620,7 @@ impl AppRuntime {
         if let Ok(ready) = ready {
             if let Err(error) = self.send_business_message(from, ready).await {
                 self.inner.camera.discard_remote_session(&payload.session_id);
+                self.inner.indicator.remove_session();
                 self.emit_camera_event(CameraUiEvent { session_id: payload.session_id, kind: "failed".to_string(), data: None, codec: None, transport: None, width: None, height: None, fps: None, keyframe: None, sequence: None, timestamp_ms: None, message: Some(error.to_string()) });
                 return;
             }
@@ -676,6 +683,7 @@ impl AppRuntime {
 
     pub(super) async fn handle_lan_camera_closed(&self, session_id: &str) {
         if self.inner.camera.close_remote_session_by_id(session_id) {
+            self.inner.indicator.remove_session();
             self.emit_camera_event(CameraUiEvent {
                 session_id: session_id.to_string(),
                 kind: "closed".to_string(),
@@ -693,6 +701,7 @@ impl AppRuntime {
             return;
         }
         let Some(device_id) = self.inner.camera.close_host_session_by_id(session_id) else { return; };
+        self.inner.indicator.remove_session();
         self.inner.camera_capture.stop(session_id);
         if let Ok(close) = BusinessEnvelope::from_payload(CAMERA_CLOSE_TYPE, CameraClosePayload {
             session_id: session_id.to_string(),
@@ -706,8 +715,10 @@ impl AppRuntime {
     pub(super) fn handle_camera_close(&self, from: &str, payload: CameraClosePayload) {
         self.inner.lan.unregister_camera(&payload.session_id);
         if self.inner.camera.close_remote_session(from, &payload.session_id) {
+            self.inner.indicator.remove_session();
             self.emit_camera_event(CameraUiEvent { session_id: payload.session_id, kind: "closed".to_string(), data: None, codec: None, transport: None, width: None, height: None, fps: None, keyframe: None, sequence: None, timestamp_ms: None, message: payload.message.or(payload.reason) });
         } else if self.inner.camera.close_host_session(from, &payload.session_id) {
+            self.inner.indicator.remove_session();
             self.inner.camera_capture.stop(&payload.session_id);
         }
     }
@@ -734,6 +745,7 @@ impl AppRuntime {
             });
         match result {
             Ok(session) => {
+                self.inner.indicator.add_session();
                 let stream_token = self.inner.lan.is_available(from).then(|| {
                     let token = Uuid::new_v4().simple().to_string();
                     self.inner.lan.register_camera_token(&session.session_id, &token);
@@ -758,6 +770,7 @@ impl AppRuntime {
                     loop {
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         if let Some(device_id) = runtime.inner.camera.expire_host_session(&session_id) {
+                            runtime.inner.indicator.remove_session();
                             runtime.inner.camera_capture.stop(&session_id);
                             runtime.inner.lan.unregister_camera(&session_id);
                             if let Ok(close) = BusinessEnvelope::from_payload(CAMERA_CLOSE_TYPE, CameraClosePayload {
@@ -900,6 +913,7 @@ impl AppRuntime {
 
     pub(super) async fn handle_native_camera_failed(&self, session_id: &str, generation: u64, message: String) {
         let Some(device_id) = self.inner.camera.fail_host_capture(session_id, generation) else { return; };
+        self.inner.indicator.remove_session();
         tracing::warn!(%session_id, generation, %message, "native camera capture failed");
         if let Ok(close) = BusinessEnvelope::from_payload(CAMERA_CLOSE_TYPE, CameraClosePayload {
             session_id: session_id.to_string(),

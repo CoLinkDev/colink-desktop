@@ -700,6 +700,10 @@ impl LanManager {
             && self.peer_endpoint(device_id).is_some()
     }
 
+    pub fn is_active(&self) -> bool {
+        self.inner.lock_unpoisoned().cancel.is_some()
+    }
+
     async fn refresh_discovery(&self) {
         let (completion_tx, completion_rx) = oneshot::channel();
         let refresh_tx = self.inner.lock_unpoisoned().discovery_refresh_tx.clone();

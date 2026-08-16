@@ -79,6 +79,7 @@ use crate::{
     sysinfo::SysInfoService,
     system_control::{execute_system_control, query_system_control, SystemControlExecution},
     sync::MutexExt,
+    tray_indicator::TrayIndicator,
 };
 
 pub const MESSAGES_UPDATED_EVENT: &str = "messages-updated";
@@ -116,6 +117,7 @@ struct RuntimeInner {
     terminal: TerminalManager,
     camera: CameraManager,
     camera_capture: CameraCaptureService,
+    indicator: TrayIndicator,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     state: Mutex<RuntimeState>,
 }
@@ -207,6 +209,7 @@ impl AppRuntime {
             event_tx.clone(),
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
+        let indicator = TrayIndicator::new(app.clone());
         let music = MusicService::new(app.clone(), database.clone(), transport.clone());
         let sysinfo = SysInfoService::new(app.clone(), transport.clone());
         let runtime = Self {
@@ -221,6 +224,7 @@ impl AppRuntime {
                 terminal: TerminalManager::new(),
                 camera: CameraManager::new(),
                 camera_capture: CameraCaptureService::new(event_tx.clone()),
+                indicator,
                 event_tx: event_tx.clone(),
                 state: Mutex::new(RuntimeState {
                     watcher_shutdown: None,
@@ -771,6 +775,7 @@ impl AppRuntime {
         correlation_id: Option<String>,
         message: BusinessEnvelope,
     ) {
+        self.inner.indicator.trigger(&message.message_type);
         match message.message_type.as_str() {
             TEXT_MESSAGE_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<TextMessagePayload>(message.payload) {
@@ -1194,6 +1199,7 @@ impl AppRuntime {
 
         let envelope = BusinessEnvelope::from_payload(CLIPBOARD_SYNC_TYPE, payload.clone())?;
         self.inner.transport.broadcast_cloud(envelope, None)?;
+        self.inner.indicator.trigger(CLIPBOARD_SYNC_TYPE);
         debug!(content_type = %payload.content_type, "local clipboard synced");
         Ok(())
     }
@@ -1350,11 +1356,14 @@ impl AppRuntime {
         envelope_id: Option<String>,
         correlation_id: Option<String>,
     ) -> AppResult<String> {
-        self
+        let message_type = message.message_type.clone();
+        let result = self
             .inner
             .transport
             .send(device_id, message, envelope_id, correlation_id)
-            .await
+            .await?;
+        self.inner.indicator.trigger(&message_type);
+        Ok(result)
     }
 
     pub fn reconcile_device_routes(&self) -> AppResult<Vec<DeviceInfo>> {
@@ -1366,6 +1375,14 @@ impl AppRuntime {
             &self.inner.lan.peer_endpoints(),
         )?;
         Ok(devices)
+    }
+
+    pub fn lan_is_active(&self) -> bool {
+        self.inner.lan.is_active()
+    }
+
+    pub fn indicator(&self) -> &TrayIndicator {
+        &self.inner.indicator
     }
 
     pub async fn refresh_lan_for_device_list(&self) -> AppResult<()> {

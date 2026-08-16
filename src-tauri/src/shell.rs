@@ -41,6 +41,7 @@ const LINUX_AUTOSTART_FILE: &str = "dev.colink.desktop.desktop";
 pub struct ShellState {
     allow_exit: AtomicBool,
     tray_menu: TrayMenu,
+    tray_icons: TrayIcons,
 }
 
 struct TrayMenu {
@@ -49,11 +50,66 @@ struct TrayMenu {
     quit: MenuItem<tauri::Wry>,
 }
 
+struct TrayIcons {
+    connected: DecodedTrayIcon,
+    activity: DecodedTrayIcon,
+    idle: DecodedTrayIcon,
+    disconnected: DecodedTrayIcon,
+}
+
+struct DecodedTrayIcon {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+impl TrayIcons {
+    fn load() -> Self {
+        Self {
+            connected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/connected.png")),
+            activity: DecodedTrayIcon::decode(include_bytes!("../icons/tray/activity.png")),
+            idle: DecodedTrayIcon::decode(include_bytes!("../icons/tray/idle.png")),
+            disconnected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/disconnected.png")),
+        }
+    }
+
+    fn image(&self, state: &str) -> Image<'_> {
+        match state {
+            "connected" => self.connected.image(),
+            "activity" => self.activity.image(),
+            "idle" => self.idle.image(),
+            _ => self.disconnected.image(),
+        }
+    }
+}
+
+impl DecodedTrayIcon {
+    fn decode(bytes: &[u8]) -> Self {
+        let image = ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .expect("tray icon format should be readable")
+            .decode()
+            .expect("tray icon should decode")
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+        Self {
+            rgba: image.into_raw(),
+            width,
+            height,
+        }
+    }
+
+    fn image(&self) -> Image<'_> {
+        Image::new(&self.rgba, self.width, self.height)
+    }
+}
+
 impl ShellState {
-    fn new(tray_menu: TrayMenu) -> Self {
+    fn new(tray_menu: TrayMenu, tray_icons: TrayIcons) -> Self {
         Self {
             allow_exit: AtomicBool::new(false),
             tray_menu,
+            tray_icons,
         }
     }
 
@@ -68,8 +124,8 @@ impl ShellState {
 
 pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellState> {
     let (menu, tray_menu) = build_tray_menu(app)?;
-    let shell = ShellState::new(tray_menu);
-    let icon = build_tray_icon("disconnected");
+    let tray_icons = TrayIcons::load();
+    let icon = tray_icons.image("disconnected");
 
     let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -94,8 +150,7 @@ pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellSta
         }
     }
 
-    refresh_tray(app)?;
-    Ok(shell)
+    Ok(ShellState::new(tray_menu, tray_icons))
 }
 
 pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
@@ -105,22 +160,20 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
 
     let state = app.state::<AppState>();
     let devices = state.database.load_cached_devices().unwrap_or_default();
-    let transfers = state.database.load_transfers(50).unwrap_or_default();
     let cloud = state.cloud.snapshot();
-    let active_transfer = transfers
-        .iter()
-        .any(|item| matches!(item.status.as_str(), "offered" | "sending" | "receiving"));
-    let icon_state = if active_transfer {
-        "syncing"
+
+    let icon_state = if state.runtime.indicator().is_active() {
+        "activity"
     } else if cloud.connected {
         "connected"
-    } else if devices.iter().any(|item| item.lan_available) {
+    } else if state.runtime.lan_is_active() {
         "idle"
     } else {
         "disconnected"
     };
 
-    let _ = tray.set_icon(Some(build_tray_icon(icon_state)));
+    let shell = app.state::<ShellState>();
+    let _ = tray.set_icon(Some(shell.tray_icons.image(icon_state)));
     let _ = tray.set_tooltip(Some(tray_tooltip(app, &cloud, &devices)));
     Ok(())
 }
@@ -352,21 +405,4 @@ fn tray_tooltip(app: &AppHandle, cloud: &CloudStatus, devices: &[DeviceInfo]) ->
         i18n::text(&language, TextKey::TrayReachableDevices),
         i18n::text(&language, TextKey::TrayLan),
     )
-}
-
-fn build_tray_icon(state: &str) -> Image<'static> {
-    let bytes = match state {
-        "connected" => include_bytes!("../icons/tray/connected.png").as_slice(),
-        "syncing" => include_bytes!("../icons/tray/syncing.png").as_slice(),
-        "idle" => include_bytes!("../icons/tray/idle.png").as_slice(),
-        _ => include_bytes!("../icons/tray/disconnected.png").as_slice(),
-    };
-    let image = ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .expect("tray icon format should be readable")
-        .decode()
-        .expect("tray icon should decode")
-        .into_rgba8();
-    let (width, height) = image.dimensions();
-    Image::new_owned(image.into_raw(), width, height)
 }

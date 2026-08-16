@@ -200,6 +200,7 @@ impl AppRuntime {
                 last_progress_at: created_at,
             },
         );
+        self.inner.indicator.add_session();
         Ok(record)
     }
 
@@ -207,6 +208,7 @@ impl AppRuntime {
         let mut outgoing_target = None;
         let mut active_record = None;
         let mut ack_notify = None;
+        let mut sessions_removed: usize = 0;
         {
             let mut state = self.inner.state.lock_unpoisoned();
             state.cancelled_files.insert(file_id.to_string());
@@ -221,6 +223,7 @@ impl AppRuntime {
                 .unwrap_or(false)
             {
                 state.outgoing_files.remove(file_id);
+                sessions_removed += 1;
             }
             if let Some(incoming) = state.incoming_files.remove(file_id) {
                 if let Some(temp_path) = incoming.record.temp_path.as_ref() {
@@ -228,7 +231,11 @@ impl AppRuntime {
                 }
                 outgoing_target = Some(incoming.record.device_id.clone());
                 active_record = Some(incoming.record);
+                sessions_removed += 1;
             }
+        }
+        for _ in 0..sessions_removed {
+            self.inner.indicator.remove_session();
         }
         if let Some(notify) = ack_notify {
             notify.notify_one();
@@ -621,6 +628,7 @@ impl AppRuntime {
             route = %record.route,
             "file offer accepted"
         );
+        self.inner.indicator.add_session();
         self.emit_transfers()?;
         let destination = if filesystem_download_id.is_some() {
             self.device_route("/files", &from)
@@ -1091,6 +1099,7 @@ impl AppRuntime {
             .incoming_files
             .remove(file_id)
             .ok_or_else(|| AppError::message("receive state does not exist"))?;
+        self.inner.indicator.remove_session();
         {
             let mut writer = incoming.writer.lock().await;
             writer.flush().await?;
@@ -1220,6 +1229,9 @@ impl AppRuntime {
             .lock_unpoisoned()
             .outgoing_files
             .remove(file_id);
+        if removed.is_some() {
+            self.inner.indicator.remove_session();
+        }
         if let Some(notify) = removed.as_ref().map(|item| item.ack_notify.clone()) {
             notify.notify_one();
         }
@@ -1271,6 +1283,7 @@ impl AppRuntime {
             .incoming_files
             .remove(file_id)
         {
+            self.inner.indicator.remove_session();
             if let Some(temp_path) = incoming.record.temp_path.as_ref() {
                 let _ = fs::remove_file(temp_path);
             }
@@ -1316,6 +1329,7 @@ impl AppRuntime {
                 debug!(%file_id, "ignored lan transfer close after incoming completion");
                 return Ok(());
             }
+            self.inner.indicator.remove_session();
             warn!(%file_id, "incoming lan transfer closed before completion");
             if let Some(temp_path) = incoming.record.temp_path.as_ref() {
                 let _ = fs::remove_file(temp_path);

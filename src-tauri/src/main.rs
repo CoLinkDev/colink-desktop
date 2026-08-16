@@ -22,6 +22,7 @@ mod state;
 mod store;
 mod sync;
 mod system_control;
+mod tray_indicator;
 
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,
@@ -69,6 +70,7 @@ fn main() {
             shell::apply_auto_start(settings.auto_start)?;
             let shell_state = shell::initialize(app.handle(), &settings)?;
             app.manage(shell_state);
+            shell::refresh_tray(app.handle())?;
             Ok(())
         })
         .on_menu_event(|app, event| {
