@@ -56,10 +56,10 @@ use crate::{
     protocol::{
         BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
         FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
-        FileRejectPayload, FileRetransmitPayload, TextMessagePayload, CLIPBOARD_SYNC_TYPE,
+        FileRejectPayload, FileRetransmitPayload, TextMessagePayload, TextMessageReceiptPayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
-        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, FS_DOWNLOAD_TYPE, FS_UPLOAD_TYPE,
+        MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, TEXT_MESSAGE_RECEIPT_TYPE, FS_DOWNLOAD_TYPE, FS_UPLOAD_TYPE,
         FS_UPLOAD_READY_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
         FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
@@ -775,30 +775,57 @@ impl AppRuntime {
         correlation_id: Option<String>,
         message: BusinessEnvelope,
     ) {
-        self.inner.indicator.trigger(&message.message_type);
+        if message.message_type != TEXT_MESSAGE_RECEIPT_TYPE {
+            self.inner.indicator.trigger(&message.message_type);
+        }
         match message.message_type.as_str() {
             TEXT_MESSAGE_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<TextMessagePayload>(message.payload) {
                     let record = TextMessageRecord {
-                        message_id: payload.message_id,
+                        message_id: payload.message_id.clone(),
                         device_id: from.to_string(),
                         direction: "inbound".to_string(),
                         text: payload.text.clone(),
                         route: route.to_string(),
                         created_at: unix_now_millis(),
                     };
-                    let _ = self.inner.database.save_message(&record);
-                    let _ = self.emit_messages();
-                    let _ = self.notify(
-                        TextKey::MessageFromTitle,
-                        &[("name", self.lookup_device_name(from))],
-                        &payload.text,
-                    );
-                    let _ = crate::shell::show_main_window(
-                        &self.inner.app,
-                        Some(&self.device_route("/messages", from)),
-                    );
-                    info!(%from, %route, "text message received");
+                    match self.inner.database.save_message_if_absent(&record) {
+                        Ok(inserted) => {
+                            if inserted {
+                                let _ = self.emit_messages();
+                                let _ = self.notify(
+                                    TextKey::MessageFromTitle,
+                                    &[("name", self.lookup_device_name(from))],
+                                    &payload.text,
+                                );
+                                let _ = crate::shell::show_main_window(
+                                    &self.inner.app,
+                                    Some(&self.device_route("/messages", from)),
+                                );
+                                info!(%from, %route, "text message received");
+                            }
+                            let receipt = BusinessEnvelope::from_payload(
+                                TEXT_MESSAGE_RECEIPT_TYPE,
+                                TextMessageReceiptPayload {
+                                    message_id: payload.message_id,
+                                },
+                            );
+                            match receipt {
+                                Ok(receipt) => {
+                                    if let Err(error) = self.inner.transport.send(from, receipt, None, None).await {
+                                        warn!(%from, %error, "failed to send text message receipt");
+                                    }
+                                }
+                                Err(error) => warn!(%from, %error, "failed to create text message receipt"),
+                            }
+                        }
+                        Err(error) => warn!(%from, %error, "failed to persist text message"),
+                    }
+                }
+            }
+            TEXT_MESSAGE_RECEIPT_TYPE => {
+                if serde_json::from_value::<TextMessageReceiptPayload>(message.payload).is_err() {
+                    warn!(%from, "received malformed text message receipt");
                 }
             }
             FILE_OFFER_TYPE => {

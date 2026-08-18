@@ -473,6 +473,32 @@ impl Database {
         Ok(())
     }
 
+    pub fn save_message_if_absent(&self, message: &TextMessageRecord) -> AppResult<bool> {
+        let connection = self.open()?;
+        let inserted = connection.execute(
+            "
+            INSERT OR IGNORE INTO messages (
+                message_id,
+                device_id,
+                direction,
+                text,
+                route,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                message.message_id,
+                message.device_id,
+                message.direction,
+                message.text,
+                message.route,
+                message.created_at
+            ],
+        )?;
+        Ok(inserted == 1)
+    }
+
     pub fn load_transfers(&self, limit: usize) -> AppResult<Vec<FileTransferRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(

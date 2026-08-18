@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.13.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.14.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
+pub const TEXT_MESSAGE_RECEIPT_TYPE: &str = "message.v1.receipt";
 pub const CLIPBOARD_SYNC_TYPE: &str = "clipboard.v1.sync";
 pub const FILE_OFFER_TYPE: &str = "file.v2.offer";
 pub const FILE_ACCEPT_TYPE: &str = "file.v2.accept";
@@ -363,6 +364,12 @@ pub struct DeviceOnlinePayload {
     pub device_type: String,
     pub business_version: String,
     pub ws_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextMessageReceiptPayload {
+    pub message_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
