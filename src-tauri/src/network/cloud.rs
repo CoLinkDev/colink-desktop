@@ -45,6 +45,7 @@ use crate::{
 const WS_TICKET_PATH: &str = "/api/v1/ws/ticket";
 const WS_CONNECT_PATH: &str = "/ws/v1";
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEVICE_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub const AUTH_INVALIDATED_EVENT: &str = "auth-invalidated";
 pub const CLOUD_STATUS_EVENT: &str = "cloud-status";
@@ -558,6 +559,9 @@ impl CloudConnectionManager {
         let (mut writer, mut reader) = stream.split();
         let mut ping_interval = interval(Duration::from_secs(30));
         ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut device_sync_interval = interval(DEVICE_SYNC_INTERVAL);
+        device_sync_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        device_sync_interval.tick().await;
 
         loop {
             tokio::select! {
@@ -581,6 +585,25 @@ impl CloudConnectionManager {
                             connected_for: connected_at.elapsed(),
                             reason: Some("cloud connection disconnected".to_string()),
                         });
+                    }
+                }
+                _ = device_sync_interval.tick() => {
+                    let identity = match self.database.load_device_identity() {
+                        Ok(Some(identity)) if identity.user_id.as_deref() == Some(context.session.user_id.as_str()) => identity,
+                        Ok(Some(_)) | Ok(None) => continue,
+                        Err(error) => {
+                            warn!(%error, "failed to load device identity for periodic sync");
+                            continue;
+                        }
+                    };
+                    if let Err(error) = self
+                        .sync_current_device_identity(&context.settings, &context.session, &identity)
+                        .await
+                    {
+                        warn!(%error, "failed to periodically sync device identity");
+                    }
+                    if let Err(error) = self.sync_devices_from_server(&context).await {
+                        warn!(%error, "failed to periodically sync devices");
                     }
                 }
                 command = next_cloud_command(&mut command_rx, &mut camera_rx) => {
