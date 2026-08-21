@@ -12,7 +12,7 @@ use tauri::{
 use tracing::{info, warn};
 use url::Url;
 
-use crate::state::AppState;
+use crate::{protocol::BUSINESS_PROTOCOL_VERSION, state::AppState};
 
 #[cfg(windows)]
 use windows::{
@@ -436,7 +436,10 @@ fn set_castboard_parameters(url: &mut Url, language: &str) {
     let existing_parameters = url
         .query_pairs()
         .filter(|(key, _)| {
-            key != "lang" && key != "castboard-desktop" && key != "castboard-devtools"
+            key != "lang"
+                && key != "peerBusinessVersion"
+                && key != "castboard-desktop"
+                && key != "castboard-devtools"
         })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
@@ -459,7 +462,11 @@ fn castboard_parameters(language: &str) -> String {
 }
 
 fn castboard_parameter_pairs(language: &str) -> Vec<(&str, &str)> {
-    let mut parameters = vec![("lang", language), ("castboard-desktop", "1")];
+    let mut parameters = vec![
+        ("lang", language),
+        ("peerBusinessVersion", BUSINESS_PROTOCOL_VERSION),
+        ("castboard-desktop", "1"),
+    ];
     if cfg!(debug_assertions) {
         parameters.push(("castboard-devtools", "1"));
     }
