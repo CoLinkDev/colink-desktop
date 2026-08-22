@@ -103,9 +103,16 @@ pub fn handle_request(
             #[cfg(debug_assertions)]
             window.open_devtools();
         }
-        CastBoardAction::Ready => runtime.begin_local_castboard(WINDOW_LABEL),
+        CastBoardAction::Ready => {
+            runtime.begin_local_castboard(WINDOW_LABEL);
+            dispatch_host_ready(window)?;
+        }
     }
     Ok(Value::Null)
+}
+
+pub fn dispatch_host_ready(window: &WebviewWindow) -> Result<(), String> {
+    dispatch_event(window, host_ready_event())
 }
 
 pub fn dispatch_business_event<T>(
@@ -125,17 +132,30 @@ where
             "payload": payload,
         },
     });
+    dispatch_event(window, message)
+}
+
+fn dispatch_event(window: &WebviewWindow, message: Value) -> Result<(), String> {
     let message_json = serde_json::to_string(&message).map_err(|error| error.to_string())?;
     window
         .eval(format!("window.castboardIPC?._dispatch({message_json});"))
         .map_err(|error| error.to_string())
 }
 
+fn host_ready_event() -> Value {
+    serde_json::json!({
+        "channel": "castboard",
+        "kind": "event",
+        "type": "host.ready",
+        "payload": {},
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
 
-    use super::{CastBoardAction, CastBoardRequest};
+    use super::{host_ready_event, CastBoardAction, CastBoardRequest};
 
     fn request(request_type: &str) -> CastBoardRequest {
         CastBoardRequest {
@@ -155,6 +175,19 @@ mod tests {
             Ok(CastBoardAction::OpenDevTools)
         );
         assert_eq!(request("castboard.ready").action(), Ok(CastBoardAction::Ready));
+    }
+
+    #[test]
+    fn serializes_the_host_ready_event() {
+        assert_eq!(
+            host_ready_event(),
+            json!({
+                "channel": "castboard",
+                "kind": "event",
+                "type": "host.ready",
+                "payload": {},
+            }),
+        );
     }
 
     #[test]
