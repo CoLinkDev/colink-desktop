@@ -26,7 +26,7 @@ mod tray_indicator;
 
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,
-    delete_device, forget_lan_trust, get_castboard_status, get_music_providers, get_saved_login,
+    castboard_request, delete_device, forget_lan_trust, get_castboard_status, get_music_providers, get_saved_login,
     get_settings, handle_castboard_window_event, list_available_music_providers,
     create_pair_string, list_castboard_monitors, list_devices, list_lan_pairing_candidates,
     refresh_devices,
@@ -128,6 +128,7 @@ fn main() {
             get_castboard_status,
             open_castboard_on_monitor,
             stop_castboard,
+            castboard_request,
             check_update,
             open_update_download,
             install_tauri_update,

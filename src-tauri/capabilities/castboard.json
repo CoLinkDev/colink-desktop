@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/capability/2",
+  "identifier": "castboard-capability",
+  "description": "Permissions for the CastBoard window.",
+  "windows": ["castboard"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:5173/*",
+      "http://localhost:5173/*"
+    ]
+  },
+  "permissions": ["core:default"]
+}

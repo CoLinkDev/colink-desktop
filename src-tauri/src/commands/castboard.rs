@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{
     webview::PageLoadEvent, AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State,
     WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
@@ -28,8 +29,37 @@ use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
 
 const CASTBOARD_WINDOW_LABEL: &str = "castboard";
 const CASTBOARD_STATUS_EVENT: &str = "castboard-status";
-const CASTBOARD_ACTION_HOST: &str = "castboard-action.invalid";
 const DEFAULT_CASTBOARD_DEV_URL: &str = "http://127.0.0.1:5173/index.html?debug=1";
+const CASTBOARD_IPC_SCRIPT: &str = r#"
+(() => {
+  let nextId = 1;
+  const listeners = new Set();
+
+  function request({ type, payload }) {
+    const message = {
+      channel: "castboard",
+      kind: "request",
+      id: String(nextId++),
+      type,
+      payload: payload || {},
+    };
+    return window.__TAURI_INTERNALS__.invoke("castboard_request", message);
+  }
+
+  function _dispatch(message) {
+    for (const listener of listeners) {
+      listener(message);
+    }
+  }
+
+  function subscribe(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  window.castboardIPC = { request, subscribe, _dispatch };
+})();
+"#;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +116,32 @@ pub fn get_castboard_status(app: AppHandle) -> CastBoardStatus {
         return set_castboard_status(&app, "closed", None, None);
     }
     status
+}
+
+#[tauri::command]
+pub async fn castboard_request(
+    app: AppHandle,
+    r#type: String,
+    payload: Value,
+) -> Result<Value, String> {
+    let _ = payload;
+    match r#type.as_str() {
+        "castboard.close" => {
+            if let Some(window) = app.get_webview_window(CASTBOARD_WINDOW_LABEL) {
+                window.close().map_err(|error| error.to_string())?;
+            }
+            Ok(Value::Null)
+        }
+        "castboard.openDevTools" => {
+            if let Some(window) = app.get_webview_window(CASTBOARD_WINDOW_LABEL) {
+                #[cfg(debug_assertions)]
+                window.open_devtools();
+            }
+            Ok(Value::Null)
+        }
+        "castboard.ready" => Ok(Value::Null),
+        _ => Err(format!("unknown CastBoard request type: {type}")),
+    }
 }
 
 #[tauri::command]
@@ -151,7 +207,6 @@ pub async fn open_castboard_on_monitor(
         error
     })?;
     let runtime = state.runtime.clone();
-    let context_action_app = app.clone();
     info!(%url_label, "castboard window build starting");
     let window = WebviewWindowBuilder::new(&app, CASTBOARD_WINDOW_LABEL, url)
         .title("CastBoard")
@@ -160,7 +215,7 @@ pub async fn open_castboard_on_monitor(
         .resizable(false)
         .inner_size(size.width as f64, size.height as f64)
         .position(position.x as f64, position.y as f64)
-        .on_navigation(move |url| handle_castboard_navigation(&context_action_app, url))
+        .initialization_script(CASTBOARD_IPC_SCRIPT)
         .on_page_load(move |_window, payload| {
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 runtime.begin_local_castboard(CASTBOARD_WINDOW_LABEL);
@@ -469,27 +524,4 @@ fn castboard_parameter_pairs(language: &str) -> Vec<(&str, &str)> {
         parameters.push(("debug", "1"));
     }
     parameters
-}
-
-fn handle_castboard_navigation(app: &AppHandle, url: &Url) -> bool {
-    if url.host_str() != Some(CASTBOARD_ACTION_HOST) {
-        return true;
-    }
-
-    let Some(window) = app.get_webview_window(CASTBOARD_WINDOW_LABEL) else {
-        return false;
-    };
-    match url.path() {
-        "/close" => {
-            if let Err(error) = window.close() {
-                warn!(%error, "castboard context menu close failed");
-            }
-        }
-        "/open-devtools" => {
-            #[cfg(debug_assertions)]
-            window.open_devtools();
-        }
-        _ => {}
-    }
-    false
 }

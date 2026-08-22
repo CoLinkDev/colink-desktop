@@ -15,7 +15,7 @@ pub use auth::{
     clear_saved_login, get_saved_login, login, logout, register_account, save_saved_login,
 };
 pub use castboard::{
-    get_castboard_status, handle_castboard_window_event, list_castboard_monitors,
+    castboard_request, get_castboard_status, handle_castboard_window_event, list_castboard_monitors,
     open_castboard_on_monitor, stop_castboard,
 };
 pub use device::{

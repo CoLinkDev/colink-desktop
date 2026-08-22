@@ -228,13 +228,19 @@ impl SysInfoService {
     }
 
     fn dispatch_to_local(&self, snapshot: &SysInfoStatsPayload) {
-        let Ok(message_type_json) = serde_json::to_string(SYSINFO_STATS_TYPE) else {
+        let message = serde_json::json!({
+            "channel": "castboard",
+            "kind": "event",
+            "type": "business",
+            "payload": {
+                "type": SYSINFO_STATS_TYPE,
+                "payload": snapshot,
+            },
+        });
+        let Ok(message_json) = serde_json::to_string(&message) else {
             return;
         };
-        let Ok(payload_json) = serde_json::to_string(snapshot) else {
-            return;
-        };
-        let script = format!("window.handleCoLinkBusinessEvent?.({message_type_json}, {payload_json});");
+        let script = format!("window.castboardIPC?._dispatch({message_json});");
         for label in self.local_windows() {
             if let Some(window) = self.app.get_webview_window(&label) {
                 if let Err(error) = window.eval(&script) {

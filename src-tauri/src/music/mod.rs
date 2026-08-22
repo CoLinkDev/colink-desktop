@@ -758,14 +758,20 @@ impl MusicService {
         let Some(window) = self.app.get_webview_window(window_label) else {
             return;
         };
-        let Ok(message_type_json) = serde_json::to_string(message_type) else {
-            return;
-        };
-        let Ok(payload_json) = serde_json::to_string(payload) else {
+        let message = serde_json::json!({
+            "channel": "castboard",
+            "kind": "event",
+            "type": "business",
+            "payload": {
+                "type": message_type,
+                "payload": payload,
+            },
+        });
+        let Ok(message_json) = serde_json::to_string(&message) else {
             return;
         };
         if let Err(error) = window.eval(&format!(
-            "window.handleCoLinkBusinessEvent?.({message_type_json}, {payload_json});"
+            "window.castboardIPC?._dispatch({message_json});"
         )) {
             warn!(
                 %error,
