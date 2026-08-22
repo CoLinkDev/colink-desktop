@@ -306,6 +306,24 @@ impl AppRuntime {
         self.inner.sysinfo.end_local_session(window_label);
     }
 
+    pub(crate) fn execute_local_media_control(
+        &self,
+        action: SystemControlAction,
+    ) -> Result<(), String> {
+        if !matches!(
+            action,
+            SystemControlAction::Play
+                | SystemControlAction::Pause
+                | SystemControlAction::Next
+                | SystemControlAction::Previous
+        ) {
+            return Err("CastBoard only supports media control actions".to_string());
+        }
+
+        self.execute_system_control_command("castboard".to_string(), action, None, None);
+        Ok(())
+    }
+
     pub async fn send_text(&self, payload: SendTextPayload) -> AppResult<TextMessageRecord> {
         let text = payload.text.trim().to_string();
         if text.is_empty() {

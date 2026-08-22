@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::WebviewWindow;
 
-use crate::runtime::AppRuntime;
+use crate::{
+    protocol::SystemControlAction,
+    runtime::AppRuntime,
+};
 
 pub const WINDOW_LABEL: &str = "castboard";
 
@@ -54,6 +57,7 @@ enum CastBoardAction {
     OpenDevTools,
     Ready,
     SysInfoAlive,
+    MediaControl(SystemControlAction),
 }
 
 impl CastBoardRequest {
@@ -79,11 +83,28 @@ impl CastBoardRequest {
             "castboard.openDevTools" => Ok(CastBoardAction::OpenDevTools),
             "castboard.ready" => Ok(CastBoardAction::Ready),
             "castboard.sysinfo.alive" => Ok(CastBoardAction::SysInfoAlive),
+            "castboard.media.control" => self.media_control_action(),
             _ => Err(format!(
                 "unknown CastBoard request type: {}",
                 self.request_type
             )),
         }
+    }
+
+    fn media_control_action(&self) -> Result<CastBoardAction, String> {
+        let action = self
+            .payload
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "CastBoard media control action must be a string".to_string())?;
+        let media_action = match action {
+            "play" => SystemControlAction::Play,
+            "pause" => SystemControlAction::Pause,
+            "next" => SystemControlAction::Next,
+            "previous" => SystemControlAction::Previous,
+            _ => return Err(format!("unsupported CastBoard media control action: {action}")),
+        };
+        Ok(CastBoardAction::MediaControl(media_action))
     }
 }
 
@@ -110,6 +131,9 @@ pub fn handle_request(
             dispatch_host_ready(window)?;
         }
         CastBoardAction::SysInfoAlive => {}
+        CastBoardAction::MediaControl(action) => {
+            runtime.execute_local_media_control(action)?;
+        }
     }
     Ok(Value::Null)
 }
@@ -158,6 +182,8 @@ fn host_ready_event() -> Value {
 mod tests {
     use serde_json::{json, Value};
 
+    use crate::protocol::SystemControlAction;
+
     use super::{host_ready_event, CastBoardAction, CastBoardRequest};
 
     fn request(request_type: &str) -> CastBoardRequest {
@@ -168,6 +194,12 @@ mod tests {
             request_type: request_type.to_string(),
             payload: json!({}),
         }
+    }
+
+    fn media_control_request(action: &str) -> CastBoardRequest {
+        let mut request = request("castboard.media.control");
+        request.payload = json!({ "action": action });
+        request
     }
 
     #[test]
@@ -181,6 +213,22 @@ mod tests {
         assert_eq!(
             request("castboard.sysinfo.alive").action(),
             Ok(CastBoardAction::SysInfoAlive)
+        );
+        assert_eq!(
+            media_control_request("play").action(),
+            Ok(CastBoardAction::MediaControl(SystemControlAction::Play))
+        );
+        assert_eq!(
+            media_control_request("pause").action(),
+            Ok(CastBoardAction::MediaControl(SystemControlAction::Pause))
+        );
+        assert_eq!(
+            media_control_request("next").action(),
+            Ok(CastBoardAction::MediaControl(SystemControlAction::Next))
+        );
+        assert_eq!(
+            media_control_request("previous").action(),
+            Ok(CastBoardAction::MediaControl(SystemControlAction::Previous))
         );
     }
 
@@ -234,6 +282,18 @@ mod tests {
         assert_eq!(
             request("castboard.unknown").action(),
             Err("unknown CastBoard request type: castboard.unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_non_media_control_actions() {
+        assert_eq!(
+            media_control_request("shutdown").action(),
+            Err("unsupported CastBoard media control action: shutdown".to_string())
+        );
+        assert_eq!(
+            request("castboard.media.control").action(),
+            Err("CastBoard media control action must be a string".to_string())
         );
     }
 }
