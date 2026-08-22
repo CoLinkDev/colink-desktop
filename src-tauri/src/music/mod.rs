@@ -20,6 +20,7 @@ use tauri::{AppHandle, Manager};
 use tracing::{debug, info, warn};
 
 use crate::{
+    castboard_ipc,
     network::transport::TransportManager,
     protocol::{
         BusinessEnvelope, MusicLyricPayload, MusicProgressPayload, MusicTrackPayload,
@@ -758,21 +759,7 @@ impl MusicService {
         let Some(window) = self.app.get_webview_window(window_label) else {
             return;
         };
-        let message = serde_json::json!({
-            "channel": "castboard",
-            "kind": "event",
-            "type": "business",
-            "payload": {
-                "type": message_type,
-                "payload": payload,
-            },
-        });
-        let Ok(message_json) = serde_json::to_string(&message) else {
-            return;
-        };
-        if let Err(error) = window.eval(&format!(
-            "window.castboardIPC?._dispatch({message_json});"
-        )) {
+        if let Err(error) = castboard_ipc::dispatch_business_event(&window, message_type, payload) {
             warn!(
                 %error,
                 %window_label,

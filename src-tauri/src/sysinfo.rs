@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager};
 use tracing::{info, warn};
 
 use crate::{
+    castboard_ipc,
     network::transport::TransportManager,
     protocol::{BusinessEnvelope, SysInfoStatsPayload, SYSINFO_STATS_TYPE},
     sync::MutexExt,
@@ -228,22 +229,11 @@ impl SysInfoService {
     }
 
     fn dispatch_to_local(&self, snapshot: &SysInfoStatsPayload) {
-        let message = serde_json::json!({
-            "channel": "castboard",
-            "kind": "event",
-            "type": "business",
-            "payload": {
-                "type": SYSINFO_STATS_TYPE,
-                "payload": snapshot,
-            },
-        });
-        let Ok(message_json) = serde_json::to_string(&message) else {
-            return;
-        };
-        let script = format!("window.castboardIPC?._dispatch({message_json});");
         for label in self.local_windows() {
             if let Some(window) = self.app.get_webview_window(&label) {
-                if let Err(error) = window.eval(&script) {
+                if let Err(error) =
+                    castboard_ipc::dispatch_business_event(&window, SYSINFO_STATS_TYPE, snapshot)
+                {
                     warn!(%error, window_label = %label, "sysinfo local CastBoard dispatch failed");
                 }
             }

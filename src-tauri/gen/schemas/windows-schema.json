@@ -177,6 +177,18 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the CastBoard window to send requests through its single host bridge command.",
+          "type": "string",
+          "const": "allow-castboard-request",
+          "markdownDescription": "Allows the CastBoard window to send requests through its single host bridge command."
+        },
+        {
+          "description": "Allows the main application window to invoke its application commands.",
+          "type": "string",
+          "const": "allow-main-commands",
+          "markdownDescription": "Allows the main application window to invoke its application commands."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

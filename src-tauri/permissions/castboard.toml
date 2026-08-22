@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-castboard-request"
+description = "Allows the CastBoard window to send requests through its single host bridge command."
+commands.allow = ["castboard_request"]

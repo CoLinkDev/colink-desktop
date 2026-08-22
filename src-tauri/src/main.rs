@@ -2,6 +2,7 @@
 
 mod api;
 mod auth;
+mod castboard_ipc;
 mod commands;
 mod crypto;
 mod dev_log;
