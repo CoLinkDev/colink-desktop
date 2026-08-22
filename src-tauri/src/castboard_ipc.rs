@@ -53,6 +53,7 @@ enum CastBoardAction {
     Close,
     OpenDevTools,
     Ready,
+    SysInfoAlive,
 }
 
 impl CastBoardRequest {
@@ -77,6 +78,7 @@ impl CastBoardRequest {
             "castboard.close" => Ok(CastBoardAction::Close),
             "castboard.openDevTools" => Ok(CastBoardAction::OpenDevTools),
             "castboard.ready" => Ok(CastBoardAction::Ready),
+            "castboard.sysinfo.alive" => Ok(CastBoardAction::SysInfoAlive),
             _ => Err(format!(
                 "unknown CastBoard request type: {}",
                 self.request_type
@@ -107,6 +109,7 @@ pub fn handle_request(
             runtime.begin_local_castboard(WINDOW_LABEL);
             dispatch_host_ready(window)?;
         }
+        CastBoardAction::SysInfoAlive => {}
     }
     Ok(Value::Null)
 }
@@ -175,6 +178,10 @@ mod tests {
             Ok(CastBoardAction::OpenDevTools)
         );
         assert_eq!(request("castboard.ready").action(), Ok(CastBoardAction::Ready));
+        assert_eq!(
+            request("castboard.sysinfo.alive").action(),
+            Ok(CastBoardAction::SysInfoAlive)
+        );
     }
 
     #[test]
