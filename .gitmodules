@@ -1,0 +1,3 @@
+[submodule "castboard"]
+	path = castboard
+	url = https://github.com/CoLinkDev/colink-castboard.git

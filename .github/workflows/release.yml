@@ -38,12 +38,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: colink-desktop
-
-      - name: Checkout CastBoard
-        uses: actions/checkout@v4
-        with:
-          repository: CoLinkDev/colink-castboard
-          path: colink-castboard
+          submodules: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
