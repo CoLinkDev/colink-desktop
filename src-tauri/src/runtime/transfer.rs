@@ -1450,18 +1450,28 @@ impl AppRuntime {
     }
 
     fn take_cancelled_outgoing(&self, file_id: &str) -> bool {
-        let mut state = self.inner.state.lock_unpoisoned();
-        if !state.cancelled_files.remove(file_id) {
-            return false;
+        let removed = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            if !state.cancelled_files.remove(file_id) {
+                return false;
+            }
+            state.outgoing_files.remove(file_id)
+        };
+        if removed.is_some() {
+            self.inner.indicator.remove_session();
         }
-        state.outgoing_files.remove(file_id);
         true
     }
 
     fn clear_outgoing_transfer_state(&self, file_id: &str) {
-        let mut state = self.inner.state.lock_unpoisoned();
-        state.cancelled_files.remove(file_id);
-        state.outgoing_files.remove(file_id);
+        let removed = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            state.cancelled_files.remove(file_id);
+            state.outgoing_files.remove(file_id)
+        };
+        if removed.is_some() {
+            self.inner.indicator.remove_session();
+        }
     }
 
     pub(super) async fn handle_file_chunk(&self, payload: FileChunkPayload) -> AppResult<()> {
