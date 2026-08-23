@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     thread,
@@ -55,10 +55,14 @@ use crate::{
     },
     protocol::{
         BusinessEnvelope, ClipboardSyncPayload, FileAcceptPayload, FileAckPayload,
-        FileCancelPayload, FileChunkPayload, FileDonePayload, FileOfferPayload, FileReadyPayload,
-        FileRejectPayload, FileRetransmitPayload, TextMessagePayload, TextMessageReceiptPayload, CLIPBOARD_SYNC_TYPE,
+        FileCancelPayload, FileChunkPayload, FileDonePayload, FileFinishPayload, FileOfferPayload,
+        FileReadyPayload, FileRejectPayload, FileRetransmitPayload, FileV3AcceptPayload,
+        FileV3OfferPayload, FileV3ReadyPayload, TextMessagePayload, TextMessageReceiptPayload, CLIPBOARD_SYNC_TYPE,
         FILE_ACCEPT_TYPE, FILE_ACK_TYPE, FILE_CANCEL_TYPE, FILE_CHUNK_TYPE, FILE_DONE_TYPE,
         FILE_OFFER_TYPE, FILE_READY_TYPE, FILE_REJECT_TYPE, FILE_RETRANSMIT_TYPE, MUSIC_ALIVE_TYPE,
+        FILE_V3_ACCEPT_TYPE, FILE_V3_ACK_TYPE, FILE_V3_CANCEL_TYPE, FILE_V3_CHUNK_TYPE,
+        FILE_V3_DONE_TYPE, FILE_V3_FINISH_TYPE, FILE_V3_OFFER_TYPE, FILE_V3_READY_TYPE,
+        FILE_V3_REJECT_TYPE, FILE_V3_RETRANSMIT_TYPE,
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, TEXT_MESSAGE_RECEIPT_TYPE, FS_DOWNLOAD_TYPE, FS_UPLOAD_TYPE,
         FS_UPLOAD_READY_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
@@ -98,6 +102,8 @@ const TRANSFER_PROGRESS_INTERVAL_MS: i64 = 500;
 const FILE_ACK_INTERVAL_CHUNKS: i64 = 7;
 const LAN_SEND_WINDOW_CHUNKS: i64 = 8;
 const RELAY_SEND_WINDOW_CHUNKS: i64 = FILE_ACK_INTERVAL_CHUNKS;
+pub(super) const FILE_V3_RELAY_SEND_WINDOW_CHUNKS: i64 = 4;
+pub(super) const FILE_V3_RELAY_ACK_INTERVAL_CHUNKS: i64 = 4;
 pub(super) const FILESYSTEM_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const FILESYSTEM_DOWNLOAD_OFFER_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -155,18 +161,29 @@ struct PendingPowerAction {
 struct OutgoingFileState {
     source_path: PathBuf,
     record: FileTransferRecord,
+    protocol: FileTransferProtocol,
     ack_notify: Arc<Notify>,
     acknowledged_chunks: i64,
     last_reported_bytes: i64,
     last_progress_at: i64,
+    last_activity_at: i64,
 }
 
 struct IncomingFileState {
+    process_lock: Arc<AsyncMutex<()>>,
     writer: Arc<AsyncMutex<tokio::fs::File>>,
     verifier: Arc<AsyncMutex<crate::runtime::utils::FileChecksumVerifier>>,
     record: FileTransferRecord,
+    protocol: FileTransferProtocol,
+    transfer_token: Option<String>,
+    v3_ready_received: bool,
     received_chunks: i64,
     lan_finish_received: bool,
+    reorder_buffer: BTreeMap<i64, Vec<u8>>,
+    gap_detected_at: Option<i64>,
+    last_ack_at: i64,
+    last_acknowledged_chunks: i64,
+    last_activity_at: i64,
     last_reported_bytes: i64,
     last_progress_at: i64,
     filesystem_upload: Option<filesystem::FilesystemUploadDestination>,
@@ -179,7 +196,14 @@ pub(super) struct PendingFileOfferState {
     envelope_id: Option<String>,
     filesystem_download_id: Option<String>,
     filesystem_upload: Option<filesystem::FilesystemUploadDestination>,
+    protocol: FileTransferProtocol,
     payload: FileOfferPayload,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FileTransferProtocol {
+    V2,
+    V3,
 }
 
 pub(super) struct PendingFilesystemRequest {
@@ -554,6 +578,14 @@ impl AppRuntime {
                 warn!(%device_id, count = messages.len(), "runtime received failed lan sends");
                 if self.inner.cloud.is_connected() {
                     for message in messages {
+                        if message.message.message_type.starts_with("file.v3.") {
+                            warn!(
+                                %device_id,
+                                message_type = %message.message.message_type,
+                                "discarded direct file.v3 control message after LAN delivery failure"
+                            );
+                            continue;
+                        }
                         let _ = self.inner.cloud.send_relay(
                             &device_id,
                             message.message,
@@ -849,7 +881,44 @@ impl AppRuntime {
             FILE_OFFER_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileOfferPayload>(message.payload) {
                     let _ = self
-                        .handle_file_offer(from, route, envelope_id, correlation_id, payload)
+                        .handle_file_offer(
+                            from,
+                            route,
+                            envelope_id,
+                            correlation_id,
+                            payload,
+                            FileTransferProtocol::V2,
+                        )
+                        .await;
+                }
+            }
+            FILE_V3_OFFER_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileV3OfferPayload>(message.payload) {
+                    if payload.file_size < 0
+                        || uuid::Uuid::parse_str(&payload.session_id)
+                            .ok()
+                            .and_then(|value| value.get_version())
+                            != Some(uuid::Version::Random)
+                    {
+                        return;
+                    }
+                    let v2_shape = FileOfferPayload {
+                        session_id: payload.session_id,
+                        file_name: payload.file_name,
+                        file_size: payload.file_size,
+                        total_chunks: 0,
+                        chunk_size: crate::models::FILE_CHUNK_SIZE as i64,
+                        checksum: payload.checksum,
+                    };
+                    let _ = self
+                        .handle_file_offer(
+                            from,
+                            route,
+                            envelope_id,
+                            correlation_id,
+                            v2_shape,
+                            FileTransferProtocol::V3,
+                        )
                         .await;
                 }
             }
@@ -858,6 +927,18 @@ impl AppRuntime {
                     let runtime = self.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = runtime.start_file_send(payload).await;
+                    });
+                }
+            }
+            FILE_V3_ACCEPT_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileV3AcceptPayload>(message.payload) {
+                    let runtime = self.clone();
+                    let route = route.to_string();
+                    let session_id = payload.session_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = runtime.start_file_v3_send(payload, &route).await {
+                            warn!(%session_id, %error, "failed to start file.v3 transfer");
+                        }
                     });
                 }
             }
@@ -876,14 +957,29 @@ impl AppRuntime {
                     let _ = self.mark_incoming_route(&payload.session_id, TransferRoute::Lan);
                 }
             }
+            FILE_V3_READY_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileV3ReadyPayload>(message.payload) {
+                    let _ = self.handle_file_v3_ready(from, route, payload).await;
+                }
+            }
             FILE_CHUNK_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileChunkPayload>(message.payload) {
                     let _ = self.handle_file_chunk(payload).await;
                 }
             }
+            FILE_V3_CHUNK_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileChunkPayload>(message.payload) {
+                    let _ = self.handle_file_v3_chunk(from, route, payload).await;
+                }
+            }
             FILE_ACK_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileAckPayload>(message.payload) {
                     let _ = self.handle_file_ack(payload);
+                }
+            }
+            FILE_V3_ACK_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileAckPayload>(message.payload) {
+                    let _ = self.handle_file_v3_ack(from, route, payload);
                 }
             }
             FILE_RETRANSMIT_TYPE => {
@@ -896,6 +992,28 @@ impl AppRuntime {
                             .retransmit_file_chunk(&payload.session_id, payload.chunk_index, false)
                             .await;
                     });
+                }
+            }
+            FILE_V3_RETRANSMIT_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileRetransmitPayload>(message.payload) {
+                    let runtime = self.clone();
+                    let from = from.to_string();
+                    let route = route.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = runtime
+                            .retransmit_file_v3_chunk(
+                                &from,
+                                &route,
+                                &payload.session_id,
+                                payload.chunk_index,
+                            )
+                            .await;
+                    });
+                }
+            }
+            FILE_V3_FINISH_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileFinishPayload>(message.payload) {
+                    let _ = self.handle_file_v3_finish(from, route, payload).await;
                 }
             }
             FILE_DONE_TYPE => {
@@ -913,9 +1031,24 @@ impl AppRuntime {
                     );
                 }
             }
+            FILE_V3_DONE_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileDonePayload>(message.payload) {
+                    let _ = self.handle_file_v3_done(from, route, payload);
+                }
+            }
             FILE_CANCEL_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileCancelPayload>(message.payload) {
                     let _ = self.handle_file_cancel(&payload.session_id, payload.message);
+                }
+            }
+            FILE_V3_REJECT_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileRejectPayload>(message.payload) {
+                    let _ = self.handle_file_v3_reject(from, route, payload);
+                }
+            }
+            FILE_V3_CANCEL_TYPE => {
+                if let Ok(payload) = serde_json::from_value::<FileCancelPayload>(message.payload) {
+                    let _ = self.handle_file_v3_cancel(from, route, payload);
                 }
             }
             CLIPBOARD_SYNC_TYPE => {

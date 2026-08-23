@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    io,
+    io::{self, SeekFrom},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -13,13 +14,21 @@ use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
 use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use mdns_sd::{DaemonEvent, DaemonStatus, IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::{rngs::OsRng, seq::SliceRandom, RngCore};
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rustls::{
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
+    DigitallySignedStruct, SignatureScheme,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
     time::{interval, sleep, timeout, Instant, MissedTickBehavior},
 };
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
     tungstenite::{
@@ -82,6 +91,7 @@ const MIN_LAN_PORT: u16 = 1_024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(240);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const FILE_V3_HEADER_LIMIT: usize = 16 * 1024;
 const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 const KEEPALIVE_TIMEOUT_SECS: u64 = 45;
 const SWIM_PERIOD: Duration = Duration::from_millis(5_000);
@@ -166,12 +176,94 @@ struct LanState {
     seq: u64,
     transfer_tokens: HashMap<String, String>,
     transfer_senders: HashMap<String, mpsc::UnboundedSender<FileDataFrame>>,
+    file_v3_transfers: HashMap<String, FileV3TransferEndpoint>,
+    tls_config: Option<LanTlsConfig>,
     camera_tokens: HashMap<String, String>,
     camera_senders: HashMap<String, mpsc::Sender<CameraDataFrame>>,
     camera_receive_buffers: HashMap<String, CameraReceiveBuffer>,
     pending_pairings: HashMap<String, oneshot::Sender<bool>>,
     pairing_candidates: HashMap<String, LanPairingCandidate>,
     pair_strings: HashMap<String, PairStringRecord>,
+}
+
+struct FileV3TransferEndpoint {
+    token: String,
+    source_path: PathBuf,
+    active: bool,
+    started: bool,
+}
+
+enum FileV3Request {
+    Authorized(PathBuf),
+    NotFound,
+    Unauthorized,
+    Conflict,
+}
+
+#[derive(Clone)]
+struct LanTlsConfig {
+    server_config: Arc<rustls::ServerConfig>,
+    cert_fingerprint: String,
+}
+
+#[derive(Debug)]
+struct FingerprintServerCertVerifier {
+    expected_fingerprint: [u8; 32],
+    crypto_provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for FingerprintServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let actual = Sha256::digest(end_entity.as_ref());
+        if constant_time_equals(actual.as_slice(), &self.expected_fingerprint) {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "TLS certificate fingerprint does not match the direct P2P control-plane value".to_string(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.crypto_provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.crypto_provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.crypto_provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -512,6 +604,8 @@ impl LanManager {
                 seq: 0,
                 transfer_tokens: HashMap::new(),
                 transfer_senders: HashMap::new(),
+                file_v3_transfers: HashMap::new(),
+                tls_config: None,
                 camera_tokens: HashMap::new(),
                 camera_senders: HashMap::new(),
                 camera_receive_buffers: HashMap::new(),
@@ -569,6 +663,8 @@ impl LanManager {
             inner.probe_in_flight.clear();
             inner.transfer_tokens.clear();
             inner.transfer_senders.clear();
+            inner.file_v3_transfers.clear();
+            inner.tls_config = None;
             inner.camera_tokens.clear();
             inner.camera_senders.clear();
             inner.camera_receive_buffers.clear();
@@ -614,6 +710,8 @@ impl LanManager {
             inner.probe_in_flight.clear();
             inner.pairing_candidates.clear();
             inner.transfer_tokens.clear();
+            inner.file_v3_transfers.clear();
+            inner.tls_config = None;
             inner.camera_tokens.clear();
             inner.camera_receive_buffers.clear();
             inner.pair_strings.clear();
@@ -1105,6 +1203,7 @@ impl LanManager {
         let sender = {
             let mut inner = self.inner.lock_unpoisoned();
             inner.transfer_tokens.remove(session_id);
+            inner.file_v3_transfers.remove(session_id);
             inner.transfer_senders.remove(session_id)
         };
         drop(sender);
@@ -1138,6 +1237,149 @@ impl LanManager {
             .map_err(|error| AppError::message(error.to_string()))?;
         self.attach_transfer_stream(session_id.to_string(), stream)
             .await
+    }
+
+    pub fn register_file_v3_transfer(
+        &self,
+        session_id: &str,
+        token: &str,
+        source_path: PathBuf,
+    ) -> AppResult<String> {
+        let mut inner = self.inner.lock_unpoisoned();
+        let fingerprint = inner
+            .tls_config
+            .as_ref()
+            .map(|config| config.cert_fingerprint.clone())
+            .ok_or_else(|| AppError::message("LAN TLS service is unavailable"))?;
+        inner.file_v3_transfers.insert(
+            session_id.to_string(),
+            FileV3TransferEndpoint {
+                token: token.to_string(),
+                source_path,
+                active: false,
+                started: false,
+            },
+        );
+        Ok(fingerprint)
+    }
+
+    pub fn expire_file_v3_transfer(&self, session_id: &str) -> bool {
+        let mut inner = self.inner.lock_unpoisoned();
+        matches!(inner.file_v3_transfers.get(session_id), Some(endpoint) if !endpoint.started)
+            && inner.file_v3_transfers.remove(session_id).is_some()
+    }
+
+    pub async fn download_file_v3(
+        &self,
+        session_id: &str,
+        token: &str,
+        ip: &str,
+        port: u16,
+        cert_fingerprint: &str,
+        destination: &Path,
+        expected_size: i64,
+    ) -> AppResult<i64> {
+        let expected_size = u64::try_from(expected_size)
+            .map_err(|_| AppError::message("file size must not be negative"))?;
+        let offset = tokio::fs::metadata(destination)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if offset > expected_size {
+            return Err(AppError::message("partial file is larger than the offered file"));
+        }
+        let expected_fingerprint = parse_certificate_fingerprint(cert_fingerprint)?;
+        let address = SocketAddr::new(
+            ip.parse::<IpAddr>()
+                .map_err(|_| AppError::message("invalid LAN transfer address"))?,
+            port,
+        );
+        let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(address))
+            .await
+            .map_err(|_| AppError::message("LAN HTTPS connection timed out"))??;
+        let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = Arc::new(FingerprintServerCertVerifier {
+            expected_fingerprint,
+            crypto_provider: crypto_provider.clone(),
+        });
+        let config = rustls::ClientConfig::builder_with_provider(crypto_provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|error| AppError::message(error.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        let server_name = ServerName::try_from("colink-transfer")
+            .map_err(|error| AppError::message(error.to_string()))?;
+        let mut stream = timeout(
+            HANDSHAKE_TIMEOUT,
+            TlsConnector::from(Arc::new(config)).connect(server_name, tcp),
+        )
+        .await
+        .map_err(|_| AppError::message("LAN HTTPS handshake timed out"))??;
+        let range_header = if offset > 0 {
+            format!("Range: bytes={offset}-\r\n")
+        } else {
+            String::new()
+        };
+        let request = format!(
+            "GET /transfer/v3/{session_id} HTTP/1.1\r\nHost: {ip}:{port}\r\nAuthorization: Bearer {token}\r\n{range_header}Connection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await?;
+        let (status, headers, buffered_body) = read_http_headers(&mut stream).await?;
+        let expected_status = if offset == 0 { 200 } else { 206 };
+        if status != expected_status {
+            return Err(AppError::message(format!(
+                "LAN HTTPS file request failed with HTTP {status}"
+            )));
+        }
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| AppError::message("LAN HTTPS response is missing Content-Length"))?;
+        if content_length != expected_size.saturating_sub(offset) {
+            return Err(AppError::message("LAN HTTPS response length does not match the file offer"));
+        }
+        if offset > 0 {
+            let expected_range = format!("bytes {offset}-");
+            let content_range = headers
+                .get("content-range")
+                .ok_or_else(|| AppError::message("range response is missing Content-Range"))?;
+            if !content_range.starts_with(&expected_range) || !content_range.ends_with(&format!("/{expected_size}")) {
+                return Err(AppError::message("LAN HTTPS range response does not match the request"));
+            }
+        }
+        let mut output = if offset == 0 {
+            tokio::fs::File::create(destination).await?
+        } else {
+            tokio::fs::OpenOptions::new().append(true).open(destination).await?
+        };
+        let mut received = 0_u64;
+        if !buffered_body.is_empty() {
+            if buffered_body.len() as u64 > content_length {
+                return Err(AppError::message("LAN HTTPS response body exceeds Content-Length"));
+            }
+            output.write_all(&buffered_body).await?;
+            received = buffered_body.len() as u64;
+        }
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while received < content_length {
+            let read = stream.read(&mut buffer).await?;
+            if read == 0 {
+                return Err(AppError::message("LAN HTTPS response ended before the file was complete"));
+            }
+            let remaining = content_length - received;
+            if read as u64 > remaining {
+                return Err(AppError::message("LAN HTTPS response body exceeds Content-Length"));
+            }
+            output.write_all(&buffer[..read]).await?;
+            received += read as u64;
+        }
+        output.flush().await?;
+        let final_size = offset + received;
+        if final_size != expected_size {
+            return Err(AppError::message("LAN HTTPS transfer size does not match the file offer"));
+        }
+        i64::try_from(final_size).map_err(|_| AppError::message("file size is too large"))
     }
 
     pub fn register_camera_token(&self, session_id: &str, token: &str) {
@@ -1225,6 +1467,17 @@ impl LanManager {
                 return;
             }
         };
+        match generate_lan_tls_config() {
+            Ok(tls_config) => {
+                let mut inner = self.inner.lock_unpoisoned();
+                if inner.generation == generation {
+                    inner.tls_config = Some(tls_config);
+                }
+            }
+            Err(error) => {
+                warn!(%error, "LAN TLS configuration is unavailable; file.v3 LAN transfers will be cancelled");
+            }
+        }
         info!(port, preferred_port = LAN_PORT, "lan listener bound");
 
         let (mut mdns, mut browse_rx, mut monitor_rx) =
@@ -1579,15 +1832,175 @@ impl LanManager {
         remote_addr: SocketAddr,
     ) -> AppResult<()> {
         debug!(%remote_addr, "accepted lan tcp connection");
-        let mut peek = [0_u8; 32];
-        let read = stream.peek(&mut peek).await?;
-        if read > 0 && peek[..read].starts_with(b"POST /peer/swim/v1") {
+        let mut first_byte = [0_u8; 1];
+        let first_read = timeout(HANDSHAKE_TIMEOUT, stream.peek(&mut first_byte))
+            .await
+            .map_err(|_| AppError::message("LAN connection did not send an initial byte"))??;
+        if first_read == 0 {
+            return Ok(());
+        }
+        if first_byte[0] == 0x16 {
+            return self.handle_inbound_tls(stream).await;
+        }
+        if !matches!(first_byte[0], b'G' | b'P' | b'H' | b'D' | b'O' | b'C' | b'T') {
+            return Ok(());
+        }
+        if first_byte[0] == b'G'
+            && tcp_stream_starts_with(&stream, b"GET /transfer/v3/").await?
+        {
+            let mut stream = stream;
+            write_file_v3_response(&mut stream, 421, &[], None).await?;
+            return Ok(());
+        }
+        if first_byte[0] == b'P'
+            && tcp_stream_starts_with(&stream, b"POST /peer/swim/v1").await?
+        {
             return self
                 .handle_swim_http(generation, context, stream, remote_addr)
                 .await;
         }
 
         self.handle_inbound_ws(generation, context, stream).await
+    }
+
+    async fn handle_inbound_tls(&self, stream: TcpStream) -> AppResult<()> {
+        let server_config = self
+            .inner
+            .lock_unpoisoned()
+            .tls_config
+            .as_ref()
+            .map(|config| config.server_config.clone())
+            .ok_or_else(|| AppError::message("LAN TLS service is unavailable"))?;
+        let stream = timeout(HANDSHAKE_TIMEOUT, TlsAcceptor::from(server_config).accept(stream))
+            .await
+            .map_err(|_| AppError::message("LAN TLS handshake timed out"))??;
+        self.handle_file_v3_https(stream).await
+    }
+
+    async fn handle_file_v3_https(
+        &self,
+        mut stream: tokio_rustls::server::TlsStream<TcpStream>,
+    ) -> AppResult<()> {
+        let (method, path, headers) = match read_http_request(&mut stream).await {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = write_file_v3_response(&mut stream, 400, &[], None).await;
+                return Err(error);
+            }
+        };
+        if method != "GET" {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        }
+        let Some(session_id) = path.strip_prefix("/transfer/v3/").filter(|value| !value.is_empty()) else {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        };
+        if session_id.contains('/') || path.contains('?') {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        }
+        let request = match headers
+            .get("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+        {
+            Some(token) => self.begin_file_v3_request(session_id, token),
+            None => FileV3Request::Unauthorized,
+        };
+        let source_path = match request {
+            FileV3Request::Authorized(path) => path,
+            FileV3Request::NotFound => {
+                write_file_v3_response(&mut stream, 404, &[], None).await?;
+                return Ok(());
+            }
+            FileV3Request::Unauthorized => {
+                write_file_v3_response(&mut stream, 401, &[], None).await?;
+                return Ok(());
+            }
+            FileV3Request::Conflict => {
+                write_file_v3_response(&mut stream, 409, &[], None).await?;
+                return Ok(());
+            }
+        };
+        let result = self
+            .write_file_v3_content(&mut stream, &source_path, headers.get("range"))
+            .await;
+        self.end_file_v3_request(session_id);
+        result
+    }
+
+    fn begin_file_v3_request(&self, session_id: &str, token: &str) -> FileV3Request {
+        let mut inner = self.inner.lock_unpoisoned();
+        let Some(endpoint) = inner.file_v3_transfers.get_mut(session_id) else {
+            return FileV3Request::NotFound;
+        };
+        if endpoint.active {
+            return FileV3Request::Conflict;
+        }
+        if !constant_time_equals(endpoint.token.as_bytes(), token.as_bytes()) {
+            return FileV3Request::Unauthorized;
+        }
+        endpoint.active = true;
+        endpoint.started = true;
+        FileV3Request::Authorized(endpoint.source_path.clone())
+    }
+
+    fn end_file_v3_request(&self, session_id: &str) {
+        if let Some(endpoint) = self
+            .inner
+            .lock_unpoisoned()
+            .file_v3_transfers
+            .get_mut(session_id)
+        {
+            endpoint.active = false;
+        }
+    }
+
+    async fn write_file_v3_content(
+        &self,
+        stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        source_path: &Path,
+        range_header: Option<&String>,
+    ) -> AppResult<()> {
+        let metadata = match tokio::fs::metadata(source_path).await {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => {
+                write_file_v3_response(stream, 404, &[], None).await?;
+                return Ok(());
+            }
+        };
+        let total_size = metadata.len();
+        let range_start = match range_header {
+            Some(value) => match parse_file_v3_range(value, total_size) {
+                Some(value) => value,
+                None => {
+                    write_file_v3_response(stream, 416, &[("Content-Range", format!("bytes */{total_size}"))], None).await?;
+                    return Ok(());
+                }
+            },
+            None => 0,
+        };
+        let remaining = total_size - range_start;
+        let mut file = tokio::fs::File::open(source_path).await?;
+        file.seek(SeekFrom::Start(range_start)).await?;
+        let mut headers = vec![
+            ("Content-Type", "application/octet-stream".to_string()),
+            ("Content-Length", remaining.to_string()),
+            ("Accept-Ranges", "bytes".to_string()),
+        ];
+        let status = if range_start == 0 && range_header.is_none() {
+            200
+        } else {
+            headers.push((
+                "Content-Range",
+                format!("bytes {range_start}-{}/{total_size}", total_size.saturating_sub(1)),
+            ));
+            206
+        };
+        write_file_v3_response(stream, status, &headers, None).await?;
+        tokio::io::copy(&mut file.take(remaining), stream).await?;
+        stream.flush().await?;
+        Ok(())
     }
 
     async fn handle_swim_http(
@@ -5150,6 +5563,208 @@ async fn write_http_response(
     Ok(())
 }
 
+async fn read_http_request<S>(stream: &mut S) -> AppResult<(String, String, HashMap<String, String>)>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let (first_line, headers, _) = read_http_head(stream).await?;
+    let mut parts = first_line.split_ascii_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| AppError::message("HTTP request is missing its method"))?;
+    let path = parts
+        .next()
+        .ok_or_else(|| AppError::message("HTTP request is missing its path"))?;
+    if parts.next().is_none() {
+        return Err(AppError::message("HTTP request is missing its version"));
+    }
+    Ok((method.to_string(), path.to_string(), headers))
+}
+
+async fn read_http_headers<S>(stream: &mut S) -> AppResult<(u16, HashMap<String, String>, Vec<u8>)>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let (first_line, headers, buffered_body) = read_http_head(stream).await?;
+    let mut parts = first_line.split_ascii_whitespace();
+    let version = parts
+        .next()
+        .ok_or_else(|| AppError::message("HTTP response is missing its version"))?;
+    if !version.starts_with("HTTP/") {
+        return Err(AppError::message("invalid HTTP response version"));
+    }
+    let status = parts
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| AppError::message("HTTP response is missing its status"))?;
+    Ok((status, headers, buffered_body))
+}
+
+async fn read_http_head<S>(stream: &mut S) -> AppResult<(String, HashMap<String, String>, Vec<u8>)>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(1024);
+    let mut buffer = [0_u8; 2048];
+    loop {
+        if let Some(header_end) = find_header_end(&bytes) {
+            let head = std::str::from_utf8(&bytes[..header_end])
+                .map_err(|_| AppError::message("HTTP headers are not valid UTF-8"))?;
+            let mut lines = head.split("\r\n");
+            let first_line = lines
+                .next()
+                .filter(|line| !line.is_empty())
+                .ok_or_else(|| AppError::message("HTTP message is missing its start line"))?
+                .to_string();
+            let mut headers = HashMap::new();
+            for line in lines {
+                let (name, value) = line
+                    .split_once(':')
+                    .ok_or_else(|| AppError::message("malformed HTTP header"))?;
+                headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+            return Ok((first_line, headers, bytes[header_end + 4..].to_vec()));
+        }
+        if bytes.len() >= FILE_V3_HEADER_LIMIT {
+            return Err(AppError::message("HTTP headers are too large"));
+        }
+        let max_read = (FILE_V3_HEADER_LIMIT - bytes.len()).min(buffer.len());
+        let read = timeout(HANDSHAKE_TIMEOUT, stream.read(&mut buffer[..max_read]))
+            .await
+            .map_err(|_| AppError::message("HTTP headers timed out"))??;
+        if read == 0 {
+            return Err(AppError::message("HTTP message ended before its headers"));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+async fn write_file_v3_response<S>(
+    stream: &mut S,
+    status: u16,
+    headers: &[(&str, String)],
+    body: Option<&[u8]>,
+) -> AppResult<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let reason = match status {
+        200 => "OK",
+        206 => "Partial Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        409 => "Conflict",
+        416 => "Range Not Satisfiable",
+        421 => "Misdirected Request",
+        _ => "Error",
+    };
+    let body = body.unwrap_or_default();
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len(),
+    );
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+    stream.write_all(response.as_bytes()).await?;
+    if !body.is_empty() {
+        stream.write_all(body).await?;
+    }
+    stream.flush().await?;
+    Ok(())
+}
+
+fn parse_file_v3_range(value: &str, total_size: u64) -> Option<u64> {
+    let start = value.strip_prefix("bytes=")?.strip_suffix('-')?.parse::<u64>().ok()?;
+    (start < total_size).then_some(start)
+}
+
+fn parse_certificate_fingerprint(value: &str) -> AppResult<[u8; 32]> {
+    let hex = value
+        .strip_prefix("sha256:")
+        .ok_or_else(|| AppError::message("certificate fingerprint must use sha256:<hex> format"))?;
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit()))
+    {
+        return Err(AppError::message("certificate fingerprint must contain a SHA-256 digest"));
+    }
+    let mut fingerprint = [0_u8; 32];
+    for (index, byte) in fingerprint.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .map_err(|_| AppError::message("certificate fingerprint is malformed"))?;
+    }
+    Ok(fingerprint)
+}
+
+fn constant_time_equals(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+async fn tcp_stream_starts_with(stream: &TcpStream, prefix: &[u8]) -> AppResult<bool> {
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    let mut buffer = vec![0_u8; prefix.len()];
+    loop {
+        let read = stream.peek(&mut buffer).await?;
+        if read == 0 {
+            return Ok(false);
+        }
+        let compared = read.min(prefix.len());
+        if buffer[..compared] != prefix[..compared] {
+            return Ok(false);
+        }
+        if read >= prefix.len() {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::message("LAN HTTP route prefix timed out"));
+        }
+        sleep(remaining.min(Duration::from_millis(10))).await;
+    }
+}
+
+fn generate_lan_tls_config() -> AppResult<LanTlsConfig> {
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(|error| AppError::message(error.to_string()))?;
+    let mut params = CertificateParams::new(vec!["colink-transfer".to_string()])
+        .map_err(|error| AppError::message(error.to_string()))?;
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, "CoLink File Transfer");
+    params.distinguished_name = distinguished_name;
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::minutes(5);
+    params.not_after = now + time::Duration::hours(24);
+    let certificate = params
+        .self_signed(&key_pair)
+        .map_err(|error| AppError::message(error.to_string()))?;
+    let certificate_der = certificate.der().to_vec();
+    let cert_fingerprint = format!("sha256:{:x}", Sha256::digest(&certificate_der));
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(certificate_der)],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
+        )
+        .map_err(|error| AppError::message(error.to_string()))?;
+    Ok(LanTlsConfig {
+        server_config: Arc::new(server_config),
+        cert_fingerprint,
+    })
+}
+
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
@@ -5234,7 +5849,10 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{lan_port_candidates, CameraReceiveBuffer, LanManager, MemberRecord, MemberState};
+    use super::{
+        lan_port_candidates, parse_certificate_fingerprint, parse_file_v3_range,
+        CameraReceiveBuffer, LanManager, MemberRecord, MemberState,
+    };
     use crate::protocol::CameraDataFrame;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
@@ -5279,6 +5897,22 @@ mod tests {
             lan_port_candidates().take(5).collect::<Vec<_>>(),
             vec![27_777, 27_778, 27_776, 27_779, 27_775],
         );
+    }
+
+    #[test]
+    fn file_v3_range_requires_an_open_ended_satisfiable_offset() {
+        assert_eq!(parse_file_v3_range("bytes=0-", 10), Some(0));
+        assert_eq!(parse_file_v3_range("bytes=9-", 10), Some(9));
+        assert_eq!(parse_file_v3_range("bytes=10-", 10), None);
+        assert_eq!(parse_file_v3_range("bytes=0-9", 10), None);
+        assert_eq!(parse_file_v3_range("bytes=-1", 10), None);
+    }
+
+    #[test]
+    fn file_v3_certificate_fingerprint_requires_lowercase_sha256() {
+        assert!(parse_certificate_fingerprint(&format!("sha256:{}", "0".repeat(64))).is_ok());
+        assert!(parse_certificate_fingerprint(&format!("sha256:{}", "A".repeat(64))).is_err());
+        assert!(parse_certificate_fingerprint("sha256:abcd").is_err());
     }
 
     #[test]

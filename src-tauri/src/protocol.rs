@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.14.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.15.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const TEXT_MESSAGE_RECEIPT_TYPE: &str = "message.v1.receipt";
@@ -16,6 +16,16 @@ pub const FILE_CHUNK_TYPE: &str = "file.v2.chunk";
 pub const FILE_ACK_TYPE: &str = "file.v2.ack";
 pub const FILE_RETRANSMIT_TYPE: &str = "file.v2.retransmit";
 pub const FILE_DONE_TYPE: &str = "file.v2.done";
+pub const FILE_V3_OFFER_TYPE: &str = "file.v3.offer";
+pub const FILE_V3_ACCEPT_TYPE: &str = "file.v3.accept";
+pub const FILE_V3_REJECT_TYPE: &str = "file.v3.reject";
+pub const FILE_V3_CANCEL_TYPE: &str = "file.v3.cancel";
+pub const FILE_V3_READY_TYPE: &str = "file.v3.ready";
+pub const FILE_V3_CHUNK_TYPE: &str = "file.v3.chunk";
+pub const FILE_V3_ACK_TYPE: &str = "file.v3.ack";
+pub const FILE_V3_RETRANSMIT_TYPE: &str = "file.v3.retransmit";
+pub const FILE_V3_FINISH_TYPE: &str = "file.v3.finish";
+pub const FILE_V3_DONE_TYPE: &str = "file.v3.done";
 pub const MUSIC_TRACK_TYPE: &str = "music.v1.track";
 pub const MUSIC_LYRIC_TYPE: &str = "music.v1.lyric";
 pub const MUSIC_PROGRESS_TYPE: &str = "music.v1.progress";
@@ -104,9 +114,26 @@ pub struct FileOfferPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileV3OfferPayload {
+    pub session_id: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub checksum: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileAcceptPayload {
     pub session_id: String,
     pub transfer_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileV3AcceptPayload {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +164,13 @@ pub struct FileReadyPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileV3ReadyPayload {
+    pub session_id: String,
+    pub cert_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileChunkPayload {
     pub session_id: String,
     pub chunk_index: i64,
@@ -155,6 +189,13 @@ pub struct FileAckPayload {
 pub struct FileRetransmitPayload {
     pub session_id: String,
     pub chunk_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileFinishPayload {
+    pub session_id: String,
+    pub total_chunks: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

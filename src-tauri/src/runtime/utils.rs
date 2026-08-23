@@ -116,6 +116,14 @@ pub(super) fn build_file_checksum_with_algorithm(
     Ok(format!("{}:{digest}", algorithm.as_str()))
 }
 
+pub(super) fn verify_file_checksum(path: &Path, checksum: &str) -> AppResult<bool> {
+    let (algorithm, expected) = split_checksum(checksum)?;
+    if algorithm == FileChecksumAlgorithm::None && expected != "none" {
+        return Err(AppError::message("none checksum must use none:none"));
+    }
+    Ok(hash_file_by_algorithm(path, algorithm)?.eq_ignore_ascii_case(expected))
+}
+
 pub(super) fn unique_download_path(download_dir: &Path, file_name: &str) -> PathBuf {
     let safe_name = sanitize(file_name);
     let candidate = download_dir.join(&safe_name);

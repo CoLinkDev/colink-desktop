@@ -46,7 +46,9 @@ pub(super) fn acknowledged_file_bytes(
 }
 
 pub(super) fn should_send_file_ack(next_expected_index: i64, total_chunks: i64) -> bool {
-    next_expected_index >= total_chunks || next_expected_index % FILE_ACK_INTERVAL_CHUNKS == 0
+    next_expected_index > 0
+        && ((total_chunks > 0 && next_expected_index >= total_chunks)
+            || next_expected_index % FILE_ACK_INTERVAL_CHUNKS == 0)
 }
 
 #[cfg(test)]
@@ -92,5 +94,6 @@ mod tests {
         assert!(should_send_file_ack(FILE_ACK_INTERVAL_CHUNKS, 20));
         assert!(should_send_file_ack(20, 20));
         assert!(!should_send_file_ack(FILE_ACK_INTERVAL_CHUNKS - 1, 20));
+        assert!(!should_send_file_ack(1, 0));
     }
 }
