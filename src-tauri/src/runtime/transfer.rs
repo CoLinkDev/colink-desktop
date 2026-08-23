@@ -351,12 +351,7 @@ impl AppRuntime {
                 protocol = outgoing.protocol;
                 control_route = Some(outgoing.record.route.clone());
             }
-            if active_record
-                .as_ref()
-                .map(|record| record.status == "offered")
-                .unwrap_or(false)
-            {
-                state.outgoing_files.remove(file_id);
+            if state.outgoing_files.remove(file_id).is_some() {
                 sessions_removed += 1;
             }
             if let Some(incoming) = state.incoming_files.remove(file_id) {
