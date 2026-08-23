@@ -283,7 +283,7 @@ export function TransfersPage() {
                   const isFailed = item.status === 'failed' || item.status === 'cancelled'
                   const canOpenReceivedFile = item.direction === 'inbound' && isDone && Boolean(item.finalPath)
                   const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
-                  const speed = inFlight ? transferSpeeds[item.fileId] : null
+                  const speed = inFlight ? (transferSpeeds[item.fileId] ?? null) : null
                   const routeLabel = item.route === 'lan'
                     ? t('transfers.routeLan')
                     : item.route === 'cloud'

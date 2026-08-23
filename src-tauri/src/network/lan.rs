@@ -186,15 +186,23 @@ struct LanState {
     pair_strings: HashMap<String, PairStringRecord>,
 }
 
+type FileV3ProgressCallback = Arc<dyn Fn(i64) -> AppResult<()> + Send + Sync>;
+
 struct FileV3TransferEndpoint {
     token: String,
     source_path: PathBuf,
+    on_progress: FileV3ProgressCallback,
     active: bool,
     started: bool,
 }
 
+struct FileV3AuthorizedRequest {
+    source_path: PathBuf,
+    on_progress: FileV3ProgressCallback,
+}
+
 enum FileV3Request {
-    Authorized(PathBuf),
+    Authorized(FileV3AuthorizedRequest),
     NotFound,
     Unauthorized,
     Conflict,
@@ -1239,12 +1247,16 @@ impl LanManager {
             .await
     }
 
-    pub fn register_file_v3_transfer(
+    pub fn register_file_v3_transfer<F>(
         &self,
         session_id: &str,
         token: &str,
         source_path: PathBuf,
-    ) -> AppResult<String> {
+        on_progress: F,
+    ) -> AppResult<String>
+    where
+        F: Fn(i64) -> AppResult<()> + Send + Sync + 'static,
+    {
         let mut inner = self.inner.lock_unpoisoned();
         let fingerprint = inner
             .tls_config
@@ -1256,6 +1268,7 @@ impl LanManager {
             FileV3TransferEndpoint {
                 token: token.to_string(),
                 source_path,
+                on_progress: Arc::new(on_progress),
                 active: false,
                 started: false,
             },
@@ -1269,7 +1282,7 @@ impl LanManager {
             && inner.file_v3_transfers.remove(session_id).is_some()
     }
 
-    pub async fn download_file_v3(
+    pub async fn download_file_v3<F>(
         &self,
         session_id: &str,
         token: &str,
@@ -1278,7 +1291,11 @@ impl LanManager {
         cert_fingerprint: &str,
         destination: &Path,
         expected_size: i64,
-    ) -> AppResult<i64> {
+        mut on_progress: F,
+    ) -> AppResult<i64>
+    where
+        F: FnMut(i64) -> AppResult<()> + Send,
+    {
         let expected_size = u64::try_from(expected_size)
             .map_err(|_| AppError::message("file size must not be negative"))?;
         let offset = tokio::fs::metadata(destination)
@@ -1354,12 +1371,21 @@ impl LanManager {
             tokio::fs::OpenOptions::new().append(true).open(destination).await?
         };
         let mut received = 0_u64;
+        let mut report_progress = |received: u64| -> AppResult<()> {
+            let transferred = offset
+                .checked_add(received)
+                .ok_or_else(|| AppError::message("LAN HTTPS transfer size overflow"))?;
+            let transferred = i64::try_from(transferred)
+                .map_err(|_| AppError::message("file size is too large"))?;
+            on_progress(transferred)
+        };
         if !buffered_body.is_empty() {
             if buffered_body.len() as u64 > content_length {
                 return Err(AppError::message("LAN HTTPS response body exceeds Content-Length"));
             }
             output.write_all(&buffered_body).await?;
             received = buffered_body.len() as u64;
+            report_progress(received)?;
         }
         let mut buffer = vec![0_u8; 64 * 1024];
         while received < content_length {
@@ -1373,6 +1399,7 @@ impl LanManager {
             }
             output.write_all(&buffer[..read]).await?;
             received += read as u64;
+            report_progress(received)?;
         }
         output.flush().await?;
         let final_size = offset + received;
@@ -1907,8 +1934,8 @@ impl LanManager {
             Some(token) => self.begin_file_v3_request(session_id, token),
             None => FileV3Request::Unauthorized,
         };
-        let source_path = match request {
-            FileV3Request::Authorized(path) => path,
+        let request = match request {
+            FileV3Request::Authorized(request) => request,
             FileV3Request::NotFound => {
                 write_file_v3_response(&mut stream, 404, &[], None).await?;
                 return Ok(());
@@ -1923,7 +1950,12 @@ impl LanManager {
             }
         };
         let result = self
-            .write_file_v3_content(&mut stream, &source_path, headers.get("range"))
+            .write_file_v3_content(
+                &mut stream,
+                &request.source_path,
+                headers.get("range"),
+                &request.on_progress,
+            )
             .await;
         self.end_file_v3_request(session_id);
         result
@@ -1942,7 +1974,10 @@ impl LanManager {
         }
         endpoint.active = true;
         endpoint.started = true;
-        FileV3Request::Authorized(endpoint.source_path.clone())
+        FileV3Request::Authorized(FileV3AuthorizedRequest {
+            source_path: endpoint.source_path.clone(),
+            on_progress: endpoint.on_progress.clone(),
+        })
     }
 
     fn end_file_v3_request(&self, session_id: &str) {
@@ -1961,6 +1996,7 @@ impl LanManager {
         stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
         source_path: &Path,
         range_header: Option<&String>,
+        on_progress: &FileV3ProgressCallback,
     ) -> AppResult<()> {
         let metadata = match tokio::fs::metadata(source_path).await {
             Ok(metadata) if metadata.is_file() => metadata,
@@ -1998,7 +2034,23 @@ impl LanManager {
             206
         };
         write_file_v3_response(stream, status, &headers, None).await?;
-        tokio::io::copy(&mut file.take(remaining), stream).await?;
+        let mut sent = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while sent < remaining {
+            let read_limit = (remaining - sent).min(buffer.len() as u64) as usize;
+            let read = file.read(&mut buffer[..read_limit]).await?;
+            if read == 0 {
+                return Err(AppError::message("file ended before HTTPS response completed"));
+            }
+            stream.write_all(&buffer[..read]).await?;
+            sent += read as u64;
+            let transferred = range_start
+                .checked_add(sent)
+                .ok_or_else(|| AppError::message("LAN HTTPS transfer size overflow"))?;
+            let transferred = i64::try_from(transferred)
+                .map_err(|_| AppError::message("file size is too large"))?;
+            on_progress(transferred)?;
+        }
         stream.flush().await?;
         Ok(())
     }

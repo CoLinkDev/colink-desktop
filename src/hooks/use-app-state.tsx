@@ -92,11 +92,18 @@ function isTransferInFlight(record: FileTransferRecord) {
   return record.status === 'sending' || record.status === 'receiving'
 }
 
+function isTransferTerminal(record: FileTransferRecord) {
+  return record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled' || record.status === 'rejected'
+}
+
 function mergeTransferRecord(current: FileTransferRecord[], nextRecord: FileTransferRecord) {
   const next = [...current]
   const index = next.findIndex((item) => item.fileId === nextRecord.fileId)
 
   if (index >= 0) {
+    if (isTransferTerminal(next[index]) && isTransferInFlight(nextRecord)) {
+      return current
+    }
     next[index] = nextRecord
   } else {
     next.push(nextRecord)

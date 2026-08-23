@@ -629,6 +629,28 @@ impl Database {
         Ok(())
     }
 
+    /// Advances an active transfer without allowing late progress callbacks to revive a terminal state.
+    pub fn update_active_transfer_progress(
+        &self,
+        file_id: &str,
+        transferred_bytes: i64,
+        updated_at: i64,
+    ) -> AppResult<bool> {
+        let connection = self.open()?;
+        let changed = connection.execute(
+            "
+            UPDATE file_transfers
+            SET transferred_bytes = ?2,
+                updated_at = ?3
+            WHERE file_id = ?1
+              AND status IN ('sending', 'receiving')
+              AND transferred_bytes < ?2
+            ",
+            params![file_id, transferred_bytes, updated_at],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub fn load_unfinished_transfers(&self) -> AppResult<Vec<FileTransferRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -1506,6 +1528,50 @@ mod tests {
             .expect("save transfer");
         assert_eq!(database.load_transfers(10).expect("transfers").len(), 1);
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn active_transfer_progress_does_not_overwrite_terminal_state() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+        let mut transfer = FileTransferRecord {
+            file_id: "f1".to_string(),
+            device_id: "d1".to_string(),
+            direction: "outbound".to_string(),
+            file_name: "a.txt".to_string(),
+            file_size: 12,
+            transferred_bytes: 0,
+            total_chunks: 1,
+            status: "sending".to_string(),
+            checksum: "sha256:test".to_string(),
+            route: "lan".to_string(),
+            temp_path: None,
+            final_path: None,
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        database.save_transfer(&transfer).expect("save sending transfer");
+        assert!(database
+            .update_active_transfer_progress("f1", 6, 2)
+            .expect("save active progress"));
+
+        transfer.status = "completed".to_string();
+        transfer.transferred_bytes = 12;
+        transfer.updated_at = 3;
+        database.save_transfer(&transfer).expect("save completed transfer");
+        assert!(!database
+            .update_active_transfer_progress("f1", 11, 4)
+            .expect("reject late progress"));
+
+        let saved = database
+            .load_transfer("f1")
+            .expect("load transfer")
+            .expect("saved transfer");
+        assert_eq!(saved.status, "completed");
+        assert_eq!(saved.transferred_bytes, 12);
         let _ = fs::remove_file(path);
     }
 

@@ -1145,10 +1145,22 @@ impl AppRuntime {
                 )?;
                 return Ok(());
             }
+            let progress_runtime = self.clone();
+            let progress_file_id = file_id.clone();
             let fingerprint = match self
                 .inner
                 .lan
-                .register_file_v3_transfer(&file_id, &token, source_path)
+                .register_file_v3_transfer(
+                    &file_id,
+                    &token,
+                    source_path,
+                    move |transferred_bytes| {
+                        progress_runtime.report_file_v3_lan_upload_progress(
+                            &progress_file_id,
+                            transferred_bytes,
+                        )
+                    },
+                )
             {
                 Ok(value) => value,
                 Err(error) => {
@@ -1523,6 +1535,8 @@ impl AppRuntime {
             .await?;
             return Ok(());
         };
+        let progress_runtime = self.clone();
+        let progress_session_id = payload.session_id.clone();
         let result = self
             .inner
             .lan
@@ -1534,6 +1548,12 @@ impl AppRuntime {
                 &payload.cert_fingerprint,
                 PathBuf::from(&temp_path).as_path(),
                 record.file_size,
+                move |transferred_bytes| {
+                    progress_runtime.report_file_v3_lan_download_progress(
+                        &progress_session_id,
+                        transferred_bytes,
+                    )
+                },
             )
             .await;
         match result {
@@ -2700,6 +2720,61 @@ impl AppRuntime {
         Ok(Some((outgoing.record.clone(), bytes_per_second)))
     }
 
+    fn report_file_v3_lan_upload_progress(
+        &self,
+        file_id: &str,
+        transferred_bytes: i64,
+    ) -> AppResult<()> {
+        let updated_at = unix_now_millis();
+        let progress = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(outgoing) = state.outgoing_files.get_mut(file_id) else {
+                return Ok(());
+            };
+            if outgoing.protocol != FileTransferProtocol::V3
+                || outgoing.record.route != TransferRoute::Lan.as_str()
+                || outgoing.record.status != "sending"
+            {
+                return Ok(());
+            }
+            if transferred_bytes <= outgoing.record.transferred_bytes {
+                return Ok(());
+            }
+            if transferred_bytes > outgoing.record.file_size {
+                return Err(AppError::message(
+                    "LAN HTTPS upload exceeds the offered file size",
+                ));
+            }
+
+            outgoing.record.transferred_bytes = transferred_bytes;
+            outgoing.record.updated_at = updated_at;
+            outgoing.last_activity_at = updated_at;
+            let should_report = transferred_bytes == outgoing.record.file_size
+                || updated_at - outgoing.last_progress_at >= TRANSFER_PROGRESS_INTERVAL_MS;
+            should_report.then(|| {
+                let delta = outgoing.record.transferred_bytes - outgoing.last_reported_bytes;
+                let duration = updated_at - outgoing.last_progress_at;
+                outgoing.last_reported_bytes = outgoing.record.transferred_bytes;
+                outgoing.last_progress_at = updated_at;
+                (
+                    outgoing.record.clone(),
+                    calculate_bytes_per_second(delta, duration),
+                )
+            })
+        };
+
+        if let Some((record, bytes_per_second)) = progress {
+            if self.inner.database.update_active_transfer_progress(
+                &record.file_id,
+                record.transferred_bytes,
+                record.updated_at,
+            )? {
+                self.emit_transfer_progress(record, bytes_per_second);
+            }
+        }
+        Ok(())
+    }
+
     fn update_incoming_progress(
         &self,
         file_id: &str,
@@ -2734,6 +2809,60 @@ impl AppRuntime {
             finished,
             incoming.lan_finish_received,
         ))
+    }
+
+    fn report_file_v3_lan_download_progress(
+        &self,
+        file_id: &str,
+        transferred_bytes: i64,
+    ) -> AppResult<()> {
+        let updated_at = unix_now_millis();
+        let progress = {
+            let mut state = self.inner.state.lock_unpoisoned();
+            let Some(incoming) = state.incoming_files.get_mut(file_id) else {
+                return Ok(());
+            };
+            if incoming.protocol != FileTransferProtocol::V3
+                || incoming.record.route != TransferRoute::Lan.as_str()
+            {
+                return Ok(());
+            }
+            if transferred_bytes <= incoming.record.transferred_bytes {
+                return Ok(());
+            }
+            if transferred_bytes > incoming.record.file_size {
+                return Err(AppError::message(
+                    "LAN HTTPS download exceeds the offered file size",
+                ));
+            }
+
+            incoming.record.transferred_bytes = transferred_bytes;
+            incoming.record.updated_at = updated_at;
+            incoming.last_activity_at = updated_at;
+            let should_report = transferred_bytes == incoming.record.file_size
+                || updated_at - incoming.last_progress_at >= TRANSFER_PROGRESS_INTERVAL_MS;
+            should_report.then(|| {
+                let delta = incoming.record.transferred_bytes - incoming.last_reported_bytes;
+                let duration = updated_at - incoming.last_progress_at;
+                incoming.last_reported_bytes = incoming.record.transferred_bytes;
+                incoming.last_progress_at = updated_at;
+                (
+                    incoming.record.clone(),
+                    calculate_bytes_per_second(delta, duration),
+                )
+            })
+        };
+
+        if let Some((record, bytes_per_second)) = progress {
+            if self.inner.database.update_active_transfer_progress(
+                &record.file_id,
+                record.transferred_bytes,
+                record.updated_at,
+            )? {
+                self.emit_transfer_progress(record, bytes_per_second);
+            }
+        }
+        Ok(())
     }
 
     fn emit_transfer_progress(&self, record: FileTransferRecord, bytes_per_second: f64) {
