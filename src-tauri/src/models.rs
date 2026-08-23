@@ -6,7 +6,7 @@ const ACCESS_TOKEN_LONG_REFRESH_BUFFER_SECONDS: i64 = 60 * 60;
 const ACCESS_TOKEN_SHORT_REFRESH_PERCENT: i64 = 90;
 pub const LAN_PORT: u16 = 27_777;
 pub const MAX_TEXT_LENGTH: usize = 10_000;
-pub const FILE_CHUNK_SIZE: usize = 1_048_576;
+pub const FILE_CHUNK_SIZE: usize = 512 * 1024;
 pub const CLIPBOARD_MAX_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
