@@ -106,6 +106,9 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         publish_offline_devices(state)?
     };
 
+    let mut transfers = state.database.load_transfers(200)?;
+    state.runtime.format_transfer_records(&mut transfers);
+
     Ok(BootstrapPayload {
         settings,
         session: session_summary,
@@ -113,7 +116,7 @@ pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
         device: Some(identity.summary()),
         cloud: state.cloud.snapshot(),
         messages: state.database.load_messages(200)?,
-        transfers: state.database.load_transfers(200)?,
+        transfers,
     })
 }
 
@@ -624,6 +627,9 @@ async fn save_session_and_bootstrap(
     let _ = state.runtime.activate();
     let _ = shell::refresh_tray(&state.app);
 
+    let mut transfers = state.database.load_transfers(200)?;
+    state.runtime.format_transfer_records(&mut transfers);
+
     Ok(BootstrapPayload {
         settings,
         session: Some(session.summary()),
@@ -631,7 +637,7 @@ async fn save_session_and_bootstrap(
         device: Some(identity.summary()),
         cloud: state.cloud.snapshot(),
         messages: state.database.load_messages(200)?,
-        transfers: state.database.load_transfers(200)?,
+        transfers,
     })
 }
 

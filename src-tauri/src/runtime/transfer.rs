@@ -56,6 +56,45 @@ enum ChunkTransport {
     Lan,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        transfer_error_text_key, REASON_TRANSFER_CHECKSUM_MISMATCH, REASON_TRANSFER_GENERIC,
+        REASON_TRANSFER_STORAGE_FULL, REASON_TRANSFER_USER_CANCELLED, REASON_TRANSFER_USER_REJECTED,
+    };
+    use crate::i18n;
+
+    #[test]
+    fn maps_all_defined_transfer_reason_codes() {
+        let cases = [
+            (REASON_TRANSFER_USER_CANCELLED, "Transfer cancelled"),
+            (REASON_TRANSFER_USER_REJECTED, "Recipient rejected the transfer"),
+            (REASON_TRANSFER_CHECKSUM_MISMATCH, "File checksum verification failed"),
+            (REASON_TRANSFER_STORAGE_FULL, "Storage full at destination"),
+            (REASON_TRANSFER_GENERIC, "Transfer failed"),
+        ];
+
+        for (reason, expected) in cases {
+            let key = transfer_error_text_key(reason).expect("defined transfer reason");
+            assert_eq!(i18n::text("en", key), expected);
+        }
+    }
+
+    #[test]
+    fn localizes_protocol_reason_codes_in_each_supported_language() {
+        let key = transfer_error_text_key(REASON_TRANSFER_USER_CANCELLED)
+            .expect("defined transfer reason");
+        for language in ["zh-CN", "zh-TW", "ja", "ko", "de", "es", "ru"] {
+            assert_ne!(i18n::text(language, key), "Transfer cancelled");
+        }
+    }
+
+    #[test]
+    fn preserves_unknown_reason_codes_for_forward_compatibility() {
+        assert!(transfer_error_text_key("colink:transfer.future_reason.v1").is_none());
+    }
+}
+
 impl FileTransferProtocol {
     fn offer_type(self) -> &'static str {
         match self {
@@ -96,6 +135,7 @@ impl FileTransferProtocol {
 const REASON_TRANSFER_USER_CANCELLED: &str = "colink:transfer.user_cancelled.v1";
 const REASON_TRANSFER_USER_REJECTED: &str = "colink:transfer.user_rejected.v1";
 const REASON_TRANSFER_CHECKSUM_MISMATCH: &str = "colink:transfer.checksum_mismatch.v1";
+const REASON_TRANSFER_STORAGE_FULL: &str = "colink:transfer.storage_full.v1";
 const REASON_TRANSFER_GENERIC: &str = "colink:transfer.generic.v1";
 const FILE_OFFER_TIMEOUT: Duration = Duration::from_secs(60);
 const FILE_V3_READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -103,14 +143,21 @@ const FILE_V3_RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const FILE_V3_RELAY_ACK_INTERVAL: Duration = Duration::from_millis(500);
 const FILE_V3_RELAY_RETRANSMIT_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn transfer_error_message(reason: &str) -> String {
+fn transfer_error_text_key(reason: &str) -> Option<TextKey> {
     match reason {
-        REASON_TRANSFER_USER_CANCELLED => "User cancelled the transfer".to_string(),
-        REASON_TRANSFER_USER_REJECTED => "User rejected the file".to_string(),
-        REASON_TRANSFER_CHECKSUM_MISMATCH => "File checksum verification failed".to_string(),
-        REASON_TRANSFER_GENERIC => "Generic transfer failure".to_string(),
-        _ => reason.to_string(),
+        REASON_TRANSFER_USER_CANCELLED => Some(TextKey::TransferUserCancelled),
+        REASON_TRANSFER_USER_REJECTED => Some(TextKey::TransferUserRejected),
+        REASON_TRANSFER_CHECKSUM_MISMATCH => Some(TextKey::TransferChecksumMismatch),
+        REASON_TRANSFER_STORAGE_FULL => Some(TextKey::TransferStorageFull),
+        REASON_TRANSFER_GENERIC => Some(TextKey::TransferGeneric),
+        _ => None,
     }
+}
+
+fn transfer_error_message(runtime: &AppRuntime, reason: &str) -> String {
+    transfer_error_text_key(reason)
+        .map(|key| runtime.user_text(key))
+        .unwrap_or_else(|| reason.to_string())
 }
 
 fn generate_file_v3_transfer_token() -> String {
@@ -147,6 +194,46 @@ fn select_file_checksum_algorithm(
 }
 
 impl AppRuntime {
+    pub(crate) fn format_transfer_error(&self, reason_or_message: &str) -> String {
+        transfer_error_text_key(reason_or_message)
+            .map(|key| self.user_text(key))
+            .unwrap_or_else(|| reason_or_message.to_string())
+    }
+
+    pub(crate) fn format_transfer_records(&self, records: &mut [FileTransferRecord]) {
+        for record in records {
+            if let Some(error) = record.error.as_deref() {
+                record.error = Some(self.format_transfer_error(error));
+            }
+        }
+    }
+
+    fn format_generic_transfer_error(&self, message: &str) -> String {
+        if message.trim().is_empty() {
+            self.user_text(TextKey::TransferGeneric)
+        } else {
+            format!("{}: {message}", self.user_text(TextKey::TransferGeneric))
+        }
+    }
+
+    pub(crate) fn transfer_error_from_peer(
+        &self,
+        reason: Option<&str>,
+        message: Option<&str>,
+    ) -> Option<String> {
+        let message = message.filter(|value| !value.trim().is_empty());
+        match reason {
+            Some(REASON_TRANSFER_GENERIC) => Some(
+                message
+                    .map(|value| self.format_generic_transfer_error(value))
+                    .unwrap_or_else(|| self.user_text(TextKey::TransferGeneric)),
+            ),
+            Some(reason) if reason.starts_with("colink:") => Some(reason.to_string()),
+            Some(reason) => Some(message.unwrap_or(reason).to_string()),
+            None => message.map(str::to_string),
+        }
+    }
+
     pub async fn send_files(&self, payload: SendFilePayload) -> AppResult<Vec<FileTransferRecord>> {
         if payload.paths.is_empty() {
             return Err(AppError::message(self.user_text(TextKey::SelectFiles)));
@@ -311,7 +398,7 @@ impl AppRuntime {
                 let _ = self.finish_outgoing_transfer(
                     &file_id,
                     "failed",
-                    Some(error.to_string()),
+                    Some(self.format_generic_transfer_error(&error.to_string())),
                     None,
                 );
                 return Err(error);
@@ -378,7 +465,7 @@ impl AppRuntime {
                 FileCancelPayload {
                     session_id: file_id.to_string(),
                     reason: REASON_TRANSFER_USER_CANCELLED.to_string(),
-                    message: transfer_error_message(REASON_TRANSFER_USER_CANCELLED),
+                    message: transfer_error_message(self, REASON_TRANSFER_USER_CANCELLED),
                     details: None,
                 },
             )?;
@@ -410,7 +497,7 @@ impl AppRuntime {
 
         if let Some(record) = record.as_mut() {
             record.status = "cancelled".to_string();
-            record.error = Some("user cancelled".to_string());
+            record.error = Some(self.user_text(TextKey::TransferUserCancelled));
             record.updated_at = unix_now_millis();
             self.inner.database.save_transfer(record)?;
             self.emit_transfers()?;
@@ -680,7 +767,7 @@ impl AppRuntime {
             FileRejectPayload {
                 session_id,
                 reason: REASON_TRANSFER_USER_REJECTED.to_string(),
-                message: transfer_error_message(REASON_TRANSFER_USER_REJECTED),
+                    message: transfer_error_message(self, REASON_TRANSFER_USER_REJECTED),
                 details: None,
             },
         )?;
@@ -839,7 +926,7 @@ impl AppRuntime {
             let _ = tokio::fs::remove_file(&temp_path).await;
             let mut failed = record.clone();
             failed.status = "failed".to_string();
-            failed.error = Some(error.to_string());
+            failed.error = Some(self.format_generic_transfer_error(&error.to_string()));
             failed.updated_at = unix_now_millis();
             let _ = self.inner.database.save_transfer(&failed);
             let _ = self.emit_transfers();
@@ -920,7 +1007,7 @@ impl AppRuntime {
                     return self.send_file_data_lan(file_id, source_path, record).await;
                 }
                 Err(error) => {
-                    let message = format!("LAN data connection failed: {error}");
+                    let message = format!("{}: {error}", self.user_text(TextKey::TransferLanFailed));
                     warn!(file_id = %file_id, %error, "lan data connection failed");
                     let cancel = BusinessEnvelope::from_payload(
                         FILE_CANCEL_TYPE,
@@ -932,7 +1019,12 @@ impl AppRuntime {
                         },
                     )?;
                     let _ = self.send_business_message(&record.device_id, cancel).await;
-                    self.finish_outgoing_transfer(&file_id, "failed", Some(message), None)?;
+                    self.finish_outgoing_transfer(
+                        &file_id,
+                        "failed",
+                        Some(self.format_generic_transfer_error(&message)),
+                        None,
+                    )?;
                     return Ok(());
                 }
             }
@@ -961,7 +1053,7 @@ impl AppRuntime {
                 let _ = runtime.finish_outgoing_transfer(
                     &file_id,
                     "failed",
-                    Some("offer expired".to_string()),
+                    Some(runtime.user_text(TextKey::TransferOfferExpired)),
                     None,
                 );
             }
@@ -999,7 +1091,7 @@ impl AppRuntime {
                             &file_id,
                             &device_id,
                             TransferRoute::Cloud.as_str(),
-                            "Relay transfer timed out due to inactivity".to_string(),
+                            runtime.user_text(TextKey::TransferRelayInactive),
                         );
                     }
                     break;
@@ -1047,7 +1139,7 @@ impl AppRuntime {
                         .fail_file_v3_incoming(
                             &file_id,
                             &device_id,
-                            "Relay transfer timed out due to inactivity".to_string(),
+                            runtime.user_text(TextKey::TransferRelayInactive),
                         )
                         .await;
                     break;
@@ -1100,7 +1192,7 @@ impl AppRuntime {
                 &file_id,
                 &record.device_id,
                 &record.route,
-                "file.v3.accept arrived on a different control-plane route".to_string(),
+                self.user_text(TextKey::TransferRouteMismatch),
             )?;
             return Ok(());
         }
@@ -1115,7 +1207,7 @@ impl AppRuntime {
                 &file_id,
                 &record.device_id,
                 TransferRoute::Lan.as_str(),
-                "file.v3.accept on the direct P2P control plane has an invalid transferToken".to_string(),
+                self.user_text(TextKey::TransferGeneric),
             )?;
             return Ok(());
         }
@@ -1124,14 +1216,14 @@ impl AppRuntime {
                 &file_id,
                 &record.device_id,
                 control_route,
-                "file.v3.accept on Cloud Relay must not include transferToken".to_string(),
+                self.user_text(TextKey::TransferGeneric),
             )?;
             return Ok(());
         }
 
         if let Some(token) = payload.transfer_token {
             if !self.inner.lan.is_available(&record.device_id) {
-                let message = "LAN HTTPS route is no longer available".to_string();
+                let message = self.user_text(TextKey::TransferLanFailed);
                 self.cancel_file_v3_after_lan_failure(
                     &file_id,
                     &record.device_id,
@@ -1163,7 +1255,7 @@ impl AppRuntime {
                         &file_id,
                         &record.device_id,
                         TransferRoute::Lan.as_str(),
-                        format!("LAN HTTPS endpoint registration failed: {error}"),
+                        format!("{}: {error}", self.user_text(TextKey::TransferLanFailed)),
                     )?;
                     return Ok(());
                 }
@@ -1187,7 +1279,7 @@ impl AppRuntime {
                     &file_id,
                     &record.device_id,
                     TransferRoute::Lan.as_str(),
-                    format!("LAN HTTPS ready signaling failed: {error}"),
+                    format!("{}: {error}", self.user_text(TextKey::TransferLanFailed)),
                 )?;
             } else {
                 self.expire_file_v3_endpoint(file_id.clone(), record.device_id.clone());
@@ -1197,7 +1289,7 @@ impl AppRuntime {
 
         record.route = TransferRoute::Cloud.as_str().to_string();
         self.update_outgoing_route(&file_id, TransferRoute::Cloud)?;
-        if let Err(error) = self
+        if let Err(_error) = self
             .send_file_data_relay_v3(file_id.clone(), source_path, record.clone(), protocol)
             .await
         {
@@ -1205,7 +1297,7 @@ impl AppRuntime {
                 &file_id,
                 &record.device_id,
                 TransferRoute::Cloud.as_str(),
-                format!("Relay file transfer failed: {error}"),
+                self.user_text(TextKey::TransferGeneric),
             )?;
         }
         Ok(())
@@ -1237,7 +1329,12 @@ impl AppRuntime {
                 let _ = runtime.inner.cloud.send_relay(&device_id, cancel, None, None);
             }
         });
-        self.finish_outgoing_transfer(file_id, "failed", Some(message), None)
+        self.finish_outgoing_transfer(
+            file_id,
+            "failed",
+            Some(self.format_generic_transfer_error(&message)),
+            None,
+        )
     }
 
     fn expire_file_v3_endpoint(&self, file_id: String, device_id: String) {
@@ -1258,7 +1355,7 @@ impl AppRuntime {
                     &file_id,
                     &device_id,
                     TransferRoute::Lan.as_str(),
-                    "HTTPS transfer did not start before the endpoint timeout".to_string(),
+                    runtime.user_text(TextKey::TransferHttpsIncomplete),
                 );
             }
         });
@@ -1517,7 +1614,7 @@ impl AppRuntime {
             self.fail_file_v3_incoming(
                 &payload.session_id,
                 from,
-                "file.v3.ready was received without a LAN transfer token".to_string(),
+                self.user_text(TextKey::TransferLanFailed),
             )
             .await?;
             return Ok(());
@@ -1526,7 +1623,7 @@ impl AppRuntime {
             self.fail_file_v3_incoming(
                 &payload.session_id,
                 from,
-                "file.v3 receive state has no temporary file".to_string(),
+                self.user_text(TextKey::TransferGeneric),
             )
             .await?;
             return Ok(());
@@ -1535,7 +1632,7 @@ impl AppRuntime {
             self.fail_file_v3_incoming(
                 &payload.session_id,
                 from,
-                "LAN HTTPS endpoint is unavailable".to_string(),
+                self.user_text(TextKey::TransferLanFailed),
             )
             .await?;
             return Ok(());
@@ -1582,7 +1679,7 @@ impl AppRuntime {
                 self.fail_file_v3_incoming(
                     &payload.session_id,
                     from,
-                    format!("LAN HTTPS file download failed: {error}"),
+                format!("{}: {error}", self.user_text(TextKey::TransferLanFailed)),
                 )
                 .await?;
             }
@@ -1685,7 +1782,7 @@ impl AppRuntime {
             }
             let mut record = incoming.record;
             record.status = "failed".to_string();
-            record.error = Some(message.clone());
+            record.error = Some(self.format_generic_transfer_error(&message));
             record.temp_path = None;
             record.updated_at = unix_now_millis();
             self.inner.database.save_transfer(&record)?;
@@ -1736,7 +1833,12 @@ impl AppRuntime {
             }
             FileDataFrameKind::Cancel => {
                 let reason = String::from_utf8_lossy(&frame.payload).to_string();
-                self.handle_file_cancel(session_id, reason)
+                let reason = if reason.trim().is_empty() {
+                    REASON_TRANSFER_GENERIC.to_string()
+                } else {
+                    reason
+                };
+                self.handle_file_cancel(session_id, reason, None)
             }
         }
     }
@@ -2084,7 +2186,7 @@ impl AppRuntime {
         self.finish_outgoing_transfer(
             &payload.session_id,
             "rejected",
-            Some(payload.message),
+            self.transfer_error_from_peer(Some(&payload.reason), Some(&payload.message)),
             None,
         )
     }
@@ -2101,7 +2203,7 @@ impl AppRuntime {
         self.finish_outgoing_transfer(
             &payload.session_id,
             if payload.success { "completed" } else { "failed" },
-            payload.message.or(payload.reason),
+            self.transfer_error_from_peer(payload.reason.as_deref(), payload.message.as_deref()),
             None,
         )
     }
@@ -2115,7 +2217,7 @@ impl AppRuntime {
         if !self.is_file_v3_control(&payload.session_id, from, route) {
             return Ok(());
         }
-        self.handle_file_cancel(&payload.session_id, payload.message)
+        self.handle_file_cancel(&payload.session_id, payload.reason, Some(payload.message))
     }
 
     async fn finish_incoming_transfer(&self, file_id: &str) -> AppResult<()> {
@@ -2194,13 +2296,18 @@ impl AppRuntime {
         record.error = if success {
             None
         } else {
-            Some(failure_message.clone().unwrap_or_else(|| {
-                if size_matches {
-                    REASON_TRANSFER_CHECKSUM_MISMATCH.to_string()
-                } else {
-                    "Received file size does not match the offer".to_string()
-                }
-            }))
+            Some(
+                failure_message
+                    .as_deref()
+                    .map(|message| self.format_generic_transfer_error(message))
+                    .unwrap_or_else(|| {
+                        if size_matches {
+                            REASON_TRANSFER_CHECKSUM_MISMATCH.to_string()
+                        } else {
+                            self.user_text(TextKey::TransferSizeMismatch)
+                        }
+                    }),
+            )
         };
         record.updated_at = unix_now_millis();
         self.inner.database.save_transfer(&record)?;
@@ -2216,8 +2323,10 @@ impl AppRuntime {
                 } else {
                     Some(if checksum_matches && size_matches {
                         REASON_TRANSFER_GENERIC.to_string()
-                    } else {
+                    } else if size_matches {
                         REASON_TRANSFER_CHECKSUM_MISMATCH.to_string()
+                    } else {
+                        REASON_TRANSFER_GENERIC.to_string()
                     })
                 },
                 message: if success {
@@ -2225,9 +2334,9 @@ impl AppRuntime {
                 } else {
                     Some(failure_message.unwrap_or_else(|| {
                         if size_matches {
-                            transfer_error_message(REASON_TRANSFER_CHECKSUM_MISMATCH)
+                            transfer_error_message(self, REASON_TRANSFER_CHECKSUM_MISMATCH)
                         } else {
-                            "Received file size does not match the offer".to_string()
+                            self.user_text(TextKey::TransferSizeMismatch)
                         }
                     }))
                 },
@@ -2325,8 +2434,14 @@ impl AppRuntime {
         Ok(())
     }
 
-    pub(super) fn handle_file_cancel(&self, file_id: &str, reason: String) -> AppResult<()> {
+    pub(super) fn handle_file_cancel(
+        &self,
+        file_id: &str,
+        reason: String,
+        message: Option<String>,
+    ) -> AppResult<()> {
         warn!(%file_id, %reason, "file transfer cancelled by peer");
+        let error = self.transfer_error_from_peer(Some(&reason), message.as_deref());
         self.inner.lan.unregister_transfer(file_id);
         if matches!(
             self.inner
@@ -2352,7 +2467,7 @@ impl AppRuntime {
             }
             let mut record = incoming.record;
             record.status = "cancelled".to_string();
-            record.error = Some(reason);
+            record.error = error.clone();
             record.temp_path = None;
             record.updated_at = unix_now_millis();
             self.inner.database.save_transfer(&record)?;
@@ -2362,14 +2477,14 @@ impl AppRuntime {
         if let Some(mut record) = self.inner.database.load_transfer(file_id)? {
             if record.direction == "inbound" {
                 record.status = "cancelled".to_string();
-                record.error = Some(reason);
+                record.error = error.clone();
                 record.updated_at = unix_now_millis();
                 self.inner.database.save_transfer(&record)?;
                 self.emit_transfers()?;
                 return Ok(());
             }
         }
-        self.finish_outgoing_transfer(file_id, "cancelled", Some(reason), None)
+        self.finish_outgoing_transfer(file_id, "cancelled", error, None)
     }
 
     pub(super) fn handle_lan_transfer_closed(&self, file_id: &str) -> AppResult<()> {
@@ -2399,7 +2514,7 @@ impl AppRuntime {
             }
             let mut record = incoming.record;
             record.status = "failed".to_string();
-            record.error = Some("LAN data connection closed".to_string());
+            record.error = Some(self.user_text(TextKey::TransferConnectionClosed));
             record.temp_path = None;
             record.updated_at = unix_now_millis();
             self.inner.database.save_transfer(&record)?;
@@ -2412,7 +2527,7 @@ impl AppRuntime {
             self.finish_outgoing_transfer(
                 file_id,
                 "failed",
-                Some("LAN data connection closed".to_string()),
+                Some(self.user_text(TextKey::TransferConnectionClosed)),
                 None,
             )?;
         }
@@ -2902,7 +3017,7 @@ impl AppRuntime {
                 let _ = fs::remove_file(path);
             }
             item.status = "failed".to_string();
-            item.error = Some("app restarted".to_string());
+            item.error = Some(self.user_text(TextKey::TransferGeneric));
             item.temp_path = None;
             item.updated_at = unix_now_millis();
             self.inner.database.save_transfer(&item)?;

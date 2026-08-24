@@ -947,7 +947,7 @@ impl AppRuntime {
                     let _ = self.finish_outgoing_transfer(
                         &payload.session_id,
                         "rejected",
-                        Some(payload.message),
+                        self.transfer_error_from_peer(Some(&payload.reason), Some(&payload.message)),
                         None,
                     );
                 }
@@ -1026,7 +1026,7 @@ impl AppRuntime {
                     let _ = self.finish_outgoing_transfer(
                         &payload.session_id,
                         status,
-                        payload.message.or(payload.reason),
+                        self.transfer_error_from_peer(payload.reason.as_deref(), payload.message.as_deref()),
                         None,
                     );
                 }
@@ -1038,7 +1038,11 @@ impl AppRuntime {
             }
             FILE_CANCEL_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileCancelPayload>(message.payload) {
-                    let _ = self.handle_file_cancel(&payload.session_id, payload.message);
+                    let _ = self.handle_file_cancel(
+                        &payload.session_id,
+                        payload.reason,
+                        Some(payload.message),
+                    );
                 }
             }
             FILE_V3_REJECT_TYPE => {
@@ -1492,7 +1496,8 @@ impl AppRuntime {
     }
 
     fn emit_transfers(&self) -> AppResult<()> {
-        let transfers = self.inner.database.load_transfers(200)?;
+        let mut transfers = self.inner.database.load_transfers(200)?;
+        self.format_transfer_records(&mut transfers);
         let _ = self.inner.app.emit(TRANSFERS_UPDATED_EVENT, transfers);
         Ok(())
     }
