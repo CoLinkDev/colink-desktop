@@ -6,7 +6,7 @@ use sanitize_filename::sanitize;
 use tauri::Emitter;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex as AsyncMutex, Notify},
+    sync::{oneshot, Mutex as AsyncMutex, Notify},
     time::{sleep, Duration},
 };
 use tracing::{debug, info, warn};
@@ -1579,6 +1579,55 @@ impl AppRuntime {
             .await
     }
 
+    pub(super) fn start_file_v3_download(
+        &self,
+        from: String,
+        route: String,
+        payload: FileV3ReadyPayload,
+    ) {
+        let session_id = payload.session_id.clone();
+        let (start_tx, start_rx) = oneshot::channel();
+        let runtime = self.clone();
+        let completion_runtime = self.clone();
+        let completion_session_id = session_id.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            if start_rx.await.is_err() {
+                return;
+            }
+            let _ = runtime.handle_file_v3_ready(&from, &route, payload).await;
+            completion_runtime.finish_file_v3_download(&completion_session_id);
+        });
+
+        let mut state = self.inner.state.lock_unpoisoned();
+        if state.file_v3_downloads.contains_key(&session_id) {
+            task.abort();
+            return;
+        }
+        state.file_v3_downloads.insert(session_id, task);
+        drop(state);
+        let _ = start_tx.send(());
+    }
+
+    fn finish_file_v3_download(&self, session_id: &str) {
+        self.inner
+            .state
+            .lock_unpoisoned()
+            .file_v3_downloads
+            .remove(session_id);
+    }
+
+    fn abort_file_v3_download(&self, session_id: &str) {
+        if let Some(task) = self
+            .inner
+            .state
+            .lock_unpoisoned()
+            .file_v3_downloads
+            .remove(session_id)
+        {
+            task.abort();
+        }
+    }
+
     pub(super) async fn handle_file_v3_ready(
         &self,
         from: &str,
@@ -2454,6 +2503,7 @@ impl AppRuntime {
             debug!(%file_id, "ignored file cancel after transfer completion");
             return Ok(());
         }
+        self.abort_file_v3_download(file_id);
         if let Some(incoming) = self
             .inner
             .state

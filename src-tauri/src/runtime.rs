@@ -10,7 +10,7 @@ use clipboard_rs::{
     Clipboard, ClipboardContext, ClipboardWatcher, ClipboardWatcherContext, WatcherShutdown,
 };
 use rfd::FileDialog;
-use tauri::{AppHandle, Emitter};
+use tauri::{async_runtime::JoinHandle, AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{
     sync::{mpsc, oneshot, Mutex as AsyncMutex, Notify},
@@ -132,6 +132,7 @@ struct RuntimeState {
     watcher_shutdown: Option<WatcherShutdown>,
     outgoing_files: HashMap<String, OutgoingFileState>,
     incoming_files: HashMap<String, IncomingFileState>,
+    file_v3_downloads: HashMap<String, JoinHandle<()>>,
     pending_file_offers: HashMap<String, PendingFileOfferState>,
     pending_filesystem_requests: HashMap<String, PendingFilesystemRequest>,
     pending_filesystem_uploads: HashMap<String, PendingFilesystemUpload>,
@@ -254,6 +255,7 @@ impl AppRuntime {
                     watcher_shutdown: None,
                     outgoing_files: HashMap::new(),
                     incoming_files: HashMap::new(),
+                    file_v3_downloads: HashMap::new(),
                     pending_file_offers: HashMap::new(),
                     pending_filesystem_requests: HashMap::new(),
                     pending_filesystem_uploads: HashMap::new(),
@@ -301,6 +303,11 @@ impl AppRuntime {
             .values()
             .map(|outgoing| outgoing.ack_notify.clone())
             .collect::<Vec<_>>();
+        let file_v3_downloads = state
+            .file_v3_downloads
+            .drain()
+            .map(|(_, task)| task)
+            .collect::<Vec<_>>();
         state.cancelled_files.clear();
         state.outgoing_files.clear();
         state.incoming_files.clear();
@@ -312,6 +319,9 @@ impl AppRuntime {
         drop(state);
         for notify in notifiers {
             notify.notify_one();
+        }
+        for task in file_v3_downloads {
+            task.abort();
         }
         Ok(())
     }
@@ -959,7 +969,7 @@ impl AppRuntime {
             }
             FILE_V3_READY_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<FileV3ReadyPayload>(message.payload) {
-                    let _ = self.handle_file_v3_ready(from, route, payload).await;
+                    self.start_file_v3_download(from.to_string(), route.to_string(), payload);
                 }
             }
             FILE_CHUNK_TYPE => {
