@@ -25,7 +25,7 @@ impl AppSettings {
     pub fn new(download_path: String) -> Self {
         Self {
             server_url: DEFAULT_SERVER_URL.to_string(),
-            auto_start: true,
+            auto_start: !cfg!(debug_assertions),
             start_minimized: true,
             download_path,
             clipboard_sync: true,

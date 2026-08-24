@@ -1,4 +1,5 @@
 import { resolveLanguage } from '../i18n'
+import { isReleaseBuild } from './app-meta'
 
 export type DevicePlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'unknown'
 
@@ -266,7 +267,7 @@ export interface CameraEntry {
 
 export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',
-  autoStart: true,
+  autoStart: isReleaseBuild,
   startMinimized: true,
   downloadPath: '',
   clipboardSync: true,

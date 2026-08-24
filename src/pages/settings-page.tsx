@@ -265,7 +265,9 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
         </Section>
 
         <Section title={t('settings.behavior')}>
-          <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
+          {isReleaseBuild && (
+            <SwitchRow label={t('settings.autoStart')} checked={form.autoStart} onChange={(v) => setForm((c) => ({ ...c, autoStart: v }))} />
+          )}
           <SwitchRow label={t('settings.startMinimized')} checked={form.startMinimized} onChange={(v) => setForm((c) => ({ ...c, startMinimized: v }))} />
           <SwitchRow label={t('settings.autoAcceptFileOffers')} checked={form.autoAcceptFileOffers} onChange={(v) => setForm((c) => ({ ...c, autoAcceptFileOffers: v }))} />
         </Section>

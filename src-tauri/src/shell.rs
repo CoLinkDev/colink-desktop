@@ -212,6 +212,10 @@ pub fn show_main_window(app: &AppHandle, route: Option<&str>) -> AppResult<()> {
 }
 
 pub fn apply_auto_start(enabled: bool) -> AppResult<()> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
     #[cfg(windows)]
     {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
