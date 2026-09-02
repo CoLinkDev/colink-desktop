@@ -39,6 +39,9 @@ pub fn execute_system_control(
         SystemControlAction::WakeOnLan => {
             return send_wake_on_lan_packet(target_mac.expect("validated wake-on-lan payload"));
         }
+        SystemControlAction::DisplayOff | SystemControlAction::DisplayOn => {
+            return execute_display_control(action);
+        }
         SystemControlAction::Sleep | SystemControlAction::Shutdown | SystemControlAction::Lock => {}
     }
 
@@ -120,6 +123,58 @@ fn wake_on_lan_magic_packet(target_mac: &str) -> Option<[u8; 102]> {
     Some(packet)
 }
 
+#[cfg(windows)]
+fn execute_display_control(
+    action: SystemControlAction,
+) -> io::Result<SystemControlExecution> {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        System::Power::{SetThreadExecutionState, ES_DISPLAY_REQUIRED},
+        UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SC_MONITORPOWER, SMTO_ABORTIFHUNG,
+            WM_SYSCOMMAND,
+        },
+    };
+
+    const DISPLAY_POWER_OFF: isize = 2;
+    const DISPLAY_MESSAGE_TIMEOUT_MS: u32 = 1_000;
+
+    let executed = match action {
+        SystemControlAction::DisplayOff => {
+            let mut message_result = 0usize;
+            unsafe {
+                SendMessageTimeoutW(
+                    HWND_BROADCAST,
+                    WM_SYSCOMMAND,
+                    WPARAM(SC_MONITORPOWER as usize),
+                    LPARAM(DISPLAY_POWER_OFF),
+                    SMTO_ABORTIFHUNG,
+                    DISPLAY_MESSAGE_TIMEOUT_MS,
+                    Some(&mut message_result),
+                )
+            }
+            .0 != 0
+        }
+        SystemControlAction::DisplayOn => {
+            unsafe { SetThreadExecutionState(ES_DISPLAY_REQUIRED) }.0 != 0
+        }
+        _ => unreachable!("only display actions reach this function"),
+    };
+
+    Ok(if executed {
+        SystemControlExecution::Executed
+    } else {
+        SystemControlExecution::Ignored
+    })
+}
+
+#[cfg(not(windows))]
+fn execute_display_control(
+    _action: SystemControlAction,
+) -> io::Result<SystemControlExecution> {
+    Ok(SystemControlExecution::Ignored)
+}
+
 pub fn query_system_control(fields: &[String]) -> io::Result<SystemControlResultPayload> {
     let queries_volume = fields.iter().any(|field| field == "volume");
     let queries_muted = fields.iter().any(|field| field == "muted");
@@ -179,7 +234,9 @@ fn system_command(action: SystemControlAction) -> Command {
             command
         }
         SystemControlAction::Sleep => unreachable!("sleep is handled through SetSuspendState"),
-        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
+        _ => unreachable!(
+            "media, audio, Wake-on-LAN, and display actions are handled before system commands"
+        ),
     };
     command
 }
@@ -204,7 +261,9 @@ fn system_command(action: SystemControlAction) -> Command {
             command.arg("-suspend");
             command
         }
-        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
+        _ => unreachable!(
+            "media, audio, Wake-on-LAN, and display actions are handled before system commands"
+        ),
     };
     command
 }
@@ -222,7 +281,9 @@ fn system_command(action: SystemControlAction) -> Command {
         SystemControlAction::Lock => {
             command.arg("lock-session");
         }
-        _ => unreachable!("media, audio, and Wake-on-LAN actions are handled before system commands"),
+        _ => unreachable!(
+            "media, audio, Wake-on-LAN, and display actions are handled before system commands"
+        ),
     }
     command
 }
@@ -440,15 +501,25 @@ mod tests {
             SystemControlAction::parse("wake-on-lan"),
             Some(SystemControlAction::WakeOnLan)
         );
+        assert_eq!(
+            SystemControlAction::parse("display-off"),
+            Some(SystemControlAction::DisplayOff)
+        );
+        assert_eq!(
+            SystemControlAction::parse("display-on"),
+            Some(SystemControlAction::DisplayOn)
+        );
         assert_eq!(SystemControlAction::parse("restart"), None);
     }
 
     #[test]
-    fn identifies_power_actions_that_support_delays() {
-        assert!(SystemControlAction::Sleep.is_power_action());
-        assert!(SystemControlAction::Shutdown.is_power_action());
-        assert!(SystemControlAction::Lock.is_power_action());
-        assert!(!SystemControlAction::CancelPower.is_power_action());
+    fn identifies_actions_that_support_delays() {
+        assert!(SystemControlAction::Sleep.supports_delay());
+        assert!(SystemControlAction::Shutdown.supports_delay());
+        assert!(SystemControlAction::Lock.supports_delay());
+        assert!(SystemControlAction::DisplayOff.supports_delay());
+        assert!(SystemControlAction::DisplayOn.supports_delay());
+        assert!(!SystemControlAction::CancelPower.supports_delay());
     }
 
     #[test]
@@ -472,6 +543,17 @@ mod tests {
         assert_eq!(&packet[..6], &[0xff; 6]);
         assert_eq!(&packet[6..12], &[1, 35, 69, 103, 137, 171]);
         assert_eq!(&packet[96..], &[1, 35, 69, 103, 137, 171]);
+    }
+
+    #[test]
+    fn ignores_parameters_on_display_actions() {
+        for action in [
+            SystemControlAction::DisplayOff,
+            SystemControlAction::DisplayOn,
+        ] {
+            assert!(action.accepts_volume(Some(101)));
+            assert!(action.accepts_target_mac(Some("ignored")));
+        }
     }
 
     #[test]

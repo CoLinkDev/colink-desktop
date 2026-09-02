@@ -1132,7 +1132,7 @@ impl AppRuntime {
                     return;
                 }
                 let delay_seconds = action
-                    .is_power_action()
+                    .supports_delay()
                     .then(|| payload.delay.unwrap_or_default().max(0) as u64);
                 if let Some(delay_seconds) = delay_seconds.filter(|delay| *delay > 0) {
                     self.schedule_delayed_power_action(from, route, action, delay_seconds);

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.15.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.16.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const TEXT_MESSAGE_RECEIPT_TYPE: &str = "message.v1.receipt";
@@ -861,6 +861,8 @@ pub enum SystemControlAction {
     SetVolume,
     Mute,
     WakeOnLan,
+    DisplayOff,
+    DisplayOn,
 }
 
 impl SystemControlAction {
@@ -877,6 +879,8 @@ impl SystemControlAction {
             "set-volume" => Some(Self::SetVolume),
             "mute" => Some(Self::Mute),
             "wake-on-lan" => Some(Self::WakeOnLan),
+            "display-off" => Some(Self::DisplayOff),
+            "display-on" => Some(Self::DisplayOn),
             _ => None,
         }
     }
@@ -894,12 +898,15 @@ impl SystemControlAction {
             Self::SetVolume => "set-volume",
             Self::Mute => "mute",
             Self::WakeOnLan => "wake-on-lan",
+            Self::DisplayOff => "display-off",
+            Self::DisplayOn => "display-on",
         }
     }
 
     pub fn accepts_volume(self, volume: Option<i32>) -> bool {
         match self {
             Self::SetVolume => volume.is_some_and(|value| (0..=100).contains(&value)),
+            Self::DisplayOff | Self::DisplayOn => true,
             _ => volume.is_none(),
         }
     }
@@ -907,12 +914,20 @@ impl SystemControlAction {
     pub fn accepts_target_mac(self, target_mac: Option<&str>) -> bool {
         match self {
             Self::WakeOnLan => target_mac.is_some_and(is_valid_wake_on_lan_mac),
+            Self::DisplayOff | Self::DisplayOn => true,
             _ => target_mac.is_none(),
         }
     }
 
-    pub fn is_power_action(self) -> bool {
-        matches!(self, Self::Sleep | Self::Shutdown | Self::Lock)
+    pub fn supports_delay(self) -> bool {
+        matches!(
+            self,
+            Self::Sleep
+                | Self::Shutdown
+                | Self::Lock
+                | Self::DisplayOff
+                | Self::DisplayOn
+        )
     }
 }
 
@@ -1307,6 +1322,35 @@ mod tests {
             })
             .unwrap(),
         );
+    }
+
+    #[test]
+    fn serializes_display_control_commands() {
+        for action in [
+            SystemControlAction::DisplayOff,
+            SystemControlAction::DisplayOn,
+        ] {
+            assert_eq!(
+                serde_json::json!({"action": action.as_str()}),
+                serde_json::to_value(SystemControlCommandPayload {
+                    action: action.as_str().to_string(),
+                    delay: None,
+                    volume: None,
+                    target_mac: None,
+                })
+                .unwrap(),
+            );
+            assert_eq!(
+                serde_json::json!({"action": action.as_str(), "delay": 5}),
+                serde_json::to_value(SystemControlCommandPayload {
+                    action: action.as_str().to_string(),
+                    delay: Some(5),
+                    volume: None,
+                    target_mac: None,
+                })
+                .unwrap(),
+            );
+        }
     }
 
     #[test]
