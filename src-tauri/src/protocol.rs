@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const LAN_PROTOCOL_VERSION: &str = "1.4.0";
-pub const BUSINESS_PROTOCOL_VERSION: &str = "1.16.0";
+pub const BUSINESS_PROTOCOL_VERSION: &str = "1.17.0";
 pub const CLOUD_WEBSOCKET_PROTOCOL_VERSION: &str = "1.1.0";
 pub const TEXT_MESSAGE_TYPE: &str = "message.v1.text";
 pub const TEXT_MESSAGE_RECEIPT_TYPE: &str = "message.v1.receipt";
@@ -44,6 +44,7 @@ pub const FS_UPLOAD_TYPE: &str = "fs.v1.upload";
 pub const FS_UPLOAD_READY_TYPE: &str = "fs.v1.upload-ready";
 pub const FS_ERROR_TYPE: &str = "fs.v1.error";
 pub const SYSTEM_CONTROL_COMMAND_TYPE: &str = "system-control.v1.command";
+pub const SYSTEM_CONTROL_ACK_TYPE: &str = "system-control.v1.ack";
 pub const SYSTEM_CONTROL_QUERY_TYPE: &str = "system-control.v1.query";
 pub const SYSTEM_CONTROL_RESULT_TYPE: &str = "system-control.v1.result";
 pub const SYSTEM_CONTROL_ERROR_TYPE: &str = "system-control.v1.error";
@@ -848,6 +849,9 @@ pub struct SystemControlErrorPayload {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SystemControlAckPayload {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemControlAction {
     Sleep,
@@ -1243,7 +1247,8 @@ mod tests {
     use super::{
         BusinessEnvelope, CameraDataFrame, FileDataFrame, FileDataFrameKind, MusicLyricLinePayload,
         MusicLyricPayload, MusicProgressPayload, MusicTrackPayload, PendingPowerActionPayload,
-        SystemControlAction, SystemControlCommandPayload, SystemControlResultPayload,
+        SystemControlAckPayload, SystemControlAction, SystemControlCommandPayload,
+        SystemControlResultPayload, SYSTEM_CONTROL_ACK_TYPE,
         FsUploadPayload, FsUploadReadyPayload, FS_UPLOAD_READY_TYPE, FS_UPLOAD_TYPE,
         MUSIC_LYRIC_TYPE, MUSIC_PROGRESS_TYPE, MUSIC_TRACK_TYPE,
     };
@@ -1321,6 +1326,20 @@ mod tests {
                 target_mac: None,
             })
             .unwrap(),
+        );
+    }
+
+    #[test]
+    fn serializes_system_control_acknowledgement() {
+        let envelope = BusinessEnvelope::from_payload(
+            SYSTEM_CONTROL_ACK_TYPE,
+            SystemControlAckPayload::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::json!({"type": "system-control.v1.ack", "payload": {}}),
+            serde_json::to_value(envelope).unwrap(),
         );
     }
 

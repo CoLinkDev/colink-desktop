@@ -14,6 +14,25 @@ pub enum SystemControlExecution {
     Ignored,
 }
 
+pub fn can_schedule_system_control_action(action: SystemControlAction) -> bool {
+    match action {
+        SystemControlAction::Play
+        | SystemControlAction::Pause
+        | SystemControlAction::Next
+        | SystemControlAction::Previous
+        | SystemControlAction::SetVolume
+        | SystemControlAction::Mute
+        | SystemControlAction::DisplayOff
+        | SystemControlAction::DisplayOn => cfg!(windows),
+        SystemControlAction::Sleep
+        | SystemControlAction::Shutdown
+        | SystemControlAction::Lock => {
+            cfg!(any(target_os = "windows", target_os = "macos", unix))
+        }
+        SystemControlAction::CancelPower | SystemControlAction::WakeOnLan => true,
+    }
+}
+
 pub fn execute_system_control(
     action: SystemControlAction,
     volume: Option<i32>,

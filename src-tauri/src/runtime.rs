@@ -66,10 +66,12 @@ use crate::{
         MUSIC_REQUEST_TYPE, SYSINFO_ALIVE_TYPE, TEXT_MESSAGE_TYPE, TEXT_MESSAGE_RECEIPT_TYPE, FS_DOWNLOAD_TYPE, FS_UPLOAD_TYPE,
         FS_UPLOAD_READY_TYPE,
         FS_ERROR_TYPE, FS_LIST_RESULT_TYPE, FS_LIST_TYPE, FS_ROOTS_RESULT_TYPE, FS_ROOTS_TYPE,
-        FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_COMMAND_TYPE, SYSTEM_CONTROL_ERROR_TYPE,
+        FS_STAT_RESULT_TYPE, FS_STAT_TYPE, SYSTEM_CONTROL_ACK_TYPE, SYSTEM_CONTROL_COMMAND_TYPE,
+        SYSTEM_CONTROL_ERROR_TYPE,
         SYSTEM_CONTROL_QUERY_TYPE, SYSTEM_CONTROL_RESULT_TYPE, PendingPowerActionPayload,
         SystemControlAction,
-        SystemControlCommandPayload, SystemControlErrorPayload, SystemControlQueryPayload,
+        SystemControlAckPayload, SystemControlCommandPayload, SystemControlErrorPayload,
+        SystemControlQueryPayload,
         TERMINAL_CLOSE_TYPE, TERMINAL_DATA_TYPE, TERMINAL_OPEN_ACK_TYPE, TERMINAL_OPEN_TYPE,
         TERMINAL_RESIZE_TYPE, TerminalClosePayload, TerminalDataPayload, TerminalOpenAckPayload,
         TerminalOpenPayload, TerminalResizePayload, CameraAlivePayload, CameraClosePayload,
@@ -81,7 +83,10 @@ use crate::{
     runtime_events::RuntimeEvent,
     store::db::Database,
     sysinfo::SysInfoService,
-    system_control::{execute_system_control, query_system_control, SystemControlExecution},
+    system_control::{
+        can_schedule_system_control_action, execute_system_control, query_system_control,
+        SystemControlExecution,
+    },
     sync::MutexExt,
     tray_indicator::TrayIndicator,
 };
@@ -354,7 +359,7 @@ impl AppRuntime {
             return Err("CastBoard only supports media control actions".to_string());
         }
 
-        self.execute_system_control_command("castboard".to_string(), action, None, None);
+        self.execute_system_control_command("castboard".to_string(), action, None, None, None);
         Ok(())
     }
 
@@ -744,11 +749,11 @@ impl AppRuntime {
             if !runtime.take_pending_power_action(&connection, generation) {
                 return;
             }
-            runtime.execute_system_control_command(connection.device_id, action, None, None);
+            runtime.execute_system_control_command(connection.device_id, action, None, None, None);
         });
     }
 
-    fn cancel_pending_power_action(&self, device_id: &str, route: &str) {
+    fn cancel_pending_power_action(&self, device_id: &str, route: &str) -> bool {
         let pending_action = self
             .inner
             .state
@@ -760,6 +765,9 @@ impl AppRuntime {
             });
         if let Some(pending_action) = pending_action {
             let _ = pending_action.cancel_tx.send(());
+            true
+        } else {
+            false
         }
     }
 
@@ -806,7 +814,9 @@ impl AppRuntime {
         action: SystemControlAction,
         volume: Option<i32>,
         target_mac: Option<String>,
+        request_id: Option<String>,
     ) {
+        let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 execute_system_control(action, volume, target_mac.as_deref())
@@ -815,13 +825,55 @@ impl AppRuntime {
             match result {
                 Ok(Ok(SystemControlExecution::Executed)) => {
                     info!(%from, action = action.as_str(), "system control command executed");
+                    if let Some(request_id) = request_id.as_deref() {
+                        runtime.send_system_control_command_ack(&from, request_id).await;
+                    }
                 }
-                Ok(Ok(SystemControlExecution::Ignored)) => {}
+                Ok(Ok(SystemControlExecution::Ignored)) => {
+                    if let Some(request_id) = request_id.as_deref() {
+                        runtime
+                            .send_system_control_command_error(
+                                &from,
+                                request_id,
+                                "colink:system-control.command_rejected.v1",
+                                "System control command is unavailable",
+                            )
+                            .await;
+                    }
+                }
                 Ok(Err(error)) => {
                     warn!(%from, action = action.as_str(), %error, "system control command failed");
+                    if let Some(request_id) = request_id.as_deref() {
+                        let reason = if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotConnected | std::io::ErrorKind::Unsupported
+                        ) {
+                            "colink:system-control.command_rejected.v1"
+                        } else {
+                            "colink:system-control.command_failed.v1"
+                        };
+                        runtime
+                            .send_system_control_command_error(
+                                &from,
+                                request_id,
+                                reason,
+                                "System control command failed",
+                            )
+                            .await;
+                    }
                 }
                 Err(error) => {
                     warn!(%from, action = action.as_str(), %error, "system control task failed");
+                    if let Some(request_id) = request_id.as_deref() {
+                        runtime
+                            .send_system_control_command_error(
+                                &from,
+                                request_id,
+                                "colink:system-control.command_failed.v1",
+                                "System control command failed",
+                            )
+                            .await;
+                    }
                 }
             }
         });
@@ -1115,30 +1167,78 @@ impl AppRuntime {
                 self.complete_remote_filesystem_download_error(from, request_id, &message);
             }
             SYSTEM_CONTROL_COMMAND_TYPE => {
+                let response_request_id = envelope_id
+                    .clone()
+                    .filter(|_| self.supports_system_control_command_ack(from, route));
                 let Ok(payload) = serde_json::from_value::<SystemControlCommandPayload>(message.payload)
                 else {
+                    if let Some(request_id) = response_request_id.as_deref() {
+                        self.send_system_control_command_error(
+                            from,
+                            request_id,
+                            "colink:system-control.invalid_request.v1",
+                            "Invalid system control command",
+                        )
+                        .await;
+                    }
                     return;
                 };
                 let Some(action) = SystemControlAction::parse(&payload.action) else {
                     return;
                 };
-                if action == SystemControlAction::CancelPower {
-                    self.cancel_pending_power_action(from, route);
-                    return;
-                }
                 if !action.accepts_volume(payload.volume)
                     || !action.accepts_target_mac(payload.target_mac.as_deref())
                 {
+                    if action != SystemControlAction::WakeOnLan {
+                        if let Some(request_id) = response_request_id.as_deref() {
+                            self.send_system_control_command_error(
+                                from,
+                                request_id,
+                                "colink:system-control.invalid_request.v1",
+                                "Invalid system control command",
+                            )
+                            .await;
+                        }
+                    }
+                    return;
+                }
+                if action == SystemControlAction::CancelPower {
+                    if self.cancel_pending_power_action(from, route) {
+                        if let Some(request_id) = response_request_id.as_deref() {
+                            self.send_system_control_command_ack(from, request_id).await;
+                        }
+                    }
                     return;
                 }
                 let delay_seconds = action
                     .supports_delay()
                     .then(|| payload.delay.unwrap_or_default().max(0) as u64);
                 if let Some(delay_seconds) = delay_seconds.filter(|delay| *delay > 0) {
+                    if !can_schedule_system_control_action(action) {
+                        if let Some(request_id) = response_request_id.as_deref() {
+                            self.send_system_control_command_error(
+                                from,
+                                request_id,
+                                "colink:system-control.command_rejected.v1",
+                                "System control command is unavailable",
+                            )
+                            .await;
+                        }
+                        return;
+                    }
                     self.schedule_delayed_power_action(from, route, action, delay_seconds);
+                    if let Some(request_id) = response_request_id.as_deref() {
+                        self.send_system_control_command_ack(from, request_id).await;
+                    }
                     return;
                 }
-                self.execute_system_control_command(from.to_string(), action, payload.volume, payload.target_mac);
+                self.execute_system_control_command(
+                    from.to_string(),
+                    action,
+                    payload.volume,
+                    payload.target_mac,
+                    response_request_id,
+                );
             }
             SYSTEM_CONTROL_QUERY_TYPE => {
                 let Some(request_id) = envelope_id else {
@@ -1309,6 +1409,67 @@ impl AppRuntime {
                 self.handle_camera_config(from, envelope_id.as_deref(), payload).await;
             }
             _ => {}
+        }
+    }
+
+    fn supports_system_control_command_ack(&self, device_id: &str, route: &str) -> bool {
+        let peer_version = match route {
+            "lan" => self.inner.lan.peer_business_version(device_id),
+            "cloud" => self.inner.cloud.business_version(device_id),
+            _ => None,
+        };
+        peer_version.is_some_and(|version| {
+            crate::protocol::supports_business_protocol_at_least(&version, 1, 17, 0)
+        })
+    }
+
+    async fn send_system_control_command_ack(&self, device_id: &str, request_id: &str) {
+        let result: AppResult<()> = async {
+            let response = BusinessEnvelope::from_payload(
+                SYSTEM_CONTROL_ACK_TYPE,
+                SystemControlAckPayload::default(),
+            )?;
+            self.send_business_message_with_correlation(
+                device_id,
+                response,
+                Some(request_id.to_string()),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(%device_id, %error, "failed to send system control command acknowledgement");
+        }
+    }
+
+    async fn send_system_control_command_error(
+        &self,
+        device_id: &str,
+        request_id: &str,
+        reason: &str,
+        message: &str,
+    ) {
+        let result: AppResult<()> = async {
+            let response = BusinessEnvelope::from_payload(
+                SYSTEM_CONTROL_ERROR_TYPE,
+                SystemControlErrorPayload {
+                    reason: reason.to_string(),
+                    message: message.to_string(),
+                    details: None,
+                },
+            )?;
+            self.send_business_message_with_correlation(
+                device_id,
+                response,
+                Some(request_id.to_string()),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(%device_id, %error, "failed to send system control command error");
         }
     }
 
