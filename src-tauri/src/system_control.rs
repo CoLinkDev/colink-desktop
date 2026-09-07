@@ -54,7 +54,7 @@ pub fn execute_system_control(
         SystemControlAction::SetVolume => {
             return set_system_volume(volume.expect("validated set-volume payload"));
         }
-        SystemControlAction::Mute => return mute_system_audio(),
+        SystemControlAction::Mute => return set_system_volume(0),
         SystemControlAction::WakeOnLan => {
             return send_wake_on_lan_packet(target_mac.expect("validated wake-on-lan payload"));
         }
@@ -390,9 +390,7 @@ fn set_system_volume(volume: i32) -> io::Result<SystemControlExecution> {
         endpoint
             .SetMasterVolumeLevelScalar(volume as f32 / 100.0, std::ptr::null())
             .map_err(windows_error)?;
-        if volume > 0 {
-            endpoint.SetMute(false, std::ptr::null()).map_err(windows_error)?;
-        }
+        endpoint.SetMute(false, std::ptr::null()).map_err(windows_error)?;
     }
     Ok(SystemControlExecution::Executed)
 }
@@ -411,28 +409,14 @@ fn query_system_audio_state() -> io::Result<Option<(i32, bool)>> {
             .GetMasterVolumeLevelScalar()
             .map_err(windows_error)?
     };
-    let muted = unsafe { endpoint.GetMute().map_err(windows_error)? }.as_bool();
-    Ok(Some(((volume * 100.0).round().clamp(0.0, 100.0) as i32, muted)))
+    let volume = (volume * 100.0).round().clamp(0.0, 100.0) as i32;
+    let natively_muted = unsafe { endpoint.GetMute().map_err(windows_error)? }.as_bool();
+    Ok(Some((volume, volume == 0 || natively_muted)))
 }
 
 #[cfg(not(windows))]
 fn query_system_audio_state() -> io::Result<Option<(i32, bool)>> {
     Ok(None)
-}
-
-#[cfg(windows)]
-fn mute_system_audio() -> io::Result<SystemControlExecution> {
-    let _runtime = WindowsRuntimeGuard::initialize()?;
-    let endpoint = default_audio_endpoint_volume()?;
-    unsafe {
-        endpoint.SetMute(true, std::ptr::null()).map_err(windows_error)?;
-    }
-    Ok(SystemControlExecution::Executed)
-}
-
-#[cfg(not(windows))]
-fn mute_system_audio() -> io::Result<SystemControlExecution> {
-    Ok(SystemControlExecution::Ignored)
 }
 
 #[cfg(windows)]
