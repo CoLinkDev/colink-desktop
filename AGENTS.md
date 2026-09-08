@@ -43,3 +43,11 @@
 - Save entry points such as `save_settings()` and `save_device_identity()` should normalize before writing to the database.
 - Business code may normalize earlier for validation or response consistency, but it must not be the only line of defense.
 - Keep cloud API DTOs separate from local persisted models. Tolerance for missing external API fields must not leak into local cache models.
+
+## Release Tags
+
+Release tags MUST be annotated tags (`git tag -a v1.25.0 -m "Release v1.25.0"`), not lightweight tags.
+
+## Version Management
+
+Git tag is the version source of truth. CI rewrites version fields in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` from the tag during release builds. Do not manually update these for releases.
