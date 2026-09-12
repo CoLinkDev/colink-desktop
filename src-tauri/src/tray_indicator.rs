@@ -14,9 +14,7 @@ const ACTIVITY_DURATION: Duration = Duration::from_millis(100);
 fn is_silent_message(message_type: &str) -> bool {
     matches!(
         message_type,
-        MUSIC_ALIVE_TYPE
-            | SYSINFO_ALIVE_TYPE
-            | CAMERA_ALIVE_TYPE
+        CAMERA_ALIVE_TYPE
             | FILE_CHUNK_TYPE
             | FILE_ACK_TYPE
             | FILE_RETRANSMIT_TYPE

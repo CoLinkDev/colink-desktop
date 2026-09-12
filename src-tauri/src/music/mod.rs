@@ -28,6 +28,7 @@ use crate::{
     },
     store::db::Database,
     sync::MutexExt,
+    tray_indicator::TrayIndicator,
 };
 
 use self::provider::{create_provider, ActiveTrack, LyricFuture, MusicProvider, TrackState};
@@ -153,10 +154,11 @@ impl MusicService {
         app: AppHandle,
         database: Database,
         transport: TransportManager,
+        indicator: TrayIndicator,
     ) -> Self {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         let (config_tx, _) = watch::channel(());
-        spawn_music_sender(transport.clone(), send_rx);
+        spawn_music_sender(transport.clone(), indicator, send_rx);
 
         Self {
             app,
@@ -916,10 +918,12 @@ fn spawn_lyric_fetch(
 
 fn spawn_music_sender(
     transport: TransportManager,
+    indicator: TrayIndicator,
     mut send_rx: mpsc::UnboundedReceiver<MusicSendJob>,
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = send_rx.recv().await {
+            let message_type = job.envelope.message_type.clone();
             if let Err(error) = transport
                 .send(&job.device_id, job.envelope, None, job.correlation_id)
                 .await
@@ -930,6 +934,8 @@ fn spawn_music_sender(
                     %error,
                     "music send failed"
                 );
+            } else {
+                indicator.trigger(&message_type);
             }
         }
     });

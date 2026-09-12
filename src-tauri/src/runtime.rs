@@ -240,8 +240,13 @@ impl AppRuntime {
         );
         let transport = TransportManager::new(database.clone(), lan.clone(), cloud.clone());
         let indicator = TrayIndicator::new(app.clone());
-        let music = MusicService::new(app.clone(), database.clone(), transport.clone());
-        let sysinfo = SysInfoService::new(app.clone(), transport.clone());
+        let music = MusicService::new(
+            app.clone(),
+            database.clone(),
+            transport.clone(),
+            indicator.clone(),
+        );
+        let sysinfo = SysInfoService::new(app.clone(), transport.clone(), indicator.clone());
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 app,
@@ -887,9 +892,7 @@ impl AppRuntime {
         correlation_id: Option<String>,
         message: BusinessEnvelope,
     ) {
-        if message.message_type != TEXT_MESSAGE_RECEIPT_TYPE {
-            self.inner.indicator.trigger(&message.message_type);
-        }
+        self.inner.indicator.trigger(&message.message_type);
         match message.message_type.as_str() {
             TEXT_MESSAGE_TYPE => {
                 if let Ok(payload) = serde_json::from_value::<TextMessagePayload>(message.payload) {
@@ -924,7 +927,7 @@ impl AppRuntime {
                             );
                             match receipt {
                                 Ok(receipt) => {
-                                    if let Err(error) = self.inner.transport.send(from, receipt, None, None).await {
+                                    if let Err(error) = self.send_business_message(from, receipt).await {
                                         warn!(%from, %error, "failed to send text message receipt");
                                     }
                                 }

@@ -16,6 +16,7 @@ use crate::{
     network::transport::TransportManager,
     protocol::{BusinessEnvelope, SysInfoStatsPayload, SYSINFO_STATS_TYPE},
     sync::MutexExt,
+    tray_indicator::TrayIndicator,
 };
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
@@ -26,6 +27,7 @@ const ERROR_SUCCESS: u32 = 0;
 pub struct SysInfoService {
     app: AppHandle,
     transport: TransportManager,
+    indicator: TrayIndicator,
     state: Arc<Mutex<SysInfoState>>,
 }
 
@@ -44,10 +46,12 @@ impl SysInfoService {
     pub fn new(
         app: AppHandle,
         transport: TransportManager,
+        indicator: TrayIndicator,
     ) -> Self {
         Self {
             app,
             transport,
+            indicator,
             state: Arc::new(Mutex::new(SysInfoState {
                 running: false,
                 cancel: None,
@@ -198,7 +202,14 @@ impl SysInfoService {
         let Ok(envelope) = BusinessEnvelope::from_payload(SYSINFO_STATS_TYPE, snapshot.clone()) else {
             return;
         };
-        let _ = self.transport.send(device_id, envelope, None, None).await;
+        if self
+            .transport
+            .send(device_id, envelope, None, None)
+            .await
+            .is_ok()
+        {
+            self.indicator.trigger(SYSINFO_STATS_TYPE);
+        }
     }
 
     fn prune_active_receivers(&self) -> Vec<String> {
