@@ -8,7 +8,6 @@ import { DevicesPage } from './pages/devices-page'
 import { MessagesPage } from './pages/messages-page'
 import { TransfersPage } from './pages/transfers-page'
 import { SettingsPage } from './pages/settings-page'
-import { ClipboardPage } from './pages/clipboard-page'
 import { CastBoardPage } from './pages/castboard-page'
 import { FilesPage } from './pages/files-page'
 import { TerminalPage } from './pages/terminal-page'
@@ -68,10 +67,6 @@ export const router = createHashRouter([
       {
         path: '/settings',
         element: <SettingsPage />,
-      },
-      {
-        path: '/clipboard',
-        element: <ClipboardPage />,
       },
       {
         path: '/castboard',

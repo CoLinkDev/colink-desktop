@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Clipboard, Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
+import { Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -79,8 +79,6 @@ export function AppLayout({ children }: PropsWithChildren) {
         return t('nav.files')
       case '/settings':
         return t('nav.settings')
-      case '/clipboard':
-        return t('nav.clipboard')
       case '/castboard':
         return t('nav.castboard')
       case '/terminal':
@@ -113,7 +111,6 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
           <SidebarLink icon={Camera} label={t('nav.camera')} to="/camera" />
-          <SidebarLink icon={Clipboard} label={t('nav.clipboard')} to="/clipboard" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
         </nav>
 

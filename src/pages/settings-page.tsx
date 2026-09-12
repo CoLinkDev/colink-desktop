@@ -272,6 +272,15 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
           <SwitchRow label={t('settings.autoAcceptFileOffers')} checked={form.autoAcceptFileOffers} onChange={(v) => setForm((c) => ({ ...c, autoAcceptFileOffers: v }))} />
         </Section>
 
+        <Section title={t('clipboard.title')}>
+          <SwitchRow
+            label={t('clipboard.enableSync')}
+            tip={t('clipboard.description')}
+            checked={form.clipboardSync}
+            onChange={(clipboardSync) => setForm((current) => ({ ...current, clipboardSync }))}
+          />
+        </Section>
+
         <Section title={t('nowPlaying.title')}>
           <div className="text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
             {t('nowPlaying.description')}
@@ -503,10 +512,23 @@ function Field({ label, tip, children }: { label: string; tip: string; children:
   )
 }
 
-function SwitchRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function SwitchRow({
+  label,
+  tip,
+  checked,
+  onChange,
+}: {
+  label: string
+  tip?: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
   return (
     <div className="flex items-center justify-between py-1">
-      <span className="text-[13px] font-medium">{label}</span>
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium">{label}</div>
+        {tip && <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{tip}</div>}
+      </div>
       <Switch checked={checked} onChange={(e) => onChange(e.target.checked)} />
     </div>
   )
