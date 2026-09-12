@@ -474,7 +474,7 @@ function DeviceList({
           <tbody className="divide-y">
             {devices.map((item) => {
               const local = isLocalDevice(item.deviceId)
-              const canForgetTrust = item.deviceSources.includes('trusted_peer_key')
+              const canForgetTrust = !local && item.deviceSources.includes('trusted_peer_key')
               return (
                 <tr className="transition-colors hover:bg-[hsl(var(--panel-2)/0.65)]" key={item.deviceId}>
                   <td className="px-4 py-3">
@@ -502,7 +502,7 @@ function DeviceList({
                   </td>
                   <td className="px-4 py-3 text-[hsl(var(--text-secondary))]">{deviceSecurityLabel(item, t)}</td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end gap-1.5">
+                    <div className="ml-auto grid w-[4.375rem] grid-cols-2 gap-1.5">
                       <button
                         aria-label={t('devices.details')}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"

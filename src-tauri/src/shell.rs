@@ -1,6 +1,9 @@
 use std::{
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -13,16 +16,18 @@ use std::{
 use image::ImageReader;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WebviewWindow,
 };
+use url::form_urlencoded;
 
 use crate::{
     error::AppResult,
     i18n::{self, TextKey},
     models::{AppSettings, CloudStatus, DeviceInfo},
     state::AppState,
+    sync::MutexExt,
 };
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -34,20 +39,31 @@ const TRAY_ID: &str = "main-tray";
 const MENU_OPEN: &str = "tray-open";
 const MENU_SETTINGS: &str = "tray-settings";
 const MENU_QUIT: &str = "tray-quit";
+const MENU_DEVICES: &str = "tray-devices";
+const MENU_DEVICE_PREFIX: &str = "tray-device:";
+const MAX_TRAY_DEVICES: usize = 8;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 const LINUX_AUTOSTART_FILE: &str = "dev.colink.desktop.desktop";
 
 pub struct ShellState {
     allow_exit: AtomicBool,
-    tray_menu: TrayMenu,
+    tray_menu_snapshot: Mutex<TrayMenuSnapshot>,
     tray_icons: TrayIcons,
 }
 
-struct TrayMenu {
-    open: MenuItem<tauri::Wry>,
-    settings: MenuItem<tauri::Wry>,
-    quit: MenuItem<tauri::Wry>,
+#[derive(Clone, PartialEq, Eq)]
+struct TrayMenuSnapshot {
+    language: String,
+    cloud_state: String,
+    devices: Vec<TrayMenuDevice>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct TrayMenuDevice {
+    device_id: String,
+    name: String,
+    route: String,
 }
 
 struct TrayIcons {
@@ -105,10 +121,10 @@ impl DecodedTrayIcon {
 }
 
 impl ShellState {
-    fn new(tray_menu: TrayMenu, tray_icons: TrayIcons) -> Self {
+    fn new(tray_menu_snapshot: TrayMenuSnapshot, tray_icons: TrayIcons) -> Self {
         Self {
             allow_exit: AtomicBool::new(false),
-            tray_menu,
+            tray_menu_snapshot: Mutex::new(tray_menu_snapshot),
             tray_icons,
         }
     }
@@ -123,7 +139,11 @@ impl ShellState {
 }
 
 pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellState> {
-    let (menu, tray_menu) = build_tray_menu(app)?;
+    let state = app.state::<AppState>();
+    let devices = state.database.load_cached_devices().unwrap_or_default();
+    let cloud = state.cloud.snapshot();
+    let tray_menu_snapshot = TrayMenuSnapshot::new(settings, &cloud, &devices);
+    let menu = build_tray_menu(app, &tray_menu_snapshot)?;
     let tray_icons = TrayIcons::load();
     let icon = tray_icons.image("disconnected");
 
@@ -150,7 +170,7 @@ pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellSta
         }
     }
 
-    Ok(ShellState::new(tray_menu, tray_icons))
+    Ok(ShellState::new(tray_menu_snapshot, tray_icons))
 }
 
 pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
@@ -161,6 +181,17 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
     let devices = state.database.load_cached_devices().unwrap_or_default();
     let cloud = state.cloud.snapshot();
+    let settings = state.database.load_settings()?;
+    let shell = app.state::<ShellState>();
+
+    if let Some(settings) = settings {
+        let next_snapshot = TrayMenuSnapshot::new(&settings, &cloud, &devices);
+        let menu_changed = *shell.tray_menu_snapshot.lock_unpoisoned() != next_snapshot;
+        if menu_changed {
+            tray.set_menu(Some(build_tray_menu(app, &next_snapshot)?))?;
+            *shell.tray_menu_snapshot.lock_unpoisoned() = next_snapshot;
+        }
+    }
 
     let icon_state = if state.runtime.indicator().is_active() {
         "activity"
@@ -172,19 +203,13 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
         "disconnected"
     };
 
-    let shell = app.state::<ShellState>();
     let _ = tray.set_icon(Some(shell.tray_icons.image(icon_state)));
     let _ = tray.set_tooltip(Some(tray_tooltip(app, &cloud, &devices)));
     Ok(())
 }
 
-pub fn refresh_tray_menu_labels(app: &AppHandle, language: &str) -> AppResult<()> {
-    let menu = &app.state::<ShellState>().tray_menu;
-    menu.open.set_text(i18n::text(language, TextKey::TrayOpen))?;
-    menu.settings
-        .set_text(i18n::text(language, TextKey::TraySettings))?;
-    menu.quit.set_text(i18n::text(language, TextKey::TrayQuit))?;
-    Ok(())
+pub fn refresh_tray_menu_labels(app: &AppHandle, _language: &str) -> AppResult<()> {
+    refresh_tray(app)
 }
 
 pub fn handle_menu_event(app: &AppHandle, id: &str) -> AppResult<()> {
@@ -193,6 +218,15 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) -> AppResult<()> {
     }
     if id == MENU_SETTINGS {
         return show_main_window(app, Some("/settings"));
+    }
+    if id == MENU_DEVICES {
+        return show_main_window(app, Some("/devices"));
+    }
+    if let Some(device_id) = id.strip_prefix(MENU_DEVICE_PREFIX) {
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("deviceId", device_id)
+            .finish();
+        return show_main_window(app, Some(&format!("/messages?{query}")));
     }
     if id == MENU_QUIT {
         return quit_app(app);
@@ -349,12 +383,8 @@ pub fn quit_app(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-fn build_tray_menu(app: &AppHandle) -> AppResult<(Menu<tauri::Wry>, TrayMenu)> {
-    let language = app
-        .try_state::<AppState>()
-        .and_then(|state| state.database.load_settings().ok().flatten())
-        .map(|settings| settings.language)
-        .unwrap_or_else(i18n::default_language_code);
+fn build_tray_menu(app: &AppHandle, snapshot: &TrayMenuSnapshot) -> AppResult<Menu<tauri::Wry>> {
+    let language = &snapshot.language;
     let open = MenuItem::with_id(
         app,
         MENU_OPEN,
@@ -362,6 +392,72 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<(Menu<tauri::Wry>, TrayMenu)> {
         true,
         None::<&str>,
     )?;
+    let cloud_status = MenuItem::new(
+        app,
+        format!(
+            "{}: {}",
+            i18n::text(language, TextKey::TrayCloud),
+            i18n::cloud_state(language, &snapshot.cloud_state)
+        ),
+        false,
+        None::<&str>,
+    )?;
+    let lan_count = snapshot
+        .devices
+        .iter()
+        .filter(|device| device.route == "lan")
+        .count();
+    let device_status = MenuItem::new(
+        app,
+        format!(
+            "{}: {} · {}: {lan_count}",
+            i18n::text(language, TextKey::TrayReachableDevices),
+            snapshot.devices.len(),
+            i18n::text(language, TextKey::TrayLan),
+        ),
+        false,
+        None::<&str>,
+    )?;
+    let devices_menu = Submenu::new(
+        app,
+        format!(
+            "{} ({})",
+            i18n::text(language, TextKey::TrayReachableDevices),
+            snapshot.devices.len()
+        ),
+        true,
+    )?;
+    if snapshot.devices.is_empty() {
+        devices_menu.append(&MenuItem::new(
+            app,
+            i18n::text(language, TextKey::TrayNoReachableDevices),
+            false,
+            None::<&str>,
+        )?)?;
+    } else {
+        for device in snapshot.devices.iter().take(MAX_TRAY_DEVICES) {
+            let route = if device.route == "lan" {
+                i18n::text(language, TextKey::TrayLan)
+            } else {
+                i18n::text(language, TextKey::TrayCloud)
+            };
+            devices_menu.append(&MenuItem::with_id(
+                app,
+                format!("{MENU_DEVICE_PREFIX}{}", device.device_id),
+                escape_menu_text(&format!("{} · {route}", device.name)),
+                true,
+                None::<&str>,
+            )?)?;
+        }
+    }
+    devices_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    devices_menu.append(&MenuItem::with_id(
+        app,
+        MENU_DEVICES,
+        i18n::text(language, TextKey::TrayViewAllDevices),
+        true,
+        None::<&str>,
+    )?)?;
     let settings = MenuItem::with_id(
         app,
         MENU_SETTINGS,
@@ -376,17 +472,69 @@ fn build_tray_menu(app: &AppHandle) -> AppResult<(Menu<tauri::Wry>, TrayMenu)> {
         true,
         None::<&str>,
     )?;
-    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open,
+            &PredefinedMenuItem::separator(app)?,
+            &cloud_status,
+            &device_status,
+            &devices_menu,
+            &PredefinedMenuItem::separator(app)?,
+            &settings,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    Ok(menu)
+}
 
-    let menu = Menu::with_items(app, &[&open, &settings, &separator, &quit])?;
-    Ok((
-        menu,
-        TrayMenu {
-            open,
-            settings,
-            quit,
-        },
-    ))
+impl TrayMenuSnapshot {
+    fn new(settings: &AppSettings, cloud: &CloudStatus, devices: &[DeviceInfo]) -> Self {
+        let mut devices = devices
+            .iter()
+            .filter(|device| {
+                !device.device_sources.iter().any(|source| source == "local")
+                    && (device.lan_available || device.cloud_available)
+            })
+            .map(|device| TrayMenuDevice {
+                device_id: device.device_id.clone(),
+                name: if device.name.trim().is_empty() {
+                    device.device_id.clone()
+                } else {
+                    device.name.trim().to_string()
+                },
+                route: if device.active_route.as_deref() == Some("lan")
+                    || (device.lan_available && !device.cloud_available)
+                {
+                    "lan".to_string()
+                } else {
+                    "cloud".to_string()
+                },
+            })
+            .collect::<Vec<_>>();
+        devices.sort_by(|left, right| {
+            let left_route = usize::from(left.route != "lan");
+            let right_route = usize::from(right.route != "lan");
+            left_route
+                .cmp(&right_route)
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.device_id.cmp(&right.device_id))
+        });
+
+        Self {
+            language: settings.language.clone(),
+            cloud_state: cloud.state.clone(),
+            devices,
+        }
+    }
+}
+
+fn escape_menu_text(value: &str) -> String {
+    value
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .replace('&', "&&")
 }
 
 fn main_window(app: &AppHandle) -> AppResult<WebviewWindow<tauri::Wry>> {
