@@ -87,7 +87,8 @@ const MDNS_PORT: u16 = 5_353;
 const MDNS_SD_VERSION: &str = "0.20.3";
 const MDNS_REBUILD_DEBOUNCE: Duration = Duration::from_secs(2);
 const SYSTEM_RESUME_REBUILD_DELAY: Duration = Duration::from_secs(5);
-const MIN_LAN_PORT: u16 = 1_024;
+const RANDOM_LAN_PORT_MIN: u16 = 20_000;
+const RANDOM_LAN_PORT_MAX: u16 = u16::MAX;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(240);
 const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -5826,7 +5827,8 @@ async fn bind_lan_listener() -> io::Result<(TcpListener, u16)> {
     for port in lan_port_candidates() {
         match TcpListener::bind(("0.0.0.0", port)).await {
             Ok(listener) => return Ok((listener, port)),
-            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            Err(error) if is_retryable_lan_bind_error(&error) => {
+                warn!(port, error_kind = ?error.kind(), %error, "LAN port unavailable; trying another port");
                 last_error = Some(error);
             }
             Err(error) => return Err(error),
@@ -5838,18 +5840,21 @@ async fn bind_lan_listener() -> io::Result<(TcpListener, u16)> {
 }
 
 fn lan_port_candidates() -> impl Iterator<Item = u16> {
-    let mut ports = Vec::with_capacity((u16::MAX - MIN_LAN_PORT + 1) as usize);
-    ports.push(LAN_PORT);
-    let max_distance = (LAN_PORT - MIN_LAN_PORT).max(u16::MAX - LAN_PORT);
-    for distance in 1..=max_distance {
-        if let Some(port) = LAN_PORT.checked_add(distance) {
-            ports.push(port);
-        }
-        if let Some(port) = LAN_PORT.checked_sub(distance).filter(|port| *port >= MIN_LAN_PORT) {
-            ports.push(port);
-        }
-    }
-    ports.into_iter()
+    std::iter::once(LAN_PORT).chain(
+        std::iter::once_with(|| {
+            let mut ports = (RANDOM_LAN_PORT_MIN..=RANDOM_LAN_PORT_MAX)
+                .filter(|port| *port != LAN_PORT)
+                .collect::<Vec<_>>();
+            ports.shuffle(&mut rand::thread_rng());
+            ports
+        })
+        .flatten(),
+    )
+}
+
+fn is_retryable_lan_bind_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::AddrInUse
+        || cfg!(target_os = "windows") && error.kind() == io::ErrorKind::PermissionDenied
 }
 
 async fn recv_monitor_event(
@@ -5902,10 +5907,13 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        lan_port_candidates, parse_certificate_fingerprint, parse_file_v3_range,
-        CameraReceiveBuffer, LanManager, MemberRecord, MemberState,
+        is_retryable_lan_bind_error, lan_port_candidates, parse_certificate_fingerprint,
+        parse_file_v3_range, CameraReceiveBuffer, LanManager, MemberRecord, MemberState,
+        RANDOM_LAN_PORT_MAX, RANDOM_LAN_PORT_MIN,
     };
+    use crate::models::LAN_PORT;
     use crate::protocol::CameraDataFrame;
+    use std::io;
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -5944,11 +5952,36 @@ mod tests {
     }
 
     #[test]
-    fn port_candidates_choose_the_nearest_higher_port_on_ties() {
-        assert_eq!(
-            lan_port_candidates().take(5).collect::<Vec<_>>(),
-            vec![27_777, 27_778, 27_776, 27_779, 27_775],
-        );
+    fn port_candidates_start_with_preferred_then_cover_random_range_without_duplicates() {
+        let candidates = lan_port_candidates().collect::<Vec<_>>();
+        assert_eq!(candidates.first(), Some(&LAN_PORT));
+
+        let mut fallback_ports = candidates[1..].to_vec();
+        fallback_ports.sort_unstable();
+        let expected = (RANDOM_LAN_PORT_MIN..=RANDOM_LAN_PORT_MAX)
+            .filter(|port| *port != LAN_PORT)
+            .collect::<Vec<_>>();
+        assert_eq!(fallback_ports, expected);
+    }
+
+    #[test]
+    fn retryable_bind_errors_include_occupied_ports() {
+        let error = io::Error::new(io::ErrorKind::AddrInUse, "occupied");
+        assert!(is_retryable_lan_bind_error(&error));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn retryable_bind_errors_include_windows_reserved_ports() {
+        let error = io::Error::from_raw_os_error(10_013);
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(is_retryable_lan_bind_error(&error));
+    }
+
+    #[test]
+    fn non_bind_errors_stop_port_selection() {
+        let error = io::Error::new(io::ErrorKind::InvalidInput, "invalid address");
+        assert!(!is_retryable_lan_bind_error(&error));
     }
 
     #[test]
