@@ -87,6 +87,9 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
+            if let WindowEvent::ThemeChanged(_) = event {
+                let _ = shell::refresh_tray(window.app_handle());
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let shell_state = window.app_handle().state::<shell::ShellState>();
                 if shell_state.should_allow_exit() {

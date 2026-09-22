@@ -67,6 +67,11 @@ struct TrayMenuDevice {
 }
 
 struct TrayIcons {
+    light: TrayIconSet,
+    dark: TrayIconSet,
+}
+
+struct TrayIconSet {
     connected: DecodedTrayIcon,
     activity: DecodedTrayIcon,
     idle: DecodedTrayIcon,
@@ -82,19 +87,28 @@ struct DecodedTrayIcon {
 impl TrayIcons {
     fn load() -> Self {
         Self {
-            connected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/connected.png")),
-            activity: DecodedTrayIcon::decode(include_bytes!("../icons/tray/activity.png")),
-            idle: DecodedTrayIcon::decode(include_bytes!("../icons/tray/idle.png")),
-            disconnected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/disconnected.png")),
+            light: TrayIconSet {
+                connected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/connected.png")),
+                activity: DecodedTrayIcon::decode(include_bytes!("../icons/tray/activity.png")),
+                idle: DecodedTrayIcon::decode(include_bytes!("../icons/tray/idle.png")),
+                disconnected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/disconnected.png")),
+            },
+            dark: TrayIconSet {
+                connected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/connected_dark.png")),
+                activity: DecodedTrayIcon::decode(include_bytes!("../icons/tray/activity_dark.png")),
+                idle: DecodedTrayIcon::decode(include_bytes!("../icons/tray/idle_dark.png")),
+                disconnected: DecodedTrayIcon::decode(include_bytes!("../icons/tray/disconnected_dark.png")),
+            },
         }
     }
 
-    fn image(&self, state: &str) -> Image<'_> {
+    fn image(&self, state: &str, is_dark: bool) -> Image<'_> {
+        let icons = if is_dark { &self.dark } else { &self.light };
         match state {
-            "connected" => self.connected.image(),
-            "activity" => self.activity.image(),
-            "idle" => self.idle.image(),
-            _ => self.disconnected.image(),
+            "connected" => icons.connected.image(),
+            "activity" => icons.activity.image(),
+            "idle" => icons.idle.image(),
+            _ => icons.disconnected.image(),
         }
     }
 }
@@ -145,7 +159,7 @@ pub fn initialize(app: &AppHandle, settings: &AppSettings) -> AppResult<ShellSta
     let tray_menu_snapshot = TrayMenuSnapshot::new(settings, &cloud, &devices);
     let menu = build_tray_menu(app, &tray_menu_snapshot)?;
     let tray_icons = TrayIcons::load();
-    let icon = tray_icons.image("disconnected");
+    let icon = tray_icons.image("disconnected", is_dark_mode(app));
 
     let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -203,9 +217,31 @@ pub fn refresh_tray(app: &AppHandle) -> AppResult<()> {
         "disconnected"
     };
 
-    let _ = tray.set_icon(Some(shell.tray_icons.image(icon_state)));
+    let _ = tray.set_icon(Some(shell.tray_icons.image(icon_state, is_dark_mode(app))));
     let _ = tray.set_tooltip(Some(tray_tooltip(app, &cloud, &devices)));
     Ok(())
+}
+
+pub fn is_dark_mode(app: &AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(key) = hkcu.open_subkey(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        ) {
+            if let Ok(value) = key.get_value::<u32, _>("SystemUsesLightTheme") {
+                return value == 0;
+            }
+        }
+    }
+
+    app.get_webview_window("main")
+        .and_then(|window| window.theme().ok())
+        .map(|theme| matches!(theme, tauri::Theme::Dark))
+        .unwrap_or(true)
 }
 
 pub fn refresh_tray_menu_labels(app: &AppHandle, _language: &str) -> AppResult<()> {
