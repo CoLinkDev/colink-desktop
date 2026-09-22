@@ -64,7 +64,7 @@ export function TransferDetailDialog({ transfer, deviceName, onClose }: Transfer
       <div className="flex max-h-[82vh] w-full max-w-xl flex-col rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex shrink-0 items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="break-words text-[16px] font-semibold text-[hsl(var(--text))]">
+            <div className="break-words text-[16px] font-semibold text-[hsl(var(--text))] select-none">
               {transfer.fileName || t('common.none')}
             </div>
             <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">{statusLabel}</div>

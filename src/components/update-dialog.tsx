@@ -116,7 +116,7 @@ export function UpdateDialog({ update, required, onClose }: UpdateDialogProps) {
               )}
             </div>
             <div className="min-w-0">
-              <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
+              <div className="text-[15px] font-semibold text-[hsl(var(--text))] select-none">
                 {t('updates.available', { version: update.version })}
               </div>
               <div className="mt-1 text-[12px] text-[hsl(var(--muted))]">

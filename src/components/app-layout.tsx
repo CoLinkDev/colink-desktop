@@ -67,34 +67,73 @@ export function AppLayout({ children }: PropsWithChildren) {
     }
   }
 
-  const getTitle = () => {
+  const getHeaderInfo = () => {
     switch (location.pathname) {
       case '/devices':
-        return t('nav.devices')
+        return {
+          title: t('nav.devices'),
+          description: t('navDesc.devices'),
+          icon: Computer,
+        }
       case '/messages':
-        return t('nav.messages')
+        return {
+          title: t('nav.messages'),
+          description: t('navDesc.messages'),
+          icon: MessagesSquare,
+        }
       case '/transfers':
-        return t('nav.transfers')
+        return {
+          title: t('nav.transfers'),
+          description: t('navDesc.transfers'),
+          icon: ArrowUpDown,
+        }
       case '/files':
-        return t('nav.files')
+        return {
+          title: t('nav.files'),
+          description: t('navDesc.files'),
+          icon: FolderOpen,
+        }
       case '/settings':
-        return t('nav.settings')
+        return {
+          title: t('nav.settings'),
+          description: t('navDesc.settings'),
+          icon: Settings2,
+        }
       case '/castboard':
-        return t('nav.castboard')
+        return {
+          title: t('nav.castboard'),
+          description: t('navDesc.castboard'),
+          icon: MonitorPlay,
+        }
       case '/terminal':
-        return t('nav.terminal')
+        return {
+          title: t('nav.terminal'),
+          description: t('navDesc.terminal'),
+          icon: Terminal,
+        }
       case '/camera':
-        return t('camera.title', { defaultValue: 'Remote camera' })
+        return {
+          title: t('camera.title', { defaultValue: 'Remote camera' }),
+          description: t('navDesc.camera'),
+          icon: Camera,
+        }
       default:
-        return 'CoLink Desktop'
+        return {
+          title: 'CoLink Desktop',
+          description: t('navDesc.default'),
+          icon: Computer,
+        }
     }
   }
+
+  const headerInfo = getHeaderInfo()
+  const HeaderIcon = headerInfo.icon
 
   return (
     <>
       <div className="grid h-screen w-screen grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
         {/* Sidebar */}
-      <aside className="flex h-full flex-col border-r bg-[hsl(var(--sidebar))]">
+      <aside className="flex h-full flex-col border-r bg-[hsl(var(--sidebar))] select-none">
         {/* Logo/Brand Area */}
         <div className="flex flex-col px-4 pt-7 pb-5 select-none">
           <div className="px-1 font-google-sans text-[18px] font-bold tracking-tight text-[hsl(var(--text))]">
@@ -184,7 +223,17 @@ export function AppLayout({ children }: PropsWithChildren) {
       {/* Main content */}
       <div className="flex h-full flex-col overflow-hidden bg-[hsl(var(--background))]">
         <header className="flex h-16 shrink-0 items-center justify-between border-b px-8">
-          <h1 className="text-[20px] font-semibold tracking-tight text-[hsl(var(--text))]">{getTitle()}</h1>
+          <div className="flex items-center gap-3 select-none">
+            <HeaderIcon className="h-5 w-5 shrink-0 text-[hsl(var(--accent))]" />
+            <div className="flex flex-col justify-center min-w-0">
+              <h1 className="text-[15px] font-semibold tracking-tight text-[hsl(var(--text))] leading-tight select-none">
+                {headerInfo.title}
+              </h1>
+              <p className="mt-0.5 text-[12px] text-[hsl(var(--muted))] leading-tight truncate select-none">
+                {headerInfo.description}
+              </p>
+            </div>
+          </div>
 
           <div className="flex items-center gap-2">
             {headerActions}
@@ -218,7 +267,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       {showThemeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-xs rounded-xl border bg-[hsl(var(--panel))] p-5 shadow-xl animate-scale-in">
-            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">{t('nav.theme')}</div>
+            <div className="text-[15px] font-semibold text-[hsl(var(--text))] select-none">{t('nav.theme')}</div>
             <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
               {t('theme.subtitle')}
             </p>
@@ -259,7 +308,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       {showLogoutConfirm && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('nav.logout')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('nav.logout')}</div>
             <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
               {t('auth.logoutConfirmDesc')}
             </p>
@@ -294,7 +343,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       {blocker.state === 'blocked' && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t(terminalRouteActive ? 'terminal.leaveTitle' : 'settings.unsavedChangesTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t(terminalRouteActive ? 'terminal.leaveTitle' : 'settings.unsavedChangesTitle')}</div>
             <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
               {t(terminalRouteActive ? 'terminal.leaveDescription' : 'settings.unsavedChangesDesc')}
             </p>

@@ -328,7 +328,7 @@ export function DevicesPage() {
       {pairString && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.pairQrTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('devices.pairQrTitle')}</div>
             <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
               {t('devices.pairQrDescription')}
             </p>
@@ -350,7 +350,7 @@ export function DevicesPage() {
       {rotateConfirmId && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.rotateConfirmTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('devices.rotateConfirmTitle')}</div>
             <p className="mt-2 text-[13px] text-[hsl(var(--text-secondary))] leading-relaxed">
               {t('devices.rotateConfirmDesc', { name: rotatingDevice?.name || t('messages.notSelected') })}
             </p>
@@ -388,7 +388,7 @@ export function DevicesPage() {
       {forgetConfirmId && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('devices.forgetConfirmTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('devices.forgetConfirmTitle')}</div>
             <p className="mt-2 text-[13px] text-[hsl(var(--text-secondary))] leading-relaxed">
               {t('devices.forgetConfirmDesc', { name: forgetDevice?.name || t('messages.notSelected') })}
             </p>

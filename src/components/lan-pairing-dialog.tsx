@@ -119,7 +119,7 @@ export function LanPairingDialog() {
             <ShieldCheck className="h-4 w-4 text-[hsl(var(--accent))]" />
           </div>
           <div>
-            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
+            <div className="text-[15px] font-semibold text-[hsl(var(--text))] select-none">
               {t('lanPairing.title')}
             </div>
             <div className="mt-0.5 text-[12px] text-[hsl(var(--muted))]">

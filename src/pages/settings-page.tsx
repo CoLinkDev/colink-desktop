@@ -345,7 +345,7 @@ function NcmHelpDialog({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
       <div className="w-full max-w-lg rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-[16px] font-semibold text-[hsl(var(--text))]">
+          <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">
             {t('nowPlaying.ncmHelpTitle')}
           </div>
           <button

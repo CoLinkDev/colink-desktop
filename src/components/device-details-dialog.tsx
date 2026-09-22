@@ -57,7 +57,7 @@ export function DeviceDetailsDialog({ device, isLocalDevice, onClose }: DeviceDe
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
       <div className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex shrink-0 items-center justify-between">
-          <div className="text-[16px] font-semibold text-[hsl(var(--text))]">
+          <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">
             {t('devices.detailsTitle')}
           </div>
           <button

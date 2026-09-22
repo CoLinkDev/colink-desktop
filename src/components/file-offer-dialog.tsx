@@ -96,7 +96,7 @@ export function FileOfferDialog() {
             <Download className="h-4 w-4 text-[hsl(var(--accent))]" />
           </div>
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-[hsl(var(--text))]">
+            <div className="text-[15px] font-semibold text-[hsl(var(--text))] select-none">
               {t('fileOffers.title')}
             </div>
             <div className="mt-0.5 truncate text-[12px] text-[hsl(var(--muted))]">

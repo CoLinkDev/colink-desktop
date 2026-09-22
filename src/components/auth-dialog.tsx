@@ -177,7 +177,7 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
       <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))]">{t('auth.title')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('auth.title')}</div>
             <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">{t('auth.subtitle')}</p>
           </div>
           <button
