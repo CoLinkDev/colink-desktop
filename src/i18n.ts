@@ -59,7 +59,7 @@ const resources = {
       nav: {
         devices: '设备',
         messages: '消息',
-        transfers: '文件传输',
+        transfers: '传输',
         files: '文件浏览',
         castboard: 'CastBoard',
         terminal: '终端',
@@ -71,7 +71,7 @@ const resources = {
       navDesc: {
         devices: '发现和管理设备',
         messages: '向指定的设备发送文本消息',
-        transfers: '在设备之间传输文件',
+        transfers: '在设备之间传输文本与文件',
         files: '浏览对端设备上的文件',
         castboard: '在本机启动CastBoard',
         terminal: '连接远程设备的命令行',
@@ -526,7 +526,7 @@ const resources = {
       navDesc: {
         devices: 'Discover and manage devices',
         messages: 'Send text messages to devices',
-        transfers: 'Transfer files between devices',
+        transfers: 'Send text and files between devices',
         files: 'Browse remote device files',
         castboard: 'Launch CastBoard on this device',
         terminal: 'Connect to remote command line',
@@ -969,7 +969,7 @@ const resources = {
       nav: {
         devices: '設備',
         messages: '訊息',
-        transfers: '檔案傳輸',
+        transfers: '傳輸',
         files: '檔案瀏覽',
         castboard: 'CastBoard',
         terminal: '終端機',
@@ -981,7 +981,7 @@ const resources = {
       navDesc: {
         devices: '探索和管理裝置',
         messages: '向指定的裝置傳送文字訊息',
-        transfers: '在裝置之間傳輸檔案',
+        transfers: '在裝置之間傳輸文字與檔案',
         files: '瀏覽對端裝置上的檔案',
         castboard: '在本機啟動CastBoard',
         terminal: '連線遠端裝置的命令列',
@@ -1424,7 +1424,7 @@ const resources = {
       nav: {
         devices: 'デバイス',
         messages: 'メッセージ',
-        transfers: 'ファイル転送',
+        transfers: '転送',
         files: 'ファイルブラウザ',
         castboard: 'CastBoard',
         terminal: 'ターミナル',
@@ -1436,7 +1436,7 @@ const resources = {
       navDesc: {
         devices: 'デバイスの検出と管理',
         messages: '指定したデバイスにメッセージを送信',
-        transfers: 'デバイス間でファイルを転送',
+        transfers: 'デバイス間でテキストとファイルを送信',
         files: 'リモートデバイスのファイルを閲覧',
         castboard: 'このデバイスでCastBoardを起動',
         terminal: 'リモートコマンドラインに接続',
@@ -1879,7 +1879,7 @@ const resources = {
       nav: {
         devices: '디바이스',
         messages: '메시지',
-        transfers: '파일 전송',
+        transfers: '전송',
         files: '파일 탐색',
         castboard: 'CastBoard',
         terminal: '터미널',
@@ -1891,7 +1891,7 @@ const resources = {
       navDesc: {
         devices: '기기 검색 및 관리',
         messages: '지정된 기기에 텍스트 메시지 전송',
-        transfers: '기기 간 파일 전송',
+        transfers: '기기 간 텍스트 및 파일 전송',
         files: '원격 기기의 파일 탐색',
         castboard: '이 기기에서 CastBoard 실행',
         terminal: '원격 커맨드 라인 연결',
@@ -2346,7 +2346,7 @@ const resources = {
       navDesc: {
         devices: 'Descubre y gestiona dispositivos',
         messages: 'Envía mensajes de texto a dispositivos',
-        transfers: 'Transfiere archivos entre dispositivos',
+        transfers: 'Envía texto y archivos entre dispositivos',
         files: 'Explora archivos del dispositivo remoto',
         castboard: 'Iniciar CastBoard en este dispositivo',
         terminal: 'Conéctate a la terminal remota',
@@ -2801,7 +2801,7 @@ const resources = {
       navDesc: {
         devices: 'Geräte erkennen und verwalten',
         messages: 'Textnachrichten an Geräte senden',
-        transfers: 'Dateien zwischen Geräten übertragen',
+        transfers: 'Text und Dateien zwischen Geräten übertragen',
         files: 'Dateien auf Remotegeräten durchsuchen',
         castboard: 'CastBoard auf diesem Gerät starten',
         terminal: 'Mit Remote-Befehlszeile verbinden',
@@ -3256,7 +3256,7 @@ const resources = {
       navDesc: {
         devices: 'Поиск и управление устройствами',
         messages: 'Отправка сообщений на устройства',
-        transfers: 'Передача файлов между устройствами',
+        transfers: 'Передача текста и файлов между устройствами',
         files: 'Просмотр файлов на удаленном устройстве',
         castboard: 'Запуск CastBoard на этом устройстве',
         terminal: 'Подключение к удаленной командной строке',

@@ -5,7 +5,6 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
 import { AppStateProvider, useAppState } from './hooks/use-app-state'
-import { FileOfferDialog } from './components/file-offer-dialog'
 import { LanPairingDialog } from './components/lan-pairing-dialog'
 import { UpdateDialog } from './components/update-dialog'
 import { checkUpdate } from './lib/api'
@@ -58,7 +57,6 @@ export default function App() {
     <AppStateProvider>
       <UpdateNotification />
       <RouterProvider router={router} />
-      <FileOfferDialog />
       <LanPairingDialog />
     </AppStateProvider>
   )

@@ -157,6 +157,7 @@ export interface FileOfferRequest {
   deviceName: string
   fileName: string
   fileSize: number
+  purpose: 'transfer' | 'filesystemDownload'
 }
 
 export interface TransferProgressPayload {

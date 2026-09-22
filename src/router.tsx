@@ -1,11 +1,10 @@
-import { createHashRouter, Navigate, Outlet } from 'react-router-dom'
+import { createHashRouter, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { AppLayout } from './components/app-layout'
 import { LoadingScreen } from './components/loading-screen'
 import { useAppState } from './hooks/use-app-state'
 import { DevicesPage } from './pages/devices-page'
-import { MessagesPage } from './pages/messages-page'
 import { TransfersPage } from './pages/transfers-page'
 import { SettingsPage } from './pages/settings-page'
 import { CastBoardPage } from './pages/castboard-page'
@@ -39,6 +38,11 @@ function ProtectedShell() {
   )
 }
 
+function MessagesRedirect() {
+  const location = useLocation()
+  return <Navigate replace to={{ pathname: '/transfers', search: location.search }} />
+}
+
 export const router = createHashRouter([
   {
     path: '/',
@@ -54,7 +58,7 @@ export const router = createHashRouter([
       },
       {
         path: '/messages',
-        element: <MessagesPage />,
+        element: <MessagesRedirect />,
       },
       {
         path: '/transfers',

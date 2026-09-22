@@ -262,7 +262,7 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) -> AppResult<()> {
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("deviceId", device_id)
             .finish();
-        return show_main_window(app, Some(&format!("/messages?{query}")));
+        return show_main_window(app, Some(&format!("/transfers?{query}")));
     }
     if id == MENU_QUIT {
         return quit_app(app);

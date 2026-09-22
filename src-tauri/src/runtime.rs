@@ -915,7 +915,7 @@ impl AppRuntime {
                                 );
                                 let _ = crate::shell::show_main_window(
                                     &self.inner.app,
-                                    Some(&self.device_route("/messages", from)),
+                                    Some(&self.device_route("/transfers", from)),
                                 );
                                 info!(%from, %route, "text message received");
                             }

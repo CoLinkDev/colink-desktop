@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, FolderOpen, LogIn, LogOut, MessagesSquare, Settings2, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
+import { Computer, FolderOpen, LogIn, LogOut, Settings2, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -13,6 +13,7 @@ import { Toaster } from 'sonner'
 import { useAppState, readErrorMessage } from '../hooks/use-app-state'
 import { cn } from '../lib/utils'
 import { AuthDialog } from './auth-dialog'
+import { FileOfferDialog } from './file-offer-dialog'
 import { Button } from './ui/button'
 
 export function AppLayout({ children }: PropsWithChildren) {
@@ -74,12 +75,6 @@ export function AppLayout({ children }: PropsWithChildren) {
           title: t('nav.devices'),
           description: t('navDesc.devices'),
           icon: Computer,
-        }
-      case '/messages':
-        return {
-          title: t('nav.messages'),
-          description: t('navDesc.messages'),
-          icon: MessagesSquare,
         }
       case '/transfers':
         return {
@@ -144,7 +139,6 @@ export function AppLayout({ children }: PropsWithChildren) {
         {/* Navigation Items */}
         <nav className="flex flex-1 flex-col gap-1 px-3">
           <SidebarLink icon={Computer} label={t('nav.devices')} to="/devices" />
-          <SidebarLink icon={MessagesSquare} label={t('nav.messages')} to="/messages" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={FolderOpen} label={t('nav.files')} to="/files" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
@@ -368,6 +362,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       )}
 
       <AuthDialog open={showAuthDialog} onClose={() => setShowAuthDialog(false)} />
+      <FileOfferDialog />
 
       {/* Toast Notification Container */}
       <Toaster theme={theme === 'auto' ? 'system' : theme} position="top-right" closeButton richColors />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { listen } from '@tauri-apps/api/event'
 import { Download, FileArchive } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -23,11 +24,12 @@ function formatBytes(value: number) {
 
 export function FileOfferDialog() {
   const { t } = useTranslation()
+  const location = useLocation()
   const { settings, pickDownloadDirectory } = useAppState()
   const [requests, setRequests] = useState<FileOfferRequest[]>([])
   const [acting, setActing] = useState(false)
   const [destinationPath, setDestinationPath] = useState('')
-  const request = requests[0] ?? null
+  const request = requests.find((item) => location.pathname !== '/transfers' || item.purpose === 'filesystemDownload') ?? null
   const currentSessionIdRef = useRef<string | null>(null)
   currentSessionIdRef.current = request?.sessionId ?? null
 

@@ -318,6 +318,7 @@ pub struct FileOfferRequest {
     pub device_name: String,
     pub file_name: String,
     pub file_size: i64,
+    pub purpose: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

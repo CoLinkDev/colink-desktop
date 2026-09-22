@@ -565,6 +565,11 @@ impl AppRuntime {
             device_name: self.lookup_device_name(from),
             file_name: payload.file_name.clone(),
             file_size: payload.file_size,
+            purpose: if filesystem_download_id.is_some() || filesystem_upload.is_some() {
+                "filesystemDownload".to_string()
+            } else {
+                "transfer".to_string()
+            },
         };
         let auto_accept_file_offers = self
             .inner
@@ -749,6 +754,11 @@ impl AppRuntime {
                 device_name: self.lookup_device_name(&item.from),
                 file_name: item.payload.file_name,
                 file_size: item.payload.file_size,
+                purpose: if item.filesystem_download_id.is_some() || item.filesystem_upload.is_some() {
+                    "filesystemDownload".to_string()
+                } else {
+                    "transfer".to_string()
+                },
             })
             .collect()
     }

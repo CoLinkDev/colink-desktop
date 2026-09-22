@@ -1,408 +1,323 @@
-import { ArrowUpDown, HardDriveUpload, X, CheckCircle2, AlertCircle, ArrowUp, ArrowDown, LoaderCircle, Trash2, ExternalLink, FolderOpen, Info } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { ArrowUpDown, HardDriveUpload, Paperclip, Send, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
-import { Button } from '../components/ui/button'
+import { FileOfferBubble, TransferBubbleCard } from '../components/transfer-bubble'
 import { TransferDetailDialog } from '../components/transfer-detail-dialog'
+import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
-import { openReceivedFile, revealReceivedFile } from '../lib/api'
-import { cn, formatBytes, formatPlatformName } from '../lib/utils'
-import type { FileTransferRecord, TransferPreparingPayload } from '../lib/types'
+import { openReceivedFile, pendingFileOffers, respondFileOffer, revealReceivedFile } from '../lib/api'
+import { cn, formatPlatformName, formatTimestamp } from '../lib/utils'
+import type { FileOfferRequest, FileTransferRecord, TextMessageRecord, TransferPreparingPayload } from '../lib/types'
 
 const TRANSFER_PREPARING_EVENT = 'transfer-preparing'
 
+interface PendingOffer {
+  request: FileOfferRequest
+  receivedAt: number
+}
+
+type TimelineItem =
+  | { kind: 'message'; id: string; timestamp: number; direction: 'inbound' | 'outbound'; data: TextMessageRecord }
+  | { kind: 'transfer'; id: string; timestamp: number; direction: 'inbound' | 'outbound'; data: FileTransferRecord }
+  | { kind: 'offer'; id: string; timestamp: number; direction: 'inbound'; data: FileOfferRequest }
+
+function latestPreview(item: TimelineItem | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
+  if (!item) return ''
+  if (item.kind === 'message') return item.data.text
+  if (item.kind === 'offer') return item.data.fileName
+  return `${item.data.fileName} · ${t(`transfers.status.${item.data.status}`, { defaultValue: item.data.status })}`
+}
+
 export function TransfersPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { device, devices, transfers, transferSpeeds, pickFiles, sendFiles, cancelTransfer, clearTransfers } = useAppState()
+  const {
+    device,
+    devices,
+    messages,
+    transfers,
+    transferSpeeds,
+    settings,
+    pickFiles,
+    sendText,
+    sendFiles,
+    cancelTransfer,
+    clearTransfers,
+  } = useAppState()
+  const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [preparing, setPreparing] = useState<TransferPreparingPayload | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [detailTransfer, setDetailTransfer] = useState<FileTransferRecord | null>(null)
+  const [pendingOffers, setPendingOffers] = useState<PendingOffer[]>([])
+  const [actingOfferId, setActingOfferId] = useState<string | null>(null)
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const selectedDeviceIdRef = useRef('')
 
   const targetDevices = useMemo(
-    () => devices.filter((i) => i.deviceId !== device?.deviceId && i.online),
+    () => devices.filter((item) => item.deviceId !== device?.deviceId),
     [device?.deviceId, devices],
   )
   const selectedDeviceId = useMemo(() => {
-    const requestedDeviceId = searchParams.get('deviceId')
-    if (requestedDeviceId && targetDevices.some((item) => item.deviceId === requestedDeviceId)) {
-      return requestedDeviceId
-    }
+    const requested = searchParams.get('deviceId')
+    if (requested && targetDevices.some((item) => item.deviceId === requested)) return requested
     return targetDevices[0]?.deviceId ?? ''
   }, [searchParams, targetDevices])
+  const selectedDevice = targetDevices.find((item) => item.deviceId === selectedDeviceId) ?? null
 
-  const selectedDevice = targetDevices.find((i) => i.deviceId === selectedDeviceId) ?? null
-  const transferItems = useMemo(() => transfers.filter((i) => selectedDeviceId ? i.deviceId === selectedDeviceId : true), [selectedDeviceId, transfers])
-  const hasClearableTransfers = useMemo(() => {
-    return transferItems.some((i) => i.status === 'completed' || i.status === 'failed' || i.status === 'cancelled' || i.status === 'rejected')
-  }, [transferItems])
-  const submitLabel = submitting
-    ? preparing
-      ? t('transfers.hashingProgress', {
-        current: preparing.current,
-        total: preparing.total,
-      })
-      : t('transfers.preparingSend')
-    : t('transfers.selectBtn')
-
-  useEffect(() => {
-    let disposed = false
-    let unlisten: (() => void) | null = null
-
-    void (async () => {
-      try {
-        unlisten = await listen<TransferPreparingPayload>(TRANSFER_PREPARING_EVENT, (event) => {
-          if (!disposed) {
-            setPreparing(event.payload)
-          }
-        })
-      } catch {
-        // Ignore browser-mode event failures. The desktop runtime provides this event.
-      }
-    })()
-
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
-  }, [])
-
-  // Ref to hold selectedDeviceId for the async drop listener closure
-  const selectedDeviceIdRef = useRef(selectedDeviceId)
   useEffect(() => {
     selectedDeviceIdRef.current = selectedDeviceId
   }, [selectedDeviceId])
 
-  // System Drag and Drop listener setup
   useEffect(() => {
     let disposed = false
-    const unlisteners: (() => void)[] = []
-
+    const unlisteners: Array<() => void> = []
     void (async () => {
       try {
-        const enter = await listen('tauri://drag-enter', () => {
-          if (!disposed) setIsDragging(true)
-        })
-        if (disposed) {
-          enter()
-        } else {
-          unlisteners.push(enter)
-        }
-
-        const leave = await listen('tauri://drag-leave', () => {
-          if (!disposed) setIsDragging(false)
-        })
-        if (disposed) {
-          leave()
-        } else {
-          unlisteners.push(leave)
-        }
-
-        const drop = await listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
+        unlisteners.push(await listen<TransferPreparingPayload>(TRANSFER_PREPARING_EVENT, (event) => {
+          if (!disposed) setPreparing(event.payload)
+        }))
+        unlisteners.push(await listen<FileOfferRequest>('file-offer-requested', (event) => {
           if (disposed) return
-          setIsDragging(false)
-
-          const paths = event.payload.paths
-          const currentDeviceId = selectedDeviceIdRef.current
-          if (paths && paths.length > 0) {
-            if (!currentDeviceId) {
-              setError(t('transfers.errorSelectDevice'))
-              return
-            }
-            setSubmitting(true)
-            setPreparing(null)
-            setError(null)
-            try {
-              await sendFiles({ deviceId: currentDeviceId, paths })
-            } catch (e) {
-              setError(readErrorMessage(e))
-            } finally {
-              setSubmitting(false)
-              setPreparing(null)
-            }
-          }
-        })
-        if (disposed) {
-          drop()
-        } else {
-          unlisteners.push(drop)
+          if (event.payload.purpose !== 'transfer') return
+          setPendingOffers((current) => current.some((item) => item.request.sessionId === event.payload.sessionId)
+            ? current
+            : [...current, { request: event.payload, receivedAt: Date.now() }])
+        }))
+        unlisteners.push(await listen<string>('file-offer-ended', (event) => {
+          if (!disposed) setPendingOffers((current) => current.filter((item) => item.request.sessionId !== event.payload))
+        }))
+        const pending = await pendingFileOffers()
+        if (!disposed) {
+          setPendingOffers(pending
+            .filter((request) => request.purpose === 'transfer')
+            .map((request) => ({ request, receivedAt: Date.now() })))
         }
       } catch {
-        // Ignore browser mode failures
+        // Ignore browser-mode event failures. The desktop runtime provides these events.
       }
     })()
-
     return () => {
       disposed = true
-      unlisteners.forEach((fn) => fn())
+      unlisteners.forEach((unlisten) => unlisten())
     }
   }, [])
 
-  async function handleSendFiles() {
-    if (!selectedDeviceId) { setError(t('transfers.errorSelectDevice')); return }
-    setSubmitting(true); setPreparing(null); setError(null)
+  useEffect(() => {
+    let disposed = false
+    const unlisteners: Array<() => void> = []
+    void (async () => {
+      try {
+        const enter = await listen('tauri://drag-enter', () => { if (!disposed) setIsDragging(true) })
+        const leave = await listen('tauri://drag-leave', () => { if (!disposed) setIsDragging(false) })
+        const drop = await listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
+          if (disposed) return
+          setIsDragging(false)
+          await sendPaths(event.payload.paths)
+        })
+        if (disposed) {
+          enter(); leave(); drop()
+        } else {
+          unlisteners.push(enter, leave, drop)
+        }
+      } catch {
+        // Ignore browser-mode event failures.
+      }
+    })()
+    return () => {
+      disposed = true
+      unlisteners.forEach((unlisten) => unlisten())
+    }
+  }, [])
+
+  const timelineItems = useMemo<TimelineItem[]>(() => {
+    const items: TimelineItem[] = [
+      ...messages
+        .filter((item) => item.deviceId === selectedDeviceId)
+        .map((data) => ({ kind: 'message' as const, id: data.messageId, timestamp: data.createdAt, direction: data.direction, data })),
+      ...transfers
+        .filter((item) => item.deviceId === selectedDeviceId)
+        .map((data) => ({ kind: 'transfer' as const, id: data.fileId, timestamp: data.updatedAt || data.createdAt, direction: data.direction, data })),
+      ...pendingOffers
+        .filter((item) => item.request.deviceId === selectedDeviceId)
+        .map((item) => ({ kind: 'offer' as const, id: item.request.sessionId, timestamp: item.receivedAt, direction: 'inbound' as const, data: item.request })),
+    ]
+    return items.sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id))
+  }, [messages, pendingOffers, selectedDeviceId, transfers])
+
+  const latestByDevice = useMemo(() => {
+    const result = new Map<string, TimelineItem>()
+    const items: TimelineItem[] = [
+      ...messages.map((data) => ({ kind: 'message' as const, id: data.messageId, timestamp: data.createdAt, direction: data.direction, data })),
+      ...transfers.map((data) => ({ kind: 'transfer' as const, id: data.fileId, timestamp: data.updatedAt || data.createdAt, direction: data.direction, data })),
+    ]
+    for (const item of items) {
+      const previous = result.get(item.data.deviceId)
+      if (!previous || previous.timestamp < item.timestamp) result.set(item.data.deviceId, item)
+    }
+    return result
+  }, [messages, transfers])
+
+  const hasClearableTransfers = timelineItems.some((item) => item.kind === 'transfer' && ['completed', 'failed', 'cancelled', 'rejected'].includes(item.data.status))
+  const submitLabel = submitting
+    ? preparing ? t('transfers.hashingProgress', { current: preparing.current, total: preparing.total }) : t('transfers.preparingSend')
+    : t('transfers.selectBtn')
+
+  useEffect(() => {
+    const element = timelineRef.current
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+  }, [selectedDeviceId, timelineItems])
+
+  async function sendPaths(paths: string[]) {
+    if (!paths.length) return
+    const currentDeviceId = selectedDeviceIdRef.current
+    if (!currentDeviceId) {
+      setError(t('transfers.errorSelectDevice'))
+      return
+    }
+    setSubmitting(true)
+    setPreparing(null)
+    setError(null)
+    try {
+      await sendFiles({ deviceId: currentDeviceId, paths })
+    } catch (cause) {
+      setError(readErrorMessage(cause))
+    } finally {
+      setSubmitting(false)
+      setPreparing(null)
+    }
+  }
+
+  async function handlePickFiles() {
     try {
       const paths = await pickFiles(true)
-      if (paths.length === 0) return
-      await sendFiles({ deviceId: selectedDeviceId, paths })
-    } catch (e) { setError(readErrorMessage(e)) }
-    finally { setSubmitting(false); setPreparing(null) }
-  }
-
-  async function handleOpenReceivedFile(fileId: string) {
-    setError(null)
-    try {
-      await openReceivedFile(fileId)
-    } catch (e) {
-      setError(readErrorMessage(e))
+      await sendPaths(paths)
+    } catch (cause) {
+      setError(readErrorMessage(cause))
     }
   }
 
-  async function handleRevealReceivedFile(fileId: string) {
-    setError(null)
-    try {
-      await revealReceivedFile(fileId)
-    } catch (e) {
-      setError(readErrorMessage(e))
+  async function handleSendText() {
+    if (!selectedDeviceId) {
+      toast.error(t('messages.errorSelectDevice'))
+      return
     }
+    const value = text.trim()
+    if (!value) {
+      toast.error(t('messages.errorEmptyText'))
+      return
+    }
+    setSubmitting(true)
+    try {
+      await sendText({ deviceId: selectedDeviceId, text: value })
+      setText('')
+    } catch (cause) {
+      toast.error(readErrorMessage(cause))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function handleTextKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void handleSendText()
+    }
+  }
+
+  async function handleOffer(request: FileOfferRequest, accepted: boolean) {
+    setActingOfferId(request.sessionId)
+    try {
+      await respondFileOffer(request.sessionId, accepted, accepted ? settings.downloadPath : undefined)
+      setPendingOffers((current) => current.filter((item) => item.request.sessionId !== request.sessionId))
+    } catch (cause) {
+      toast.error(readErrorMessage(cause))
+    } finally {
+      setActingOfferId(null)
+    }
+  }
+
+  async function handleOpen(fileId: string) {
+    try { await openReceivedFile(fileId) } catch (cause) { toast.error(readErrorMessage(cause)) }
+  }
+
+  async function handleReveal(fileId: string) {
+    try { await revealReceivedFile(fileId) } catch (cause) { toast.error(readErrorMessage(cause)) }
   }
 
   return (
-    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] gap-6 animate-fade-in overflow-hidden">
-      {/* Device List Sidebar */}
-      <aside className="h-full overflow-y-auto py-6 pl-8 pr-1.5 space-y-1 scrollbar-thin">
+    <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)] gap-5 animate-fade-in overflow-hidden">
+      <aside className="min-h-0 overflow-y-auto py-5 pl-8 pr-1.5 scrollbar-thin">
         <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{t('transfers.sidebarTitle')}</div>
         {targetDevices.length === 0 ? (
           <div className="py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('transfers.emptyDevices')}</div>
-        ) : targetDevices.map((item) => (
-          <button
-            className={cn(
-              "w-full rounded-lg px-3 py-2.5 text-left border transition-all",
-              item.deviceId === selectedDeviceId
-                ? "border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm"
-                : "border-transparent hover:bg-[hsl(var(--panel-2)/0.5)] bg-transparent"
-            )}
-            key={item.deviceId}
-            onClick={() => { setSearchParams({ deviceId: item.deviceId }) }}
-            type="button"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-              <span className={cn("text-[11px]", item.online ? "text-[hsl(var(--success))]" : "text-[hsl(var(--muted))]")}>{item.online ? t('devices.online') : t('devices.offline')}</span>
-            </div>
-            <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type)}</div>
-          </button>
-        ))}
+        ) : targetDevices.map((item) => {
+          const latest = latestByDevice.get(item.deviceId)
+          return (
+            <button
+              className={cn('mb-1 w-full rounded-lg border px-3 py-3 text-left transition-all', item.deviceId === selectedDeviceId ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm' : 'border-transparent bg-transparent hover:bg-[hsl(var(--panel-2)/0.5)]')}
+              key={item.deviceId}
+              onClick={() => setSearchParams({ deviceId: item.deviceId })}
+              type="button"
+            >
+              <div className="flex items-center gap-2">
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
+                <span className="text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type)}</span>
+              </div>
+              <div className="mt-1 truncate pl-4 text-[11px] text-[hsl(var(--muted))]">{latestPreview(latest, t) || (item.online ? t('devices.online') : t('devices.offline'))}</div>
+            </button>
+          )
+        })}
       </aside>
 
-      <div className="h-full overflow-y-auto py-6 pr-8 pl-1 space-y-5 scrollbar-thin">
-        <section 
-          className={cn(
-            "rounded-xl border p-6 text-center transition-all duration-300 relative overflow-hidden",
-            isDragging 
-              ? "border-[hsl(var(--text)/0.5)] bg-[hsl(var(--panel-2)/0.3)] shadow-[0_0_20px_rgba(255,255,255,0.05)]" 
-              : "border-[hsl(var(--border))] bg-[hsl(var(--panel))]"
-          )}
-        >
-          {isDragging && (
-            <div className="absolute inset-0 bg-[hsl(var(--panel-2)/0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center pointer-events-none z-10 animate-fade-in border-2 border-dashed border-[hsl(var(--text)/0.35)] rounded-xl">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[hsl(var(--text)/0.08)] border border-[hsl(var(--text)/0.15)] mb-2">
-                <HardDriveUpload className="h-6 w-6 text-[hsl(var(--text))]" />
-              </div>
-              <p className="text-[13px] font-semibold text-[hsl(var(--text))]">
-                {selectedDevice 
-                  ? t('transfers.dropToDevice', { name: selectedDevice.name })
-                  : t('transfers.errorSelectDevice')}
-              </p>
-            </div>
-          )}
-
-          <div className={cn("transition-all duration-300", isDragging && "opacity-0")}>
-            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-[hsl(var(--panel-2))]">
-              <HardDriveUpload className="h-5 w-5 text-[hsl(var(--text-secondary))]" />
-            </div>
-            <div className="mt-3">
-              <h2 className="text-[14px] font-semibold">
-                {t('transfers.sendTitle', { name: selectedDevice?.name || t('transfers.notSelected') })}
-              </h2>
-              <p className="mt-1 text-[12px] text-[hsl(var(--muted))]">
-                {t('transfers.sendSubtitle')}
-              </p>
-            </div>
-            <div className="mt-4 flex flex-col items-center justify-center gap-2">
-              <Button
-                disabled={submitting || !selectedDeviceId}
-                onClick={() => void handleSendFiles()}
-                className="px-6"
-              >
-                {submitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-                {submitLabel}
-              </Button>
-              {error && (
-                <div className="mt-2 text-[12px] text-[hsl(var(--danger))]">
-                  {error}
-                </div>
-              )}
-            </div>
+      <section className="flex min-h-0 flex-col gap-3 py-5 pr-8 pl-1">
+        <div className="flex shrink-0 items-center justify-between gap-3 rounded-xl border bg-[hsl(var(--panel))] px-4 py-3">
+          <div className="min-w-0">
+            <div className="truncate text-[15px] font-semibold text-[hsl(var(--text))]">{selectedDevice?.name ?? t('transfers.notSelected')}</div>
+            <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{selectedDevice ? `${formatPlatformName(selectedDevice.type)} · ${selectedDevice.online ? t('devices.online') : t('devices.offline')}` : t('transfers.emptyDevices')}</div>
           </div>
-        </section>
+          {hasClearableTransfers && <Button aria-label={t('transfers.clearBtn')} className="h-8 shrink-0 px-2.5" onClick={() => void clearTransfers()} size="sm" title={t('transfers.clearBtn')} variant="ghost"><Trash2 className="h-3.5 w-3.5" /></Button>}
+        </div>
 
-        {/* Transfer Progress and Logs List */}
-        <div className="rounded-xl border bg-[hsl(var(--panel))]">
-          <div className="px-5 pt-4 pb-3 flex items-center justify-between border-b bg-[hsl(var(--panel-2)/0.2)]">
-            <span className="text-[11px] font-semibold uppercase tracking-widest text-[hsl(var(--muted))]">{t('transfers.listTitle', { count: transferItems.length })}</span>
-            {hasClearableTransfers && (
-              <Button
-                variant="ghost"
-                onClick={() => void clearTransfers()}
-                className="h-6 px-2 text-[11px] font-medium text-[hsl(var(--muted))] hover:text-[hsl(var(--danger))] hover:bg-[hsl(var(--danger)/0.08)] transition-all flex items-center gap-1.5"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {t('transfers.clearBtn')}
-              </Button>
-            )}
-          </div>
-
-          <div className="p-5">
-            {transferItems.length === 0 ? (
-              <div className="py-20 text-center flex flex-col items-center justify-center gap-2.5">
-                <ArrowUpDown className="h-6 w-6 text-[hsl(var(--muted))/0.5]" />
-                <div className="text-[13px] text-[hsl(var(--muted))]">{t('transfers.emptyList')}</div>
-              </div>
+        <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-[hsl(var(--panel))]">
+          <div className="h-full overflow-y-auto px-4 py-5 scrollbar-thin" ref={timelineRef}>
+            {isDragging && <div className="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[hsl(var(--text)/0.35)] bg-[hsl(var(--panel)/0.9)] backdrop-blur-sm"><div className="flex flex-col items-center gap-2 text-center"><HardDriveUpload className="h-7 w-7 text-[hsl(var(--text))]" /><span className="text-[13px] font-semibold text-[hsl(var(--text))]">{selectedDevice ? t('transfers.dropToDevice', { name: selectedDevice.name }) : t('transfers.errorSelectDevice')}</span></div></div>}
+            {timelineItems.length === 0 ? (
+              <div className="flex h-full min-h-48 flex-col items-center justify-center gap-2 text-center text-[13px] text-[hsl(var(--muted))]"><ArrowUpDown className="h-6 w-6 opacity-50" /><span>{t('messages.emptyConversation')}</span></div>
             ) : (
-              <div className="divide-y divide-[hsl(var(--border))]">
-                {transferItems.map((item) => {
-                  const progress = item.fileSize > 0 ? item.transferredBytes / item.fileSize : 0
-                  const active = item.status === 'offered' || item.status === 'sending' || item.status === 'receiving'
-                  const inFlight = item.status === 'sending' || item.status === 'receiving'
-                  const isDone = item.status === 'completed'
-                  const isFailed = item.status === 'failed' || item.status === 'cancelled'
-                  const canOpenReceivedFile = item.direction === 'inbound' && isDone && Boolean(item.finalPath)
-                  const statusLabel = t(`transfers.status.${item.status}`, { defaultValue: item.status })
-                  const speed = inFlight ? (transferSpeeds[item.fileId] ?? null) : null
-                  const routeLabel = item.route === 'lan'
-                    ? t('transfers.routeLan')
-                    : item.route === 'cloud'
-                      ? t('transfers.routeCloud')
-                      : item.route || '-'
-
-                  return (
-                    <div className="py-4 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4" key={item.fileId}>
-                      {/* Left side: File icon & details */}
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--panel-2))] text-[hsl(var(--text-secondary))]">
-                          {item.direction === 'outbound' ? (
-                            <ArrowUp className="h-4 w-4 text-[hsl(var(--text))]" />
-                          ) : (
-                            <ArrowDown className="h-4 w-4 text-[hsl(var(--muted))]" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[13px] font-medium text-[hsl(var(--text))]" title={item.fileName}>
-                            {item.fileName}
-                          </div>
-                          <div className="mt-1 text-[11px] text-[hsl(var(--muted))] flex items-center gap-1.5">
-                            <span className="font-semibold">{item.direction === 'outbound' ? t('transfers.directionSend') : t('transfers.directionReceive')}</span>
-                            <span>•</span>
-                            <span>{formatBytes(item.fileSize)}</span>
-                            <span>•</span>
-                            <span>{routeLabel}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Middle side: Progress and status */}
-                      <div className="flex-1 max-w-xs w-full">
-                        <div className="flex items-center justify-between text-[11px] text-[hsl(var(--muted))] mb-1.5">
-                          <span className={cn(
-                            "font-medium truncate max-w-[160px]",
-                            isDone ? "text-[hsl(var(--success))]" : isFailed ? "text-[hsl(var(--danger))]" : "text-[hsl(var(--text-secondary))]"
-                          )} title={isFailed ? (item.error || statusLabel) : statusLabel}>
-                            {isFailed ? (item.error || statusLabel) : statusLabel}
-                          </span>
-                          <span className="shrink-0">
-                            {formatBytes(item.transferredBytes)} / {formatBytes(item.fileSize)}
-                            {speed !== null ? ` • ${formatBytes(Math.max(0, speed))}/s` : ''}
-                          </span>
-                        </div>
-                        {/* Progress Bar */}
-                        <div className="h-1 w-full overflow-hidden rounded-full bg-[hsl(var(--border))]">
-                          <div
-                            className={cn(
-                              "h-full rounded-full transition-all duration-300",
-                              isFailed ? "bg-[hsl(var(--danger))]" : isDone ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--text-secondary))]"
-                            )}
-                            style={{ width: `${Math.max(4, Math.min(100, progress * 100))}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Right side: Actions & indicators */}
-                      <div className="flex shrink-0 items-center justify-end gap-2">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setDetailTransfer(item)}
-                          title={t('transfers.detailsTitle')}
-                          className="h-7 w-7 px-0"
-                        >
-                          <Info className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={!canOpenReceivedFile}
-                          onClick={() => void handleOpenReceivedFile(item.fileId)}
-                          title={t('transfers.openFile')}
-                          className="h-7 w-7 px-0"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={!canOpenReceivedFile}
-                          onClick={() => void handleRevealReceivedFile(item.fileId)}
-                          title={t('transfers.revealFile')}
-                          className="h-7 w-7 px-0"
-                        >
-                          <FolderOpen className="h-3.5 w-3.5" />
-                        </Button>
-                        {active ? (
-                          <button
-                            className="rounded-md p-1.5 text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
-                            onClick={() => void cancelTransfer(item.fileId)}
-                            type="button"
-                            title={t('transfers.cancelTitle')}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        ) : isDone ? (
-                          <CheckCircle2 className="h-4 w-4 text-[hsl(var(--success))]" />
-                        ) : isFailed ? (
-                          <AlertCircle className="h-4 w-4 text-[hsl(var(--danger))]" />
-                        ) : null}
-                      </div>
-                    </div>
-                  )
-                })}
+              <div className="space-y-3">
+                {timelineItems.map((item) => item.kind === 'message' ? (
+                  <div className={cn('max-w-[min(78%,560px)] rounded-2xl border px-3.5 py-2.5', item.direction === 'outbound' ? 'ml-auto rounded-br-md border-[hsl(var(--text)/0.08)] bg-[hsl(var(--text)/0.07)]' : 'rounded-bl-md border-[hsl(var(--border))] bg-[hsl(var(--panel-2)/0.35)]')} key={item.id}>
+                    <div className="whitespace-pre-wrap break-words text-[13px] text-[hsl(var(--text))]">{item.data.text}</div>
+                    <div className="mt-1.5 text-[10px] text-[hsl(var(--muted))]">{formatTimestamp(item.timestamp, i18n.language)}</div>
+                  </div>
+                ) : item.kind === 'transfer' ? (
+                  <TransferBubbleCard key={item.id} onCancel={(fileId) => void cancelTransfer(fileId)} onDetails={setDetailTransfer} onOpen={(fileId) => void handleOpen(fileId)} onReveal={(fileId) => void handleReveal(fileId)} speed={transferSpeeds[item.data.fileId]} transfer={item.data} />
+                ) : (
+                  <FileOfferBubble acting={actingOfferId === item.data.sessionId} key={item.id} onRespond={(request, accepted) => void handleOffer(request, accepted)} request={item.data} timestamp={item.timestamp} />
+                ))}
               </div>
             )}
           </div>
         </div>
-      </div>
 
-      {detailTransfer && (
-        <TransferDetailDialog
-          transfer={detailTransfer}
-          deviceName={devices.find((item) => item.deviceId === detailTransfer.deviceId)?.name ?? null}
-          onClose={() => setDetailTransfer(null)}
-        />
-      )}
+        <div className="shrink-0 rounded-xl border bg-[hsl(var(--panel))] p-3">
+          {error && <div className="mb-2 text-[12px] text-[hsl(var(--danger))]">{error}</div>}
+          <div className="flex items-end gap-2">
+            <Button aria-label={t('transfers.selectBtn')} className="h-9 w-9 shrink-0 px-0" disabled={submitting || !selectedDeviceId || !selectedDevice?.online} onClick={() => void handlePickFiles()} title={submitLabel} variant="secondary"><Paperclip className="h-4 w-4" /></Button>
+            <textarea aria-label={t('messages.inputPlaceholder')} className="max-h-32 min-h-9 flex-1 resize-none rounded-lg border border-transparent bg-[hsl(var(--panel-2))] px-3 py-2 text-[13px] text-[hsl(var(--text))] outline-none placeholder:text-[hsl(var(--muted))] focus:border-[hsl(var(--border))]" disabled={submitting || !selectedDeviceId || !selectedDevice?.online} onChange={(event) => setText(event.target.value)} onKeyDown={handleTextKeyDown} placeholder={t('messages.inputPlaceholder')} value={text} />
+            <Button aria-label={t('messages.send')} className="h-9 w-9 shrink-0 px-0" disabled={submitting || !selectedDeviceId || !selectedDevice?.online || !text.trim()} onClick={() => void handleSendText()} title={t('messages.send')}><Send className="h-4 w-4" /></Button>
+          </div>
+        </div>
+      </section>
+
+      {detailTransfer && <TransferDetailDialog deviceName={devices.find((item) => item.deviceId === detailTransfer.deviceId)?.name ?? null} onClose={() => setDetailTransfer(null)} transfer={detailTransfer} />}
     </div>
   )
 }
