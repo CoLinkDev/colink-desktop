@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event'
-import { ArrowUpDown, HardDriveUpload, Paperclip, Send, Trash2 } from 'lucide-react'
+import { ArrowUpDown, HardDriveUpload, Paperclip, Send } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -46,7 +46,6 @@ export function TransfersPage() {
     sendText,
     sendFiles,
     cancelTransfer,
-    clearTransfers,
   } = useAppState()
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -163,7 +162,6 @@ export function TransfersPage() {
     return result
   }, [messages, transfers])
 
-  const hasClearableTransfers = timelineItems.some((item) => item.kind === 'transfer' && ['completed', 'failed', 'cancelled', 'rejected'].includes(item.data.status))
   const submitLabel = submitting
     ? preparing ? t('transfers.hashingProgress', { current: preparing.current, total: preparing.total }) : t('transfers.preparingSend')
     : t('transfers.selectBtn')
@@ -277,17 +275,24 @@ export function TransfersPage() {
       </aside>
 
       <section className="flex min-h-0 flex-col gap-3 py-5 pr-8 pl-1">
-        <div className="flex shrink-0 items-center justify-between gap-3 rounded-xl border bg-[hsl(var(--panel))] px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-[15px] font-semibold text-[hsl(var(--text))]">{selectedDevice?.name ?? t('transfers.notSelected')}</div>
-            <div className="mt-0.5 text-[11px] text-[hsl(var(--muted))]">{selectedDevice ? `${formatPlatformName(selectedDevice.type)} · ${selectedDevice.online ? t('devices.online') : t('devices.offline')}` : t('transfers.emptyDevices')}</div>
-          </div>
-          {hasClearableTransfers && <Button aria-label={t('transfers.clearBtn')} className="h-8 shrink-0 px-2.5" onClick={() => void clearTransfers()} size="sm" title={t('transfers.clearBtn')} variant="ghost"><Trash2 className="h-3.5 w-3.5" /></Button>}
-        </div>
-
         <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-[hsl(var(--panel))]">
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-[hsl(var(--text)/0.35)] bg-[hsl(var(--panel)/0.92)] backdrop-blur-md transition-opacity duration-200 ease-out",
+              isDragging ? "opacity-100" : "opacity-0"
+            )}
+          >
+            <div className="flex flex-col items-center gap-2.5 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[hsl(var(--panel-2))] shadow-sm">
+                <HardDriveUpload className="h-6 w-6 text-[hsl(var(--text))] animate-pulse-soft" />
+              </div>
+              <span className="text-[13px] font-semibold text-[hsl(var(--text))]">
+                {selectedDevice ? t('transfers.dropToDevice', { name: selectedDevice.name }) : t('transfers.errorSelectDevice')}
+              </span>
+            </div>
+          </div>
+
           <div className="h-full overflow-y-auto px-4 py-5 scrollbar-thin" ref={timelineRef}>
-            {isDragging && <div className="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[hsl(var(--text)/0.35)] bg-[hsl(var(--panel)/0.9)] backdrop-blur-sm"><div className="flex flex-col items-center gap-2 text-center"><HardDriveUpload className="h-7 w-7 text-[hsl(var(--text))]" /><span className="text-[13px] font-semibold text-[hsl(var(--text))]">{selectedDevice ? t('transfers.dropToDevice', { name: selectedDevice.name }) : t('transfers.errorSelectDevice')}</span></div></div>}
             {timelineItems.length === 0 ? (
               <div className="flex h-full min-h-48 flex-col items-center justify-center gap-2 text-center text-[13px] text-[hsl(var(--muted))]"><ArrowUpDown className="h-6 w-6 opacity-50" /><span>{t('messages.emptyConversation')}</span></div>
             ) : (
@@ -310,8 +315,8 @@ export function TransfersPage() {
         <div className="shrink-0 rounded-xl border bg-[hsl(var(--panel))] p-3">
           {error && <div className="mb-2 text-[12px] text-[hsl(var(--danger))]">{error}</div>}
           <div className="flex items-end gap-2">
-            <Button aria-label={t('transfers.selectBtn')} className="h-9 w-9 shrink-0 px-0" disabled={submitting || !selectedDeviceId || !selectedDevice?.online} onClick={() => void handlePickFiles()} title={submitLabel} variant="secondary"><Paperclip className="h-4 w-4" /></Button>
             <textarea aria-label={t('messages.inputPlaceholder')} className="max-h-32 min-h-9 flex-1 resize-none rounded-lg border border-transparent bg-[hsl(var(--panel-2))] px-3 py-2 text-[13px] text-[hsl(var(--text))] outline-none placeholder:text-[hsl(var(--muted))] focus:border-[hsl(var(--border))]" disabled={submitting || !selectedDeviceId || !selectedDevice?.online} onChange={(event) => setText(event.target.value)} onKeyDown={handleTextKeyDown} placeholder={t('messages.inputPlaceholder')} value={text} />
+            <Button aria-label={t('transfers.selectBtn')} className="h-9 w-9 shrink-0 px-0" disabled={submitting || !selectedDeviceId || !selectedDevice?.online} onClick={() => void handlePickFiles()} title={submitLabel} variant="secondary"><Paperclip className="h-4 w-4" /></Button>
             <Button aria-label={t('messages.send')} className="h-9 w-9 shrink-0 px-0" disabled={submitting || !selectedDeviceId || !selectedDevice?.online || !text.trim()} onClick={() => void handleSendText()} title={t('messages.send')}><Send className="h-4 w-4" /></Button>
           </div>
         </div>
