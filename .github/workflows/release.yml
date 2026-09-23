@@ -50,8 +50,21 @@ jobs:
         with:
           version: latest
 
-      - name: Install Rust stable
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' colink-desktop/rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "Could not read 'channel' from colink-desktop/rust-toolchain.toml" >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Install Linux bundle dependencies
         if: runner.os == 'Linux'
