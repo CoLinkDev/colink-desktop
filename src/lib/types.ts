@@ -160,6 +160,12 @@ export interface FileOfferRequest {
   purpose: 'transfer' | 'filesystemDownload'
 }
 
+export interface SystemShareFile {
+  path: string
+  name: string
+  size: number
+}
+
 export interface TransferProgressPayload {
   record: FileTransferRecord
   bytesPerSecond: number

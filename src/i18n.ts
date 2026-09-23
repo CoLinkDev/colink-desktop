@@ -281,6 +281,12 @@ const resources = {
         changeDestination: '修改',
         accept: '接收',
       },
+      systemShare: {
+        title: '通过 CoLink 发送',
+        fileCount: '已选择 {{count}} 个文件',
+        selectDevice: '选择目标设备',
+        noDevices: '没有在线设备',
+      },
       transfers: {
         title: '文件传输',
         sidebarTitle: '选择传输目标',
@@ -735,6 +741,12 @@ const resources = {
         destination: 'Receiving directory',
         changeDestination: 'Change',
         accept: 'Receive',
+      },
+      systemShare: {
+        title: 'Send with CoLink',
+        fileCount: '{{count}} files selected',
+        selectDevice: 'Select target device',
+        noDevices: 'No devices online',
       },
       transfers: {
         title: 'Transfers',
@@ -1191,6 +1203,12 @@ const resources = {
         changeDestination: '修改',
         accept: '接收',
       },
+      systemShare: {
+        title: '透過 CoLink 傳送',
+        fileCount: '已選擇 {{count}} 個檔案',
+        selectDevice: '選擇目標裝置',
+        noDevices: '沒有線上裝置',
+      },
       transfers: {
         title: '檔案傳輸',
         sidebarTitle: '選擇傳輸目標',
@@ -1645,6 +1663,12 @@ const resources = {
         destination: '受信先フォルダー',
         changeDestination: '変更',
         accept: '受信',
+      },
+      systemShare: {
+        title: 'CoLinkで送信',
+        fileCount: '{{count}}個のファイルを選択',
+        selectDevice: '送信先デバイスを選択',
+        noDevices: 'オンラインのデバイスがありません',
       },
       transfers: {
         title: 'ファイル転送',
@@ -2101,6 +2125,12 @@ const resources = {
         changeDestination: '변경',
         accept: '받기',
       },
+      systemShare: {
+        title: 'CoLink으로 보내기',
+        fileCount: '{{count}}개 파일 선택됨',
+        selectDevice: '대상 디바이스 선택',
+        noDevices: '온라인 디바이스가 없습니다',
+      },
       transfers: {
         title: '파일 전송',
         sidebarTitle: '전송 대상 선택',
@@ -2555,6 +2585,12 @@ const resources = {
         destination: 'Carpeta de recepción',
         changeDestination: 'Cambiar',
         accept: 'Recibir',
+      },
+      systemShare: {
+        title: 'Enviar con CoLink',
+        fileCount: '{{count}} archivos seleccionados',
+        selectDevice: 'Seleccionar dispositivo de destino',
+        noDevices: 'No hay dispositivos conectados',
       },
       transfers: {
         title: 'Transferencias',
@@ -3011,6 +3047,12 @@ const resources = {
         changeDestination: 'Ändern',
         accept: 'Empfangen',
       },
+      systemShare: {
+        title: 'Mit CoLink senden',
+        fileCount: '{{count}} Dateien ausgewählt',
+        selectDevice: 'Zielgerät auswählen',
+        noDevices: 'Keine Geräte online',
+      },
       transfers: {
         title: 'Übertragungen',
         sidebarTitle: 'Ziel auswählen',
@@ -3465,6 +3507,12 @@ const resources = {
         destination: 'Папка для получения',
         changeDestination: 'Изменить',
         accept: 'Получить',
+      },
+      systemShare: {
+        title: 'Отправить через CoLink',
+        fileCount: 'Выбрано файлов: {{count}}',
+        selectDevice: 'Выберите устройство-получатель',
+        noDevices: 'Нет устройств онлайн',
       },
       transfers: {
         title: 'Передачи',

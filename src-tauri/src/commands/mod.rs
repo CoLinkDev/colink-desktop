@@ -9,6 +9,7 @@ mod settings;
 mod update;
 mod terminal;
 mod camera;
+mod context_menu;
 
 pub use app::bootstrap_app;
 pub use auth::{
@@ -36,3 +37,4 @@ pub use settings::{get_settings, pick_download_directory, update_settings};
 pub use update::{check_update, install_tauri_update, open_update_download};
 pub use terminal::{close_terminal, get_remote_terminal_support, open_terminal, resize_terminal, write_terminal};
 pub use camera::{close_remote_camera, get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive};
+pub use context_menu::{get_pending_share_files, parse_send_args, SYSTEM_SHARE_FILES_EVENT};

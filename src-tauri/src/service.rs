@@ -346,6 +346,9 @@ pub fn update_settings(state: &AppState, settings: AppSettings) -> AppResult<App
     shell::apply_auto_start(normalized.auto_start)?;
     if current.language != normalized.language {
         shell::refresh_tray_menu_labels(&state.app, &normalized.language)?;
+        if shell::context_menu_status().unwrap_or(false) {
+            let _ = shell::apply_context_menu(true, &normalized.language);
+        }
     }
 
     if state.database.load_session()?.is_some() {

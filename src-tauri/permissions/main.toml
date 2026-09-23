@@ -57,4 +57,5 @@ commands.allow = [
   "open_remote_camera",
   "send_camera_alive",
   "close_remote_camera",
+  "get_pending_share_files",
 ]

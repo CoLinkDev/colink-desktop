@@ -13,6 +13,7 @@ import { Toaster } from 'sonner'
 import { useAppState, readErrorMessage } from '../hooks/use-app-state'
 import { cn } from '../lib/utils'
 import { AuthDialog } from './auth-dialog'
+import { DestinationDeviceDialog } from './destination-device-dialog'
 import { FileOfferDialog } from './file-offer-dialog'
 import { Button } from './ui/button'
 
@@ -362,6 +363,7 @@ export function AppLayout({ children }: PropsWithChildren) {
       )}
 
       <AuthDialog open={showAuthDialog} onClose={() => setShowAuthDialog(false)} />
+      <DestinationDeviceDialog />
       <FileOfferDialog />
 
       {/* Toast Notification Container */}

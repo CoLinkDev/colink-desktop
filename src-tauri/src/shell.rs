@@ -42,6 +42,7 @@ const MENU_QUIT: &str = "tray-quit";
 const MENU_DEVICES: &str = "tray-devices";
 const MENU_DEVICE_PREFIX: &str = "tray-device:";
 const MAX_TRAY_DEVICES: usize = 8;
+const CONTEXT_MENU_FILE_KEY: &str = "Software\\Classes\\*\\shell\\CoLinkSend";
 
 #[cfg(all(unix, not(target_os = "macos")))]
 const LINUX_AUTOSTART_FILE: &str = "dev.colink.desktop.desktop";
@@ -279,6 +280,68 @@ pub fn show_main_window(app: &AppHandle, route: Option<&str>) -> AppResult<()> {
         let _ = app.emit(SHELL_NAVIGATE_EVENT, route.to_string());
     }
     Ok(())
+}
+
+pub fn context_menu_status() -> AppResult<bool> {
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        return Ok(hkcu.open_subkey(CONTEXT_MENU_FILE_KEY).is_ok());
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+pub fn apply_context_menu(enabled: bool, language: &str) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if enabled {
+            let executable = std::env::current_exe()?;
+            let executable = executable.to_string_lossy();
+            let label = context_menu_label(language);
+            let (key, _) = hkcu.create_subkey(CONTEXT_MENU_FILE_KEY)?;
+            key.set_value("", &label)?;
+            key.set_value("Icon", &format!("\"{executable}\",0"))?;
+            key.set_value("MultiSelectModel", &"Player")?;
+            let (command, _) = key.create_subkey("command")?;
+            let command_line = format!("\"{executable}\" --send \"%1\"");
+            command.set_value("", &command_line)?;
+            tracing::debug!(command = %command_line, "registered Windows context menu command");
+        } else {
+            let _ = hkcu.delete_subkey_all(CONTEXT_MENU_FILE_KEY);
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (enabled, language);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn context_menu_label(language: &str) -> &'static str {
+    match language {
+        "zh-CN" => "通过 CoLink 发送",
+        "zh-TW" => "透過 CoLink 傳送",
+        "ja" => "CoLinkで送信",
+        "ko" => "CoLink으로 보내기",
+        "es" => "Enviar con CoLink",
+        "de" => "Mit CoLink senden",
+        "ru" => "Отправить через CoLink",
+        _ => "Send with CoLink",
+    }
 }
 
 pub fn apply_auto_start(enabled: bool) -> AppResult<()> {

@@ -9,6 +9,7 @@
     "castboard:sync": "node scripts/sync-castboard.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
+    "tauri:debug-dev": "tauri dev --config src-tauri/tauri.debug.conf.json",
     "tauri:debug-build": "tauri build --debug --no-bundle --config src-tauri/tauri.debug.conf.json",
     "tauri": "tauri"
   },

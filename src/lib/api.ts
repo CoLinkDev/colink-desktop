@@ -24,6 +24,7 @@ import type {
   SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
+  SystemShareFile,
   TextMessageRecord,
 } from './types'
 
@@ -120,6 +121,10 @@ export function getSettings() {
 
 export function updateSettings(settings: AppSettings) {
   return invoke<AppSettings>('update_settings', { settings })
+}
+
+export function getPendingShareFiles() {
+  return invoke<SystemShareFile[]>('get_pending_share_files')
 }
 
 export function getMusicProviders() {

@@ -1,4 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
+use std::time::Duration;
 
 mod api;
 mod auth;
@@ -42,18 +44,42 @@ use commands::{
     get_remote_terminal_support, open_terminal, write_terminal, resize_terminal, close_terminal,
     get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive,
     close_remote_camera,
+    get_pending_share_files, parse_send_args, SYSTEM_SHARE_FILES_EVENT,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
+use tauri::Emitter;
+
+fn forward_share_files<R: tauri::Runtime>(app: &tauri::AppHandle<R>, paths: Vec<String>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for attempt in 0..100 {
+            if let Some(state) = app.try_state::<AppState>() {
+                tracing::debug!(attempt, paths = ?paths, "forwarding files from a secondary instance");
+                state.queue_share_files(paths.iter().cloned());
+                let _ = app.emit(SYSTEM_SHARE_FILES_EVENT, ());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tracing::warn!(path_count = paths.len(), "timed out waiting for application state while forwarding files");
+    });
+}
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
 
-    #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        tracing::debug!(args = ?args, cwd = %_cwd, "received single-instance invocation");
         let _ = shell::show_main_window(app, None);
+        let Some(paths) = parse_send_args(&args) else {
+            tracing::warn!(arg_count = args.len(), "single-instance invocation did not contain send arguments");
+            return;
+        };
+        tracing::debug!(paths = ?paths, "parsed files from a single-instance invocation");
+        forward_share_files(app, paths);
     }));
 
     #[cfg(target_os = "windows")]
@@ -64,14 +90,24 @@ fn main() {
             let tracing_guard = dev_log::initialize(app.handle())?;
             app.manage(tracing_guard);
             let state = AppState::initialize(app.handle())?;
+            let startup_args = std::env::args().collect::<Vec<_>>();
+            let startup_share_files = parse_send_args(&startup_args);
+            tracing::debug!(args = ?startup_args, paths = ?startup_share_files, "application startup arguments");
+            if let Some(paths) = startup_share_files.as_ref() {
+                state.queue_share_files(paths.iter().cloned());
+            }
             let settings = state.database.load_settings()?.unwrap_or_else(|| {
                 panic!("application settings should exist after initialization")
             });
             app.manage(state);
             shell::apply_auto_start(settings.auto_start)?;
+            shell::apply_context_menu(true, &settings.language)?;
             let shell_state = shell::initialize(app.handle(), &settings)?;
             app.manage(shell_state);
             shell::refresh_tray(app.handle())?;
+            if startup_share_files.is_some() {
+                shell::show_main_window(app.handle(), None)?;
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -155,7 +191,8 @@ fn main() {
             list_remote_cameras,
             open_remote_camera,
             send_camera_alive,
-            close_remote_camera
+            close_remote_camera,
+            get_pending_share_files,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

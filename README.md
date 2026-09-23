@@ -15,7 +15,7 @@ Desktop client for CoLink — clipboard sync, file transfer, text messaging, now
 ```sh
 git submodule update --init
 pnpm install
-pnpm tauri dev
+pnpm tauri:debug-dev
 ```
 
 Vite serves the frontend on port 1420; Tauri connects to it automatically. In dev mode, CastBoard loads from an external dev server (default `http://127.0.0.1:5173`). Start the CastBoard dev server separately:

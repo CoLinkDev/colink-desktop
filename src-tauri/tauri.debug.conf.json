@@ -1,5 +1,3 @@
 {
-  "build": {
-    "devUrl": null
-  }
+  "identifier": "dev.colink.desktop.debug"
 }

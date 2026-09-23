@@ -10,7 +10,7 @@
 | Configuration | Release Variant | Debug Variant |
 | :--- | :--- | :--- |
 | **Build Mode** | Release build | Development or debug build (`debug_assertions`) |
-| **Application Identifier** | `dev.colink.desktop` | `dev.colink.desktop` |
+| **Application Identifier** | `dev.colink.desktop` | `dev.colink.desktop.debug` |
 | **Application Name** | `CoLink Desktop` | `CoLink Desktop` |
 | **Application Data Directory (Windows)** | `%APPDATA%\dev.colink.desktop` | `%APPDATA%\dev.colink.desktop.debug` |
 | **Database** | `%APPDATA%\dev.colink.desktop\colink.db` | `%APPDATA%\dev.colink.desktop.debug\colink.db` |
