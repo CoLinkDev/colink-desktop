@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { ArrowUpDown, HardDriveUpload, Paperclip, Send } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -24,13 +24,6 @@ type TimelineItem =
   | { kind: 'message'; id: string; timestamp: number; direction: 'inbound' | 'outbound'; data: TextMessageRecord }
   | { kind: 'transfer'; id: string; timestamp: number; direction: 'inbound' | 'outbound'; data: FileTransferRecord }
   | { kind: 'offer'; id: string; timestamp: number; direction: 'inbound'; data: FileOfferRequest }
-
-function latestPreview(item: TimelineItem | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
-  if (!item) return ''
-  if (item.kind === 'message') return item.data.text
-  if (item.kind === 'offer') return item.data.fileName
-  return `${item.data.fileName} · ${t(`transfers.status.${item.data.status}`, { defaultValue: item.data.status })}`
-}
 
 export function TransfersPage() {
   const { t, i18n } = useTranslation()
@@ -59,7 +52,9 @@ export function TransfersPage() {
   const selectedDeviceIdRef = useRef('')
 
   const targetDevices = useMemo(
-    () => devices.filter((item) => item.deviceId !== device?.deviceId),
+    () => devices
+      .filter((item) => item.deviceId !== device?.deviceId)
+      .sort((left, right) => left.online === right.online ? 0 : left.online ? -1 : 1),
     [device?.deviceId, devices],
   )
   const selectedDeviceId = useMemo(() => {
@@ -149,26 +144,13 @@ export function TransfersPage() {
     return items.sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id))
   }, [messages, pendingOffers, selectedDeviceId, transfers])
 
-  const latestByDevice = useMemo(() => {
-    const result = new Map<string, TimelineItem>()
-    const items: TimelineItem[] = [
-      ...messages.map((data) => ({ kind: 'message' as const, id: data.messageId, timestamp: data.createdAt, direction: data.direction, data })),
-      ...transfers.map((data) => ({ kind: 'transfer' as const, id: data.fileId, timestamp: data.updatedAt || data.createdAt, direction: data.direction, data })),
-    ]
-    for (const item of items) {
-      const previous = result.get(item.data.deviceId)
-      if (!previous || previous.timestamp < item.timestamp) result.set(item.data.deviceId, item)
-    }
-    return result
-  }, [messages, transfers])
-
   const submitLabel = submitting
     ? preparing ? t('transfers.hashingProgress', { current: preparing.current, total: preparing.total }) : t('transfers.preparingSend')
     : t('transfers.selectBtn')
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = timelineRef.current
-    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+    if (element) element.scrollTop = element.scrollHeight
   }, [selectedDeviceId, timelineItems])
 
   async function sendPaths(paths: string[]) {
@@ -249,32 +231,37 @@ export function TransfersPage() {
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)] gap-5 animate-fade-in overflow-hidden">
-      <aside className="min-h-0 overflow-y-auto py-5 pl-8 pr-1.5 scrollbar-thin">
+    <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)] animate-fade-in overflow-hidden">
+      <aside className="h-full overflow-y-auto border-r py-6 pl-8 pr-4 scrollbar-thin">
         <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{t('transfers.sidebarTitle')}</div>
         {targetDevices.length === 0 ? (
-          <div className="py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('transfers.emptyDevices')}</div>
-        ) : targetDevices.map((item) => {
-          const latest = latestByDevice.get(item.deviceId)
-          return (
-            <button
-              className={cn('mb-1 w-full rounded-lg border px-3 py-3 text-left transition-all', item.deviceId === selectedDeviceId ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm' : 'border-transparent bg-transparent hover:bg-[hsl(var(--panel-2)/0.5)]')}
-              key={item.deviceId}
-              onClick={() => setSearchParams({ deviceId: item.deviceId })}
-              type="button"
-            >
-              <div className="flex items-center gap-2">
-                <span className={cn('h-2 w-2 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-                <span className="text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type)}</span>
-              </div>
-              <div className="mt-1 truncate pl-4 text-[11px] text-[hsl(var(--muted))]">{latestPreview(latest, t) || (item.online ? t('devices.online') : t('devices.offline'))}</div>
-            </button>
-          )
-        })}
+          <div className="px-1 py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('transfers.emptyDevices')}</div>
+        ) : (
+          <div className="space-y-1">
+            {targetDevices.map((item) => (
+              <button
+                className={cn(
+                  'w-full rounded-lg border px-3 py-2.5 text-left transition-all',
+                  item.deviceId === selectedDeviceId
+                    ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm'
+                    : 'border-transparent hover:bg-[hsl(var(--panel-2)/0.5)]',
+                )}
+                key={item.deviceId}
+                onClick={() => setSearchParams({ deviceId: item.deviceId })}
+                type="button"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
+                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
+                </div>
+                <div className="mt-1 truncate text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type, t)}</div>
+              </button>
+            ))}
+          </div>
+        )}
       </aside>
 
-      <section className="flex min-h-0 flex-col gap-3 py-5 pr-8 pl-1">
+      <section className="flex min-h-0 flex-col gap-3 py-5 px-8">
         <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-[hsl(var(--panel))]">
           <div
             className={cn(
