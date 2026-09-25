@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
-import { ArrowDown, ArrowUp, Grid2X2, Info, Key, List, QrCode, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, CloudOff, Grid2X2, Info, Key, List, QrCode, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
 import { DeviceCard } from '../components/device-card'
@@ -30,6 +30,7 @@ export function DevicesPage() {
   const {
     devices,
     device,
+    deleteDevice,
     rotateDeviceKey,
     refreshDevices,
     setHeaderActions,
@@ -38,6 +39,7 @@ export function DevicesPage() {
   const [error, setError] = useState<string | null>(null)
   const [rotateConfirmId, setRotateConfirmId] = useState<string | null>(null)
   const [forgetConfirmId, setForgetConfirmId] = useState<string | null>(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [detailsDevice, setDetailsDevice] = useState<DeviceInfo | null>(null)
   const [candidates, setCandidates] = useState<LanPairingCandidate[]>([])
   const [viewMode, setViewMode] = useState<DeviceViewMode>(() => readDeviceViewMode())
@@ -186,6 +188,28 @@ export function DevicesPage() {
     setError(null)
   }
 
+  function handleDeleteCloud(deviceId: string) {
+    setDeleteConfirmId(deviceId)
+    setError(null)
+  }
+
+  async function handleConfirmDeleteCloud() {
+    if (!deleteConfirmId) return
+
+    setActingId(deleteConfirmId)
+    try {
+      const notFound = await deleteDevice(deleteConfirmId)
+      setDeleteConfirmId(null)
+      if (notFound) {
+        toast.info(t('devices.deviceNotFound'))
+      }
+    } catch (requestError) {
+      toast.error(readErrorMessage(requestError))
+    } finally {
+      setActingId(null)
+    }
+  }
+
   async function handleConfirmForgetTrust() {
     if (!forgetConfirmId) return
 
@@ -203,6 +227,7 @@ export function DevicesPage() {
 
   const rotatingDevice = devices.find((d) => d.deviceId === rotateConfirmId)
   const forgetDevice = devices.find((d) => d.deviceId === forgetConfirmId)
+  const deletingDevice = devices.find((d) => d.deviceId === deleteConfirmId)
   const visibleDevices = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
     const filtered = viewMode === 'list' && query
@@ -263,6 +288,7 @@ export function DevicesPage() {
           devices={visibleDevices}
           isLocalDevice={(deviceId) => deviceId === device?.deviceId}
           onForgetTrust={handleForgetTrust}
+          onDeleteCloud={handleDeleteCloud}
           onRotateKey={handleInitiateRotate}
           onSort={handleSort}
           onViewDetails={setDetailsDevice}
@@ -277,6 +303,7 @@ export function DevicesPage() {
               isLocalDevice={item.deviceId === device?.deviceId}
               onViewDetails={setDetailsDevice}
               onRotateKey={handleInitiateRotate}
+              onDeleteCloud={handleDeleteCloud}
               onForgetTrust={handleForgetTrust}
               actingId={actingId}
             />
@@ -416,6 +443,35 @@ export function DevicesPage() {
         </div>,
         document.body
       )}
+
+      {deleteConfirmId && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t('devices.unbindConfirmTitle')}</div>
+            <p className="mt-2 text-[13px] text-[hsl(var(--text-secondary))] leading-relaxed">
+              {t('devices.unbindConfirmDesc', { name: deletingDevice?.name || t('messages.notSelected') })}
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setDeleteConfirmId(null)}
+                disabled={!!actingId}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleConfirmDeleteCloud}
+                disabled={!!actingId}
+              >
+                {actingId ? t('common.loading') : t('devices.unbind')}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }
@@ -430,6 +486,7 @@ interface DeviceListProps {
   isLocalDevice: (deviceId: string) => boolean
   onViewDetails: (device: DeviceInfo) => void
   onRotateKey: (deviceId: string) => void
+  onDeleteCloud: (deviceId: string) => void
   onForgetTrust: (deviceId: string) => void
   onSort: (key: DeviceSortKey) => void
   sort: DeviceSort
@@ -441,6 +498,7 @@ function DeviceList({
   isLocalDevice,
   onViewDetails,
   onRotateKey,
+  onDeleteCloud,
   onForgetTrust,
   onSort,
   sort,
@@ -468,13 +526,14 @@ function DeviceList({
               <SortableHeader activeSort={sort} label={t('devices.columns.route')} onSort={onSort} sortKey="route" />
               <SortableHeader activeSort={sort} label={t('devices.columns.lastSeen')} onSort={onSort} sortKey="lastSeen" />
               <SortableHeader activeSort={sort} label={t('devices.columns.security')} onSort={onSort} sortKey="security" />
-              <th className="w-28 px-4 py-3 text-right">{t('devices.columns.actions')}</th>
+              <th className="w-36 px-4 py-3 text-right">{t('devices.columns.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {devices.map((item) => {
               const local = isLocalDevice(item.deviceId)
               const canForgetTrust = !local && item.deviceSources.includes('trusted_peer_key')
+              const canDeleteCloud = !local && item.deviceSources.includes('cloud')
               return (
                 <tr className="transition-colors hover:bg-[hsl(var(--panel-2)/0.65)]" key={item.deviceId}>
                   <td className="px-4 py-3">
@@ -502,7 +561,7 @@ function DeviceList({
                   </td>
                   <td className="px-4 py-3 text-[hsl(var(--text-secondary))]">{deviceSecurityLabel(item, t)}</td>
                   <td className="px-4 py-3">
-                    <div className="ml-auto grid w-[4.375rem] grid-cols-2 gap-1.5">
+                    <div className="ml-auto flex justify-end gap-1.5">
                       <button
                         aria-label={t('devices.details')}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--muted))] transition-colors hover:bg-[hsl(var(--panel-2))] hover:text-[hsl(var(--text))]"
@@ -534,6 +593,18 @@ function DeviceList({
                           type="button"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {canDeleteCloud && (
+                        <button
+                          aria-label={t('devices.unbind')}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border text-[hsl(var(--danger))] transition-colors hover:bg-[hsl(var(--danger)/0.08)] disabled:opacity-40"
+                          disabled={actingId === item.deviceId}
+                          onClick={() => onDeleteCloud(item.deviceId)}
+                          title={t('devices.unbind')}
+                          type="button"
+                        >
+                          <CloudOff className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>

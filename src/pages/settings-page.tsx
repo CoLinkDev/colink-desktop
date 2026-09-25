@@ -189,8 +189,8 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
       }
 
       setAvailableUpdate(update)
-    } catch (e) {
-      toast.error(readErrorMessage(e))
+    } catch {
+      toast.error(t('updates.checkFailed'))
     } finally {
       setCheckingUpdate(false)
     }

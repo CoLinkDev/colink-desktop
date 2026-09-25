@@ -43,8 +43,10 @@ import {
 } from 'lucide-react'
 import { Markdown } from 'tiptap-markdown'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { notesAttachmentsResolvePath } from '../../lib/api'
+import { hasHttpStatus } from '../../lib/command-error'
 import { cn } from '../../lib/utils'
 
 const ATTACHMENT_URI_PREFIX = 'colink-attachment://'
@@ -107,11 +109,16 @@ function AttachmentImageView({ node, selected }: NodeViewProps) {
       .then((path) => {
         if (!disposed) setResolvedSrc(convertFileSrc(path))
       })
-      .catch(() => {
-        if (!disposed) setFailed(true)
+      .catch((error) => {
+        if (!disposed) {
+          setFailed(true)
+          if (hasHttpStatus(error, 404)) {
+            toast.info(t('notes.serverUnsupported'), { id: 'notes-server-unsupported' })
+          }
+        }
       })
     return () => { disposed = true }
-  }, [attachmentId])
+  }, [attachmentId, t])
 
   return (
     <NodeViewWrapper className="rich-editor-image" data-selected={selected || undefined}>

@@ -33,6 +33,8 @@ import type {
   NoteUpsertPayload,
   NotesStorageInfo,
   NotesSyncOutcome,
+  AttachmentDeleteOutcome,
+  DeviceDeleteOutcome,
 } from './types'
 
 export function bootstrapApp() {
@@ -81,7 +83,7 @@ export function updateDeviceName(deviceId: string, name: string) {
 }
 
 export function deleteDevice(deviceId: string) {
-  return invoke<DeviceInfo[]>('delete_device', {
+  return invoke<DeviceDeleteOutcome>('delete_device', {
     payload: {
       deviceId,
     },
@@ -320,7 +322,7 @@ export function notesAttachmentsList() {
 }
 
 export function notesAttachmentsDelete(id: string) {
-  return invoke<void>('notes_attachments_delete', { payload: { id } })
+  return invoke<AttachmentDeleteOutcome>('notes_attachments_delete', { payload: { id } })
 }
 
 export function notesAttachmentsResolvePath(id: string) {

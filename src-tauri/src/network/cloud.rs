@@ -1017,6 +1017,7 @@ fn classify_connect_error(message: String) -> ConnectionFailure {
 fn is_auth_error(error: &AppError) -> bool {
     match error {
         AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::HttpStatus { status } => *status == StatusCode::UNAUTHORIZED,
         AppError::Protocol { code, .. } => AppError::is_auth_protocol_code(*code),
         AppError::Message(message) => {
             message.eq_ignore_ascii_case("unauthorized")

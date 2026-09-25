@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Cloud, Computer, Laptop, Monitor, Network, Smartphone, Tablet, WifiOff, Key, Trash2, Info } from 'lucide-react'
+import { Cloud, CloudOff, Computer, Laptop, Monitor, Network, Smartphone, Tablet, WifiOff, Key, Trash2, Info } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
@@ -20,6 +20,7 @@ interface DeviceCardProps {
   isLocalDevice: boolean
   onViewDetails?: (device: DeviceInfo) => void
   onRotateKey?: (deviceId: string) => void
+  onDeleteCloud?: (deviceId: string) => void
   onForgetTrust?: (deviceId: string) => void
   actingId?: string | null
 }
@@ -29,6 +30,7 @@ export function DeviceCard({
   isLocalDevice,
   onViewDetails,
   onRotateKey,
+  onDeleteCloud,
   onForgetTrust,
   actingId,
 }: DeviceCardProps) {
@@ -36,6 +38,7 @@ export function DeviceCard({
   const Icon = iconByType[device.type]
   const statuses = getDeviceStatuses(device, isLocalDevice, t)
   const canForgetTrust = device.deviceSources.includes('trusted_peer_key') && Boolean(onForgetTrust)
+  const canDeleteCloud = !isLocalDevice && device.deviceSources.includes('cloud') && Boolean(onDeleteCloud)
 
   return (
     <article className="flex flex-col rounded-xl border bg-[hsl(var(--panel))] p-5 transition-all duration-200 hover:border-[hsl(var(--text)/0.2)]">
@@ -82,7 +85,7 @@ export function DeviceCard({
         </div>
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2">
+      <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
         {onViewDetails && (
           <button
             onClick={() => onViewDetails(device)}
@@ -94,7 +97,7 @@ export function DeviceCard({
           </button>
         )}
 
-        {(isLocalDevice && onRotateKey || canForgetTrust) && (
+        {(isLocalDevice && onRotateKey || canDeleteCloud || canForgetTrust) && (
           <>
             {isLocalDevice && onRotateKey && (
               <button
@@ -116,6 +119,17 @@ export function DeviceCard({
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 {t('devices.forgetConfirmBtn')}
+              </button>
+            )}
+            {canDeleteCloud && (
+              <button
+                onClick={() => onDeleteCloud?.(device.deviceId)}
+                disabled={actingId === device.deviceId}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-white dark:bg-[hsl(var(--panel))] px-3 text-[12px] font-medium text-[hsl(var(--danger))] border border-[hsl(var(--border))] transition-all hover:bg-[hsl(var(--danger)/0.08)] active:scale-[0.98] disabled:opacity-40"
+                type="button"
+              >
+                <CloudOff className="h-3.5 w-3.5" />
+                {t('devices.unbind')}
               </button>
             )}
           </>

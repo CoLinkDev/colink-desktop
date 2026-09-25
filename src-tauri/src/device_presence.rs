@@ -148,6 +148,17 @@ pub fn reset_cached_presence(database: &Database, app: &AppHandle) -> AppResult<
     save_and_publish(database, app, devices)
 }
 
+pub fn remove_cached(
+    database: &Database,
+    app: &AppHandle,
+    device_id: &str,
+) -> AppResult<Vec<DeviceInfo>> {
+    database.clear_device_cloud_trust(device_id)?;
+    let mut devices = database.load_cached_devices()?;
+    devices.retain(|device| device.device_id != device_id);
+    save_and_publish(database, app, devices)
+}
+
 fn save_and_publish(
     database: &Database,
     app: &AppHandle,

@@ -201,15 +201,18 @@ export function AppLayout({ children }: PropsWithChildren) {
             title={getCloudLabel(cloud.state, cloud.attempt, t)}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[12px] font-medium text-[hsl(var(--muted))] truncate max-w-[140px]">
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[hsl(var(--muted))]">
                 {session ? session.username || session.userId : t('devices.lan')}
               </span>
-              <span
-                className={cn(
-                  "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
-                  cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
-                )}
-              />
+              <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[hsl(var(--muted))]">
+                <span
+                  className={cn(
+                    "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                    cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
+                  )}
+                />
+                {getCloudLabel(cloud.state, cloud.attempt, t)}
+              </span>
             </div>
           </div>
 

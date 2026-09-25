@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use futures_util::StreamExt;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
@@ -15,9 +16,10 @@ use crate::notes::api::{
     sha256_hex, AttachmentDto, ChangesDto, CreateNoteRequest, NoteDeleteDto, NoteDto,
     NotesHttpClient, SnapshotDto, StorageDto, TagDeleteDto, TagDto, TagListDto,
     UpdateNoteRequest, CODE_ATTACHMENT_ID_UNAVAILABLE, CODE_ATTACHMENT_NOT_FOUND,
-    CODE_INVALID_NOTE_REFERENCE, CODE_NOTE_NOT_FOUND, CODE_REVISION_CONFLICT,
-    CODE_SYNC_CURSOR_EXPIRED, CODE_TAG_NOT_FOUND, NOTE_ATTACHMENTS_PATH, NOTES_CHANGES_PATH,
-    NOTES_PATH, NOTES_SNAPSHOT_PATH, NOTES_STORAGE_PATH, NOTE_TAGS_PATH,
+    CODE_INVALID_NOTE_REFERENCE, CODE_NOTE_NOT_FOUND, CODE_NOTE_STORAGE_LIMIT_REACHED,
+    CODE_REVISION_CONFLICT, CODE_SYNC_CURSOR_EXPIRED, CODE_TAG_NOT_FOUND,
+    NOTE_ATTACHMENTS_PATH, NOTES_CHANGES_PATH, NOTES_PATH, NOTES_SNAPSHOT_PATH,
+    NOTES_STORAGE_PATH, NOTE_TAGS_PATH,
 };
 use crate::notes::merge::{merge_field, merge_markdown, merge_set, FieldMerge};
 use crate::state::AppState;
@@ -53,6 +55,12 @@ pub struct NotesSyncOutcome {
     pub pulled_tags: u32,
     pub conflicts: u32,
     pub repaired_references: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentDeleteOutcome {
+    pub unsupported: bool,
 }
 
 impl NotesSyncOutcome {
@@ -434,31 +442,33 @@ pub fn stage_attachment(
 
 /// Removes an attachment locally and, when it was already uploaded, on the
 /// server as well.
-pub async fn remove_attachment(state: &AppState, id: &str) -> AppResult<()> {
+pub async fn remove_attachment(
+    state: &AppState,
+    id: &str,
+) -> AppResult<AttachmentDeleteOutcome> {
     let record = state
         .database
         .load_note_attachment(id)?
         .ok_or_else(|| AppError::message("attachment not found"))?;
 
+    let mut unsupported = false;
     if record.sync_state != NOTE_STATE_PENDING && state.database.load_session()?.is_some() {
         let settings = load_settings(state)?;
-        if let Some(session) = current_session_opt(state, &settings).await {
-            let http = NotesHttpClient::new()?;
-            let path = format!("{NOTE_ATTACHMENTS_PATH}/{id}");
-            if let Err(error) = http
-                .delete_ok(&settings.server_url, &path, &session.access_token)
-                .await
-            {
-                let protocol_in_use = matches!(
-                    &error,
-                    AppError::Protocol { code, .. } if *code == CODE_ATTACHMENT_IN_USE
-                );
-                if !protocol_in_use {
+        let session = current_session(state, &settings).await?;
+        let http = NotesHttpClient::new()?;
+        let path = format!("{NOTE_ATTACHMENTS_PATH}/{id}");
+        if let Err(error) = http
+            .delete_ok(&settings.server_url, &path, &session.access_token)
+            .await
+        {
+            match &error {
+                AppError::Protocol { code, .. } if *code == CODE_ATTACHMENT_IN_USE => {
                     return Err(error);
                 }
-                return Err(AppError::message(
-                    "attachment is still referenced by a note",
-                ));
+                _ if error.is_http_status(StatusCode::NOT_FOUND) => {
+                    unsupported = true;
+                }
+                _ => return Err(error),
             }
         }
     }
@@ -467,7 +477,7 @@ pub async fn remove_attachment(state: &AppState, id: &str) -> AppResult<()> {
     let cache_path = attachment_cache_path(state, id)?;
     let _ = std::fs::remove_file(cache_path);
     notify_notes_changed(&state.app);
-    Ok(())
+    Ok(AttachmentDeleteOutcome { unsupported })
 }
 
 pub async fn fetch_storage(state: &AppState) -> AppResult<NotesStorageInfo> {
@@ -607,10 +617,19 @@ pub async fn resolve_attachment_open_path(state: &AppState, id: &str) -> AppResu
 pub async fn sync(state: &AppState) -> NotesSyncOutcome {
     let outcome = run_sync(state).await.unwrap_or_else(|error| {
         tracing::warn!(%error, "notes sync aborted");
-        NotesSyncOutcome {
-            status: "error".to_string(),
-            message: Some(error.to_string()),
-            ..NotesSyncOutcome::empty("error")
+        if error.is_http_status(StatusCode::NOT_FOUND) {
+            NotesSyncOutcome::empty("unsupported")
+        } else if matches!(
+            error,
+            AppError::Protocol { code, .. } if code == CODE_NOTE_STORAGE_LIMIT_REACHED
+        ) {
+            NotesSyncOutcome::empty("storage_full")
+        } else {
+            NotesSyncOutcome {
+                status: "error".to_string(),
+                message: Some(error.to_string()),
+                ..NotesSyncOutcome::empty("error")
+            }
         }
     });
     let _ = state.app.emit(NOTES_UPDATED_EVENT, &outcome);
@@ -2351,9 +2370,11 @@ async fn current_session(
     state: &AppState,
     settings: &crate::models::AppSettings,
 ) -> AppResult<crate::models::SessionRecord> {
-    current_session_opt(state, settings)
-        .await
-        .ok_or_else(|| AppError::message("not logged in"))
+    let session = state
+        .database
+        .load_session()?
+        .ok_or_else(|| AppError::message("not logged in"))?;
+    crate::auth::refresh_session_if_needed(&state.database, &state.http, settings, session).await
 }
 
 async fn current_session_opt(

@@ -18,6 +18,7 @@ pub(crate) const CODE_NOTE_NOT_FOUND: i32 = 6001;
 pub(crate) const CODE_REVISION_CONFLICT: i32 = 6002;
 pub(crate) const CODE_TAG_NOT_FOUND: i32 = 6003;
 pub(crate) const CODE_ATTACHMENT_NOT_FOUND: i32 = 6005;
+pub(crate) const CODE_NOTE_STORAGE_LIMIT_REACHED: i32 = 6007;
 pub(crate) const CODE_INVALID_NOTE_REFERENCE: i32 = 6008;
 pub(crate) const CODE_SYNC_CURSOR_EXPIRED: i32 = 6009;
 pub(crate) const CODE_ATTACHMENT_ID_UNAVAILABLE: i32 = 6011;
@@ -233,7 +234,7 @@ fn parse_error_envelope(status: reqwest::StatusCode, payload: &str) -> AppError 
         }
     }
 
-    AppError::message(format!("request failed with status {status}"))
+    AppError::http_status(status)
 }
 
 fn endpoint(base_url: &str, path: &str) -> AppResult<String> {

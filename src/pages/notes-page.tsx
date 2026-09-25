@@ -21,7 +21,8 @@ import { toast } from 'sonner'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { RichEditor, type RichEditorHandle } from '../components/notes/rich-editor'
-import { useAppState } from '../hooks/use-app-state'
+import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { hasHttpStatus, hasProtocolCode } from '../lib/command-error'
 import {
   notesAttachmentsOpen,
   notesAttachmentsDelete,
@@ -517,33 +518,85 @@ export function NotesPage() {
       if (!draft) {
         return
       }
-      if (stagedAttachmentIds.current.has(attachmentId)) {
-        setStagingAttachment(true)
-        try {
-          await notesAttachmentsDelete(attachmentId)
-          stagedAttachmentIds.current.delete(attachmentId)
-          refreshAttachments()
-        } catch (error) {
-          toast.error(String(error))
-          return
-        } finally {
-          setStagingAttachment(false)
+
+      const originalDraft = draft
+      const nextDraft = {
+        ...draft,
+        attachmentIds: draft.attachmentIds.filter((id) => id !== attachmentId),
+        markdown: draft.markdown.replace(
+          new RegExp(`!\\[[^\\]]*\\]\\(colink-attachment://${attachmentId}\\)|\\[[^\\]]*\\]\\(colink-attachment://${attachmentId}\\)`, 'g'),
+          '',
+        ),
+      }
+      const staged = stagedAttachmentIds.current.has(attachmentId)
+      const session = editSession.current
+      let cloudReferenceRemoved = false
+
+      const persistDraft = async (snapshot: DraftState) => {
+        const saved = await notesUpsert({
+          id: snapshot.id ?? undefined,
+          title: snapshot.title,
+          markdown: snapshot.markdown,
+          tagIds: snapshot.tagIds,
+          attachmentIds: snapshot.attachmentIds,
+        })
+        applyNoteRecord(saved)
+        if (editSession.current === session) {
+          const savedDraft = draftFromNote(saved)
+          setSelectedId(saved.id)
+          setDraft(savedDraft)
+          setDraftOrigin(savedDraft)
         }
       }
-      setDraft((current) =>
-        current
-          ? {
-              ...current,
-              attachmentIds: current.attachmentIds.filter((id) => id !== attachmentId),
-              markdown: current.markdown.replace(
-                new RegExp(`!\\[[^\\]]*\\]\\(colink-attachment://${attachmentId}\\)|\\[[^\\]]*\\]\\(colink-attachment://${attachmentId}\\)`, 'g'),
-                '',
-              ),
+
+      setStagingAttachment(true)
+      try {
+        if (!staged) {
+          await persistDraft(nextDraft)
+          cloudReferenceRemoved = true
+          const syncOutcome = await syncNotes()
+          if (!syncOutcome || !['ok', 'unsupported'].includes(syncOutcome.status)) {
+            await persistDraft(originalDraft)
+            if (syncOutcome?.status === 'offline') {
+              toast.info(t('notes.offlineHint'))
+            } else if (syncOutcome?.status === 'error') {
+              toast.error(syncOutcome.message ?? t('notes.syncFailed'))
+            } else if (!syncOutcome) {
+              toast.error(t('notes.syncFailed'))
             }
-          : current,
-      )
+            return
+          }
+        }
+
+        const outcome = await notesAttachmentsDelete(attachmentId)
+        if (staged) {
+          stagedAttachmentIds.current.delete(attachmentId)
+          setDraft(nextDraft)
+        }
+        if (outcome.unsupported) {
+          toast.info(t('notes.serverUnsupported'), { id: 'notes-server-unsupported' })
+        }
+        refreshAttachments()
+      } catch (error) {
+        const stillReferenced = hasProtocolCode(error, 6006)
+        if (cloudReferenceRemoved && !stillReferenced) {
+          try {
+            await persistDraft(originalDraft)
+          } catch (restoreError) {
+            console.error('Failed to restore note attachment reference', restoreError)
+          }
+        }
+        if (stillReferenced) {
+          toast.error(t('notes.attachmentStillReferenced'))
+        } else {
+          toast.error(readErrorMessage(error))
+        }
+        return
+      } finally {
+        setStagingAttachment(false)
+      }
     },
-    [draft, refreshAttachments],
+    [applyNoteRecord, draft, refreshAttachments, syncNotes, t],
   )
 
   useEffect(() => () => {
@@ -611,6 +664,10 @@ export function NotesPage() {
       }
       if (outcome.status === 'offline') {
         toast.info(outcome.message ?? t('notes.offlineHint'))
+      } else if (outcome.status === 'unsupported') {
+        toast.info(t('notes.serverUnsupported'), { id: 'notes-server-unsupported' })
+      } else if (outcome.status === 'storage_full') {
+        toast.error(t('notes.storageFull'), { id: 'notes-storage-full' })
       } else if (outcome.status === 'error') {
         toast.error(outcome.message ?? t('notes.syncFailed'))
       } else if (outcome.conflicts > 0) {
@@ -922,7 +979,13 @@ export function NotesPage() {
               onAddAttachment={() => void stageAttachment('file')}
               onOpenAttachment={(id) => {
                 void notesAttachmentsOpen(id)
-                  .catch(() => toast.error(t('notes.attachmentUnavailable')))
+                  .catch((error) => {
+                    if (hasHttpStatus(error, 404)) {
+                      toast.info(t('notes.serverUnsupported'), { id: 'notes-server-unsupported' })
+                    } else {
+                      toast.error(t('notes.attachmentUnavailable'))
+                    }
+                  })
               }}
               toolbarRight={
                 <>

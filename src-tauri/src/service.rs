@@ -85,6 +85,13 @@ struct AppUpdateCheckResponse {
     latest: Option<AppUpdateRelease>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDeleteOutcome {
+    pub devices: Vec<DeviceInfo>,
+    pub not_found: bool,
+}
+
 pub async fn bootstrap(state: &AppState) -> AppResult<BootstrapPayload> {
     let settings = load_settings(state)?;
     let identity = ensure_local_device_identity(state)?;
@@ -250,7 +257,7 @@ pub async fn update_device_name(
 pub async fn delete_device(
     state: &AppState,
     payload: DeviceDeletePayload,
-) -> AppResult<Vec<DeviceInfo>> {
+) -> AppResult<DeviceDeleteOutcome> {
     if let Some(identity) = state.database.load_device_identity()? {
         if identity.device_id == payload.device_id {
             return Err(AppError::message(user_text(
@@ -263,15 +270,19 @@ pub async fn delete_device(
     let session = current_session(state).await?;
     let settings = load_settings(state)?;
     let path = format!("{DEVICES_PATH}/{}", payload.device_id);
-    state
+    let delete_result = state
         .http
         .delete_empty(&settings.server_url, &path, Some(&session.access_token))
-        .await?;
+        .await;
 
-    let devices = fetch_devices(state, &session).await?;
-    let devices = state.runtime.replace_cached_devices(devices, true)?;
-    shell::refresh_tray(&state.app)?;
-    Ok(devices)
+    let not_found = match delete_result {
+        Ok(()) => false,
+        Err(error) if error.is_http_status(StatusCode::NOT_FOUND) => true,
+        Err(error) => return Err(error),
+    };
+
+    let devices = state.runtime.remove_cached_device(&payload.device_id)?;
+    Ok(DeviceDeleteOutcome { devices, not_found })
 }
 
 pub async fn rotate_device_key(
@@ -891,6 +902,7 @@ async fn fetch_devices(state: &AppState, session: &SessionRecord) -> AppResult<V
 fn is_auth_error(error: &AppError) -> bool {
     match error {
         AppError::Network(network) => network.status() == Some(StatusCode::UNAUTHORIZED),
+        AppError::HttpStatus { status } => *status == StatusCode::UNAUTHORIZED,
         AppError::Protocol { code, .. } => AppError::is_auth_protocol_code(*code),
         AppError::Message(message) => {
             message.eq_ignore_ascii_case("unauthorized")

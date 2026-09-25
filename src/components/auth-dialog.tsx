@@ -2,10 +2,12 @@ import type { FormEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { toast } from 'sonner'
 import { z } from 'zod'
 import { useTranslation } from 'react-i18next'
 
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { hasProtocolCode, isNetworkError } from '../lib/command-error'
 import { clearSavedLogin, getSavedLogin, saveSavedLogin } from '../lib/api'
 import { normalizeServerUrl } from '../lib/server-url'
 import { Button } from './ui/button'
@@ -23,6 +25,7 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
   const [serverUrl, setServerUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [deviceLimitOpen, setDeviceLimitOpen] = useState(false)
   const [form, setForm] = useState({
     identifier: '',
     password: '',
@@ -79,6 +82,7 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
     if (open) {
       setError(null)
       setSubmitting(false)
+      setDeviceLimitOpen(false)
     }
   }, [open])
 
@@ -166,13 +170,26 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
 
       onClose()
     } catch (requestError) {
-      setError(readErrorMessage(requestError))
+      if (hasProtocolCode(requestError, 2001)) {
+        setDeviceLimitOpen(true)
+      } else if (mode === 'login' && hasProtocolCode(requestError, 1010)) {
+        toast.error(t('auth.invalidCredentials'))
+      } else if (mode === 'register' && hasProtocolCode(requestError, 1001)) {
+        toast.error(t('auth.emailRegistered'))
+      } else if (mode === 'register' && hasProtocolCode(requestError, 1004)) {
+        toast.error(t('auth.usernameTaken'))
+      } else if (isNetworkError(requestError)) {
+        toast.error(t('auth.serverUnreachable'))
+      } else {
+        toast.error(readErrorMessage(requestError))
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
   return createPortal(
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
       <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
         <div className="flex items-start justify-between gap-4">
@@ -356,7 +373,22 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
           </div>
         </form>
       </div>
-    </div>,
+    </div>
+    {deviceLimitOpen && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
+        <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
+          <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">
+            {t('auth.deviceLimitReached')}
+          </div>
+          <div className="mt-6 flex justify-end">
+            <Button onClick={() => setDeviceLimitOpen(false)} variant="primary">
+              {t('common.confirm')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>,
     document.body,
   )
 }

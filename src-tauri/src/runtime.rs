@@ -448,6 +448,10 @@ impl AppRuntime {
         device_presence::reset_cached_presence(&self.inner.database, &self.inner.app)
     }
 
+    pub fn remove_cached_device(&self, device_id: &str) -> AppResult<Vec<DeviceInfo>> {
+        device_presence::remove_cached(&self.inner.database, &self.inner.app, device_id)
+    }
+
     pub fn list_lan_pairing_candidates(&self) -> Vec<LanPairingCandidate> {
         self.inner.lan.list_pairing_candidates()
     }

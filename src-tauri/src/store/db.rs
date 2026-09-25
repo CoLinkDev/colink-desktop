@@ -402,6 +402,21 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_device_cloud_trust(&self, device_id: &str) -> AppResult<()> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE trusted_peer_keys SET trusted_by_cloud = 0 WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM trusted_peer_keys WHERE device_id = ?1 AND trusted_by_lan = 0 AND trusted_by_cloud = 0",
+            params![device_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn ensure_trusted_peer_keys_for_devices(
         &self,
         devices: &[DeviceInfo],
@@ -3163,6 +3178,49 @@ mod tests {
         assert_eq!(trusts[0].name, "cloud-name");
         assert_eq!(trusts[0].public_key, "local-new");
         assert_eq!(trusts[0].key_updated_at, 2_000_000_000_000);
+        assert!(trusts[0].trusted_by_lan);
+        assert!(!trusts[0].trusted_by_cloud);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn clear_device_cloud_trust_preserves_lan_pairing() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        database
+            .save_trusted_peer_keys(&[
+                TrustedPeerKeyRecord {
+                    device_id: "lan-peer".to_string(),
+                    name: "LAN peer".to_string(),
+                    public_key: "lan-key".to_string(),
+                    key_updated_at: 1,
+                    trusted_by_lan: true,
+                    trusted_by_cloud: true,
+                },
+                TrustedPeerKeyRecord {
+                    device_id: "cloud-peer".to_string(),
+                    name: "Cloud peer".to_string(),
+                    public_key: "cloud-key".to_string(),
+                    key_updated_at: 1,
+                    trusted_by_lan: false,
+                    trusted_by_cloud: true,
+                },
+            ])
+            .expect("save trusts");
+
+        database
+            .clear_device_cloud_trust("lan-peer")
+            .expect("clear LAN peer cloud trust");
+        database
+            .clear_device_cloud_trust("cloud-peer")
+            .expect("clear cloud-only trust");
+
+        let trusts = database.load_trusted_peer_keys().expect("load trusts");
+        assert_eq!(trusts.len(), 1);
+        assert_eq!(trusts[0].device_id, "lan-peer");
         assert!(trusts[0].trusted_by_lan);
         assert!(!trusts[0].trusted_by_cloud);
 

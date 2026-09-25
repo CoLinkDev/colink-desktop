@@ -1,6 +1,7 @@
 use tauri::State;
 
 use crate::{
+    error::CommandError,
     models::{BootstrapPayload, LoginPayload, RegisterPayload, SavedLoginCredentials},
     service,
     state::AppState,
@@ -13,20 +14,20 @@ const SAVED_LOGIN_ACCOUNT: &str = "saved-login";
 pub async fn login(
     state: State<'_, AppState>,
     payload: LoginPayload,
-) -> Result<BootstrapPayload, String> {
+) -> Result<BootstrapPayload, CommandError> {
     service::login(state.inner(), payload)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn register_account(
     state: State<'_, AppState>,
     payload: RegisterPayload,
-) -> Result<BootstrapPayload, String> {
+) -> Result<BootstrapPayload, CommandError> {
     service::register_account(state.inner(), payload)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]

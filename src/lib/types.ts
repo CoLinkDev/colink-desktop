@@ -342,7 +342,7 @@ export interface ConflictResolutionPayload {
 }
 
 export interface NotesSyncOutcome {
-  status: 'ok' | 'offline' | 'error'
+  status: 'ok' | 'offline' | 'unsupported' | 'storage_full' | 'error'
   message: string | null
   pushedNotes: number
   pushedTags: number
@@ -351,6 +351,15 @@ export interface NotesSyncOutcome {
   pulledTags: number
   conflicts: number
   repairedReferences: number
+}
+
+export interface AttachmentDeleteOutcome {
+  unsupported: boolean
+}
+
+export interface DeviceDeleteOutcome {
+  devices: DeviceInfo[]
+  notFound: boolean
 }
 
 export interface NotesStorageInfo {

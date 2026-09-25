@@ -1,9 +1,10 @@
 use tauri::State;
 
 use crate::notes::service::{
-    self, ConflictResolutionPayload, AttachmentUploadPayload, NoteUpsertPayload, NotesStorageInfo,
-    NotesSyncOutcome,
+    self, AttachmentDeleteOutcome, AttachmentUploadPayload, ConflictResolutionPayload,
+    NoteUpsertPayload, NotesStorageInfo, NotesSyncOutcome,
 };
+use crate::error::{AppError, CommandError};
 use crate::state::AppState;
 use crate::store::notes::{NoteRecord, NoteTagRecord};
 
@@ -89,31 +90,33 @@ pub async fn notes_attachments_list(
 pub async fn notes_attachments_delete(
     state: State<'_, AppState>,
     payload: NoteIdPayload,
-) -> Result<(), String> {
+) -> Result<AttachmentDeleteOutcome, CommandError> {
     service::remove_attachment(state.inner(), &payload.id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn notes_attachments_resolve_path(
     state: State<'_, AppState>,
     payload: NoteIdPayload,
-) -> Result<String, String> {
+) -> Result<String, CommandError> {
     service::resolve_attachment_path(state.inner(), &payload.id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
 pub async fn notes_attachments_open(
     state: State<'_, AppState>,
     payload: NoteIdPayload,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let path = service::resolve_attachment_open_path(state.inner(), &payload.id)
         .await
-        .map_err(|error| error.to_string())?;
-    crate::commands::message::open_path(&path).map_err(|error| error.to_string())
+        .map_err(CommandError::from)?;
+    crate::commands::message::open_path(&path)
+        .map_err(AppError::from)
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]

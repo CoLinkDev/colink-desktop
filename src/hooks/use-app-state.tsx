@@ -54,6 +54,7 @@ import {
   type TextMessageRecord,
   type TransferProgressPayload,
 } from '../lib/types'
+import { readCommandError } from '../lib/command-error'
 
 type AppStatus = 'booting' | 'ready'
 
@@ -85,7 +86,7 @@ interface AppStateValue {
   logout: () => Promise<void>
   refreshDevices: () => Promise<void>
   updateDeviceName: (deviceId: string, name: string) => Promise<void>
-  deleteDevice: (deviceId: string) => Promise<void>
+  deleteDevice: (deviceId: string) => Promise<boolean>
   rotateDeviceKey: (deviceId: string) => Promise<void>
   saveSettings: (settings: AppSettings) => Promise<void>
   pickDownloadDirectory: () => Promise<string | null>
@@ -177,6 +178,11 @@ export function readErrorMessage(error: unknown, fallback = i18n.t('common.reque
     return error.message
   }
 
+  const commandError = readCommandError(error)
+  if (commandError) {
+    return commandError.message
+  }
+
   return fallback
 }
 
@@ -201,6 +207,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [notesTags, setNotesTags] = useState<NoteTagRecord[]>([])
   const [notesSyncing, setNotesSyncing] = useState(false)
   const notesSyncingRef = useRef(false)
+  const notesSyncIssueRef = useRef<NotesSyncOutcome['status'] | null>(null)
   const notesRefreshRef = useRef({ requested: 0, completed: 0, inFlight: null as Promise<void> | null })
 
   const registerNotesDiscardHandler = useCallback((handler: (() => Promise<boolean>) | null) => {
@@ -266,6 +273,14 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     setNotesSyncing(true)
     try {
       const outcome = await notesSyncRequest()
+      if (outcome.status === 'storage_full') {
+        if (notesSyncIssueRef.current !== outcome.status) {
+          toast.error(i18n.t('notes.storageFull'), { id: 'notes-storage-full' })
+        }
+        notesSyncIssueRef.current = outcome.status
+      } else if (outcome.status === 'ok') {
+        notesSyncIssueRef.current = null
+      }
       await refreshNotes()
       return outcome
     } catch (error) {
@@ -521,8 +536,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   }, [])
 
   const deleteDevice = useCallback(async (deviceId: string) => {
-    const nextDevices = await deleteDeviceRequest(deviceId)
-    setDevices(nextDevices)
+    const outcome = await deleteDeviceRequest(deviceId)
+    setDevices(outcome.devices)
+    return outcome.notFound
   }, [])
 
   const rotateDeviceKey = useCallback(async (deviceId: string) => {

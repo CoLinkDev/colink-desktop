@@ -1,6 +1,7 @@
 use tauri::State;
 
 use crate::{
+    error::CommandError,
     models::{
         DeviceDeletePayload, DeviceInfo, DeviceNameUpdatePayload, LanPairingCandidate,
         LanPairingDecisionPayload, RotateDeviceKeyPayload, StartLanPairingPayload,
@@ -37,10 +38,10 @@ pub async fn update_device_name(
 pub async fn delete_device(
     state: State<'_, AppState>,
     payload: DeviceDeletePayload,
-) -> Result<Vec<DeviceInfo>, String> {
+) -> Result<service::DeviceDeleteOutcome, CommandError> {
     service::delete_device(state.inner(), payload)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]

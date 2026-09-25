@@ -149,9 +149,7 @@ impl HttpClient {
         }
 
         if !status.is_success() {
-            return Err(AppError::message(format!(
-                "request failed with status {status}"
-            )));
+            return Err(AppError::http_status(status));
         }
 
         let data = envelope
@@ -169,9 +167,7 @@ impl HttpClient {
         }
 
         if !status.is_success() {
-            return Err(AppError::message(format!(
-                "request failed with status {status}"
-            )));
+            return Err(AppError::http_status(status));
         }
 
         Ok(())
@@ -190,9 +186,7 @@ impl HttpClient {
     {
         match serde_json::from_str(payload) {
             Ok(envelope) => Ok(envelope),
-            Err(_) if !status.is_success() => Err(AppError::message(format!(
-                "request failed with status {status}"
-            ))),
+            Err(_) if !status.is_success() => Err(AppError::http_status(status)),
             Err(error) => Err(error.into()),
         }
     }
