@@ -12,11 +12,12 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::notes::api::{
-    sha256_hex, AttachmentDto, ChangesDto, NoteDto, NotesHttpClient, SnapshotDto, StorageDto, TagDto,
-    TagListDto, CODE_ATTACHMENT_ID_UNAVAILABLE, CODE_ATTACHMENT_NOT_FOUND,
+    sha256_hex, AttachmentDto, ChangesDto, CreateNoteRequest, NoteDeleteDto, NoteDto,
+    NotesHttpClient, SnapshotDto, StorageDto, TagDeleteDto, TagDto, TagListDto,
+    UpdateNoteRequest, CODE_ATTACHMENT_ID_UNAVAILABLE, CODE_ATTACHMENT_NOT_FOUND,
     CODE_INVALID_NOTE_REFERENCE, CODE_NOTE_NOT_FOUND, CODE_REVISION_CONFLICT,
-    CODE_SYNC_CURSOR_EXPIRED, NOTE_ATTACHMENTS_PATH, NOTES_CHANGES_PATH, NOTES_PATH,
-    NOTES_SNAPSHOT_PATH, NOTES_STORAGE_PATH, NOTE_TAGS_PATH,
+    CODE_SYNC_CURSOR_EXPIRED, CODE_TAG_NOT_FOUND, NOTE_ATTACHMENTS_PATH, NOTES_CHANGES_PATH,
+    NOTES_PATH, NOTES_SNAPSHOT_PATH, NOTES_STORAGE_PATH, NOTE_TAGS_PATH,
 };
 use crate::notes::merge::{merge_field, merge_markdown, merge_set, FieldMerge};
 use crate::state::AppState;
@@ -34,7 +35,6 @@ const SYNC_PAGE_LIMIT: u32 = 200;
 const MAX_ATTACHMENT_REKEY_ATTEMPTS: usize = 3;
 
 const CODE_TAG_NAME_CONFLICT: i32 = 6004;
-const CODE_TAG_NOT_FOUND: i32 = 6003;
 const CODE_ATTACHMENT_IN_USE: i32 = 6006;
 
 // ---------------------------------------------------------------------------
@@ -848,6 +848,28 @@ async fn upload_attachment_record(
     Ok(())
 }
 
+fn validate_delete_response(
+    resource: &str,
+    actual_id: &str,
+    revision: i64,
+    deleted_at: Option<&str>,
+    expected_id: &str,
+    base_revision: i64,
+) -> AppResult<()> {
+    if actual_id != expected_id {
+        return Err(AppError::message(format!(
+            "{resource} delete response id mismatch"
+        )));
+    }
+    if revision <= base_revision {
+        return Err(AppError::message(format!(
+            "{resource} delete response revision did not advance"
+        )));
+    }
+    tracing::debug!(resource, resource_id = actual_id, revision, ?deleted_at, "confirmed cloud deletion");
+    Ok(())
+}
+
 async fn push_tags(state: &AppState, context: &mut SyncContext) -> AppResult<()> {
     let records = state.database.load_all_note_tag_rows()?;
     for record in records {
@@ -865,10 +887,18 @@ async fn push_tags(state: &AppState, context: &mut SyncContext) -> AppResult<()>
             let path = format!("{NOTE_TAGS_PATH}/{}?baseRevision={}", record.id, record.base_revision);
             match context
                 .http
-                .delete::<serde_json::Value>(&context.base_url, &path, &context.token)
+                .delete::<TagDeleteDto>(&context.base_url, &path, &context.token)
                 .await
             {
-                Ok(_) => {
+                Ok(deleted) => {
+                    validate_delete_response(
+                        "tag",
+                        &deleted.tag_id,
+                        deleted.revision,
+                        deleted.deleted_at.as_deref(),
+                        &record.id,
+                        record.base_revision,
+                    )?;
                     state.database.delete_note_tag_row(&record.id)?;
                     remove_tag_everywhere(&state.database, &record.id)?;
                     context.pushed_tags += 1;
@@ -1102,17 +1132,22 @@ async fn push_note_create(
     record: NoteRecord,
     allow_reference_recovery: bool,
 ) -> AppResult<()> {
-    let request = serde_json::json!({
-        "noteId": record.id,
-        "title": record.title,
-        "markdown": record.markdown,
-        "tagIds": record.tag_ids,
-        "attachmentIds": record.attachment_ids,
-    });
+    let request = CreateNoteRequest {
+        note_id: &record.id,
+        title: &record.title,
+        markdown: &record.markdown,
+        tag_ids: &record.tag_ids,
+        attachment_ids: &record.attachment_ids,
+    };
 
     match context
         .http
-        .post::<serde_json::Value, NoteDto>(&context.base_url, NOTES_PATH, &request, &context.token)
+        .post::<CreateNoteRequest<'_>, NoteDto>(
+            &context.base_url,
+            NOTES_PATH,
+            &request,
+            &context.token,
+        )
         .await
     {
         Ok(dto) => {
@@ -1136,7 +1171,7 @@ async fn push_note_create(
                     // The id is free: retry once with the original id.
                     let dto = context
                         .http
-                        .post::<serde_json::Value, NoteDto>(
+                        .post::<CreateNoteRequest<'_>, NoteDto>(
                             &context.base_url,
                             NOTES_PATH,
                             &request,
@@ -1168,17 +1203,22 @@ async fn push_note_update(
     allow_reference_recovery: bool,
 ) -> AppResult<()> {
     let path = format!("{NOTES_PATH}/{}", record.id);
-    let request = serde_json::json!({
-        "baseRevision": record.base_revision,
-        "title": record.title,
-        "markdown": record.markdown,
-        "tagIds": record.tag_ids,
-        "attachmentIds": record.attachment_ids,
-    });
+    let request = UpdateNoteRequest {
+        base_revision: record.base_revision,
+        title: &record.title,
+        markdown: &record.markdown,
+        tag_ids: &record.tag_ids,
+        attachment_ids: &record.attachment_ids,
+    };
 
     match context
         .http
-        .put::<serde_json::Value, NoteDto>(&context.base_url, &path, &request, &context.token)
+        .put::<UpdateNoteRequest<'_>, NoteDto>(
+            &context.base_url,
+            &path,
+            &request,
+            &context.token,
+        )
         .await
     {
         Ok(dto) => {
@@ -1227,10 +1267,18 @@ async fn push_note_delete(
 
     match context
         .http
-        .delete::<serde_json::Value>(&context.base_url, &path, &context.token)
+        .delete::<NoteDeleteDto>(&context.base_url, &path, &context.token)
         .await
     {
-        Ok(_) => {
+        Ok(deleted) => {
+            validate_delete_response(
+                "note",
+                &deleted.note_id,
+                deleted.revision,
+                deleted.deleted_at.as_deref(),
+                &record.id,
+                record.base_revision,
+            )?;
             state.database.delete_note_row(&record.id)?;
             context.pushed_notes += 1;
         }
@@ -1295,16 +1343,16 @@ async fn attempt_merged_push(
             state.database.save_note(&updated)?;
 
             let path = format!("{NOTES_PATH}/{note_id}");
-            let request = serde_json::json!({
-                "baseRevision": cloud.revision,
-                "title": updated.title,
-                "markdown": updated.markdown,
-                "tagIds": updated.tag_ids,
-                "attachmentIds": updated.attachment_ids,
-            });
+            let request = UpdateNoteRequest {
+                base_revision: cloud.revision,
+                title: &updated.title,
+                markdown: &updated.markdown,
+                tag_ids: &updated.tag_ids,
+                attachment_ids: &updated.attachment_ids,
+            };
             match context
                 .http
-                .put::<serde_json::Value, NoteDto>(
+                .put::<UpdateNoteRequest<'_>, NoteDto>(
                     &context.base_url,
                     &path,
                     &request,

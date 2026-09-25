@@ -637,6 +637,7 @@ impl Database {
         required_notes_scope(&connection)
     }
 
+    #[cfg(test)]
     pub(crate) fn claim_local_notes(
         &self,
         target_scope: &str,
@@ -644,6 +645,7 @@ impl Database {
         self.transfer_notes_scope(LOCAL_ACCOUNT_SCOPE, target_scope)
     }
 
+    #[cfg(test)]
     pub(crate) fn transfer_notes_scope(
         &self,
         source_scope: &str,
@@ -833,6 +835,7 @@ impl Database {
         self.load_plain_kv(&format!("{NOTES_SYNC_CURSOR_KEY}:{scope}"))
     }
 
+    #[cfg(test)]
     pub fn save_notes_sync_cursor(&self, cursor: &str) -> AppResult<()> {
         let connection = self.open()?;
         let scope = required_notes_scope(&connection)?;

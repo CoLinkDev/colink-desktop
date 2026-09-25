@@ -410,10 +410,3 @@ pub(crate) struct StorageDto {
     pub max_attachment_bytes: i64,
     pub max_markdown_bytes: i64,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AttachmentReferencesDto {
-    pub note_ids: Vec<String>,
-    pub next_page_token: Option<String>,
-}

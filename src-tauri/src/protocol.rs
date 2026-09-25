@@ -414,6 +414,9 @@ pub struct TextMessageReceiptPayload {
     pub message_id: String,
 }
 
+/// Complete cloud push payload defined by the business protocol.
+/// Desktop currently consumes only a subset of these fields.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushNotificationPayload {

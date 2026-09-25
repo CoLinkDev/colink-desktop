@@ -777,6 +777,7 @@ impl Database {
         Ok(value)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_plain_kv(&self, key: &str, value: &str) -> AppResult<()> {
         let connection = self.open()?;
         connection.execute(
