@@ -107,7 +107,7 @@ fn completed_received_file_path(state: &AppState, file_id: &str) -> Result<PathB
     Ok(path)
 }
 
-fn open_path(path: &PathBuf) -> std::io::Result<()> {
+pub(crate) fn open_path(path: &PathBuf) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
         Command::new("rundll32")

@@ -5,6 +5,7 @@ mod device;
 mod filesystem;
 mod message;
 mod music;
+mod notes;
 mod settings;
 mod update;
 mod terminal;
@@ -33,6 +34,12 @@ pub use filesystem::{
     list_remote_filesystem_roots,
 };
 pub use music::{get_music_providers, list_available_music_providers, update_music_providers};
+pub use notes::{
+    notes_attachments_delete, notes_attachments_list, notes_attachments_open, notes_attachments_resolve_path,
+    notes_attachments_stage, notes_delete, notes_get, notes_list, notes_new_id,
+    notes_resolve_conflict, notes_storage, notes_sync, notes_tags_create, notes_tags_delete,
+    notes_tags_list, notes_tags_rename, notes_upsert,
+};
 pub use settings::{get_settings, pick_download_directory, update_settings};
 pub use update::{check_update, install_tauri_update, open_update_download};
 pub use terminal::{close_terminal, get_remote_terminal_support, open_terminal, resize_terminal, write_terminal};

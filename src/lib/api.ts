@@ -26,6 +26,13 @@ import type {
   SendTextPayload,
   SystemShareFile,
   TextMessageRecord,
+  ConflictResolutionPayload,
+  NoteAttachmentRecord,
+  NoteRecord,
+  NoteTagRecord,
+  NoteUpsertPayload,
+  NotesStorageInfo,
+  NotesSyncOutcome,
 } from './types'
 
 export function bootstrapApp() {
@@ -265,3 +272,73 @@ export function openRemoteCamera(deviceId: string, cameraId: string, preferredCo
 
 export function sendCameraAlive(deviceId: string, sessionId: string) { return invoke<void>('send_camera_alive', { deviceId, sessionId }) }
 export function closeRemoteCamera(deviceId: string, sessionId: string) { return invoke<void>('close_remote_camera', { deviceId, sessionId }) }
+
+// ---------- Cloud Notes ----------
+
+export function notesList() {
+  return invoke<NoteRecord[]>('notes_list')
+}
+
+export function notesGet(id: string) {
+  return invoke<NoteRecord | null>('notes_get', { payload: { id } })
+}
+
+export function notesNewId() {
+  return invoke<string>('notes_new_id')
+}
+
+export function notesUpsert(payload: NoteUpsertPayload) {
+  return invoke<NoteRecord>('notes_upsert', { payload })
+}
+
+export function notesDelete(id: string) {
+  return invoke<NoteRecord>('notes_delete', { payload: { id } })
+}
+
+export function notesTagsList() {
+  return invoke<NoteTagRecord[]>('notes_tags_list')
+}
+
+export function notesTagsCreate(name: string) {
+  return invoke<NoteTagRecord>('notes_tags_create', { payload: { name } })
+}
+
+export function notesTagsRename(id: string, name: string) {
+  return invoke<NoteTagRecord>('notes_tags_rename', { payload: { id, name } })
+}
+
+export function notesTagsDelete(id: string) {
+  return invoke<void>('notes_tags_delete', { payload: { id } })
+}
+
+export function notesAttachmentsStage(path: string, kind: 'image' | 'file') {
+  return invoke<NoteAttachmentRecord>('notes_attachments_stage', { payload: { path, kind } })
+}
+
+export function notesAttachmentsList() {
+  return invoke<NoteAttachmentRecord[]>('notes_attachments_list')
+}
+
+export function notesAttachmentsDelete(id: string) {
+  return invoke<void>('notes_attachments_delete', { payload: { id } })
+}
+
+export function notesAttachmentsResolvePath(id: string) {
+  return invoke<string>('notes_attachments_resolve_path', { payload: { id } })
+}
+
+export function notesAttachmentsOpen(id: string) {
+  return invoke<void>('notes_attachments_open', { payload: { id } })
+}
+
+export function notesSync() {
+  return invoke<NotesSyncOutcome>('notes_sync')
+}
+
+export function notesResolveConflict(payload: ConflictResolutionPayload) {
+  return invoke<NoteRecord>('notes_resolve_conflict', { payload })
+}
+
+export function notesStorage() {
+  return invoke<NotesStorageInfo>('notes_storage')
+}

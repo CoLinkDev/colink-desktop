@@ -119,6 +119,31 @@ const MIGRATIONS: &[Migration] = &[
         name: "drop_app_logs",
         run: migrate_18_drop_app_logs,
     },
+    Migration {
+        version: 19,
+        name: "add_notes",
+        run: migrate_19_add_notes,
+    },
+    Migration {
+        version: 20,
+        name: "scope_notes_by_account",
+        run: migrate_20_scope_notes_by_account,
+    },
+    Migration {
+        version: 21,
+        name: "refresh_notes_snapshot_metadata",
+        run: migrate_21_refresh_notes_snapshot_metadata,
+    },
+    Migration {
+        version: 22,
+        name: "enable_local_notes_scope",
+        run: migrate_22_enable_local_notes_scope,
+    },
+    Migration {
+        version: 23,
+        name: "allow_pending_duplicate_tag_names",
+        run: migrate_23_allow_pending_duplicate_tag_names,
+    },
 ];
 
 const BASELINE_SCHEMA_SQL: &str = "
@@ -177,6 +202,60 @@ CREATE TABLE IF NOT EXISTS music_providers (
     id TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1,
     priority INTEGER NOT NULL DEFAULT 0
+);
+";
+
+pub(crate) const NOTES_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    markdown TEXT NOT NULL DEFAULT '',
+    tag_ids TEXT NOT NULL DEFAULT '[]',
+    attachment_ids TEXT NOT NULL DEFAULT '[]',
+    revision INTEGER NOT NULL DEFAULT 0,
+    base_revision INTEGER NOT NULL DEFAULT 0,
+    ancestor_revision INTEGER NOT NULL DEFAULT 0,
+    sync_state TEXT NOT NULL DEFAULT 'pending',
+    conflict_kind TEXT,
+    conflict_title TEXT,
+    conflict_markdown TEXT,
+    conflict_tag_ids TEXT,
+    conflict_attachment_ids TEXT,
+    conflict_revision INTEGER,
+    ancestor_title TEXT,
+    ancestor_markdown TEXT,
+    ancestor_tag_ids TEXT,
+    ancestor_attachment_ids TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes (updated_at DESC, id ASC);
+
+CREATE TABLE IF NOT EXISTS note_tags (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_normalized TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    base_revision INTEGER NOT NULL DEFAULT 0,
+    sync_state TEXT NOT NULL DEFAULT 'pending',
+    deleted INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_note_tags_name_normalized
+    ON note_tags (name_normalized) WHERE deleted = 0;
+
+CREATE TABLE IF NOT EXISTS note_attachments (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    media_type TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL DEFAULT '',
+    sync_state TEXT NOT NULL DEFAULT 'pending',
+    deleted INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
 );
 ";
 
@@ -682,8 +761,41 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn open(&self) -> AppResult<Connection> {
+    pub(crate) fn open(&self) -> AppResult<Connection> {
         Ok(Connection::open(&self.path)?)
+    }
+
+    pub(crate) fn load_plain_kv(&self, key: &str) -> AppResult<Option<String>> {
+        let connection = self.open()?;
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT value FROM kv_store WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    pub(crate) fn save_plain_kv(&self, key: &str, value: &str) -> AppResult<()> {
+        let connection = self.open()?;
+        connection.execute(
+            "
+            INSERT INTO kv_store (key, value, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            ",
+            params![key, value, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_plain_kv(&self, key: &str) -> AppResult<()> {
+        let connection = self.open()?;
+        connection.execute("DELETE FROM kv_store WHERE key = ?1", params![key])?;
+        Ok(())
     }
 
     fn load_record<T>(&self, key: &str) -> AppResult<Option<T>>
@@ -1139,6 +1251,158 @@ fn migrate_18_drop_app_logs(transaction: &Transaction<'_>) -> AppResult<()> {
     Ok(())
 }
 
+fn migrate_19_add_notes(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute_batch(NOTES_SCHEMA_SQL)?;
+    Ok(())
+}
+
+fn migrate_20_scope_notes_by_account(transaction: &Transaction<'_>) -> AppResult<()> {
+    let has_kv_store = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kv_store')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let read_json = |key: &str| -> AppResult<Option<Value>> {
+        if !has_kv_store {
+            return Ok(None);
+        }
+        let raw = transaction
+            .query_row(
+                "SELECT value FROM kv_store WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
+    };
+    let settings = read_json(SETTINGS_KEY)?;
+    let session = read_json(SESSION_KEY)?;
+    let legacy_scope = settings
+        .as_ref()
+        .and_then(|value| value.get("serverUrl"))
+        .and_then(Value::as_str)
+        .zip(
+            session
+                .as_ref()
+                .and_then(|value| value.get("userId"))
+                .and_then(Value::as_str),
+        )
+        .map(|(server_url, user_id)| format!("{}\n{}", server_url.trim().trim_end_matches('/'), user_id.trim()))
+        .filter(|scope| !scope.ends_with('\n'))
+        .unwrap_or_else(|| "__legacy_unassigned__".to_string());
+
+    transaction.execute_batch(
+        "
+        CREATE TABLE notes_scoped (
+            account_scope TEXT NOT NULL,
+            id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL DEFAULT '',
+            tag_ids TEXT NOT NULL DEFAULT '[]', attachment_ids TEXT NOT NULL DEFAULT '[]',
+            revision INTEGER NOT NULL DEFAULT 0, base_revision INTEGER NOT NULL DEFAULT 0,
+            ancestor_revision INTEGER NOT NULL DEFAULT 0, sync_state TEXT NOT NULL DEFAULT 'pending',
+            conflict_kind TEXT, conflict_title TEXT, conflict_markdown TEXT,
+            conflict_tag_ids TEXT, conflict_attachment_ids TEXT, conflict_revision INTEGER,
+            ancestor_title TEXT, ancestor_markdown TEXT, ancestor_tag_ids TEXT,
+            ancestor_attachment_ids TEXT, deleted INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY (account_scope, id)
+        );
+        CREATE TABLE note_tags_scoped (
+            account_scope TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
+            name_normalized TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+            base_revision INTEGER NOT NULL DEFAULT 0, sync_state TEXT NOT NULL DEFAULT 'pending',
+            deleted INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL, PRIMARY KEY (account_scope, id)
+        );
+        CREATE TABLE note_attachments_scoped (
+            account_scope TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL,
+            file_name TEXT NOT NULL, media_type TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT NOT NULL DEFAULT '', sync_state TEXT NOT NULL DEFAULT 'pending',
+            deleted INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+            PRIMARY KEY (account_scope, id)
+        );
+        ",
+    )?;
+    transaction.execute(
+        "INSERT INTO notes_scoped SELECT ?1, id, title, markdown, tag_ids, attachment_ids,
+         revision, base_revision, ancestor_revision, sync_state, conflict_kind, conflict_title,
+         conflict_markdown, conflict_tag_ids, conflict_attachment_ids, conflict_revision,
+         ancestor_title, ancestor_markdown, ancestor_tag_ids, ancestor_attachment_ids,
+         deleted, created_at, updated_at FROM notes",
+        params![legacy_scope],
+    )?;
+    transaction.execute(
+        "INSERT INTO note_tags_scoped SELECT ?1, id, name, name_normalized, revision,
+         base_revision, sync_state, deleted, created_at, updated_at FROM note_tags",
+        params![legacy_scope],
+    )?;
+    transaction.execute(
+        "INSERT INTO note_attachments_scoped SELECT ?1, id, kind, file_name, media_type,
+         size, sha256, sync_state, deleted, created_at FROM note_attachments",
+        params![legacy_scope],
+    )?;
+    transaction.execute_batch(
+        "
+        DROP TABLE notes;
+        ALTER TABLE notes_scoped RENAME TO notes;
+        CREATE INDEX idx_notes_updated_at ON notes (account_scope, updated_at DESC, id ASC);
+        DROP TABLE note_tags;
+        ALTER TABLE note_tags_scoped RENAME TO note_tags;
+        CREATE UNIQUE INDEX idx_note_tags_name_normalized
+            ON note_tags (account_scope, name_normalized) WHERE deleted = 0;
+        DROP TABLE note_attachments;
+        ALTER TABLE note_attachments_scoped RENAME TO note_attachments;
+        ",
+    )?;
+    if has_kv_store {
+        transaction.execute(
+            "UPDATE kv_store SET key = ?1 WHERE key = ?2",
+            params![format!("notes_sync_cursor:{legacy_scope}"), crate::store::notes::NOTES_SYNC_CURSOR_KEY],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_21_refresh_notes_snapshot_metadata(transaction: &Transaction<'_>) -> AppResult<()> {
+    if table_exists(transaction, "kv_store")? {
+        transaction.execute(
+            "DELETE FROM kv_store WHERE key = 'notes_sync_cursor' OR key LIKE 'notes_sync_cursor:%'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_22_enable_local_notes_scope(transaction: &Transaction<'_>) -> AppResult<()> {
+    for table in ["notes", "note_tags", "note_attachments"] {
+        if table_exists(transaction, table)? {
+            transaction.execute(
+                &format!("UPDATE {table} SET account_scope = ?1 WHERE account_scope = ?2"),
+                params![
+                    crate::store::notes::LOCAL_ACCOUNT_SCOPE,
+                    "__legacy_unassigned__"
+                ],
+            )?;
+        }
+    }
+    if table_exists(transaction, "kv_store")? {
+        transaction.execute(
+            "DELETE FROM kv_store WHERE key IN (?1, ?2)",
+            params![
+                format!("notes_sync_cursor:{}", crate::store::notes::LOCAL_ACCOUNT_SCOPE),
+                "notes_sync_cursor:__legacy_unassigned__"
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_23_allow_pending_duplicate_tag_names(transaction: &Transaction<'_>) -> AppResult<()> {
+    transaction.execute("DROP INDEX IF EXISTS idx_note_tags_name_normalized", [])?;
+    Ok(())
+}
+
 fn canonicalize_music_providers(providers: &[MusicProviderConfig]) -> Vec<MusicProviderConfig> {
     let mut normalized = Vec::new();
     for provider in providers {
@@ -1475,7 +1739,11 @@ mod tests {
     use super::Database;
     use crate::models::{
         AppSettings, DeviceIdentity, DeviceInfo, FileTransferRecord, MusicProviderConfig,
-        TextMessageRecord, TrustedPeerKeyRecord,
+        SessionRecord, TextMessageRecord, TrustedPeerKeyRecord,
+    };
+    use crate::store::notes::{
+        account_notes_scope, NoteAttachmentRecord, NoteRecord, NoteTagRecord,
+        LOCAL_ACCOUNT_SCOPE, NOTE_STATE_PENDING_DELETE,
     };
 
     #[test]
@@ -1527,6 +1795,364 @@ mod tests {
             })
             .expect("save transfer");
         assert_eq!(database.load_transfers(10).expect("transfers").len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn notes_and_cursors_are_isolated_by_server_and_account() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let mut settings = AppSettings::new("D:/downloads".to_string());
+        settings.server_url = "https://one.example".to_string();
+        database.save_settings(&settings).expect("save settings one");
+        let session = |user_id: &str| SessionRecord {
+            user_id: user_id.to_string(),
+            username: user_id.to_string(),
+            access_token: "token".to_string(),
+            refresh_token: "refresh".to_string(),
+            access_token_expires_at: i64::MAX,
+            access_token_refresh_at: i64::MAX,
+        };
+        database.save_session(&session("user-a")).expect("save session a");
+        let mut first = NoteRecord::new("same-note-id".to_string(), 1);
+        first.title = "Account A".to_string();
+        database.save_note(&first).expect("save note a");
+        database.save_notes_sync_cursor("cursor-a").expect("save cursor a");
+
+        settings.server_url = "https://two.example".to_string();
+        database.save_settings(&settings).expect("save settings two");
+        database.save_session(&session("user-b")).expect("save session b");
+        assert!(database.load_note("same-note-id").expect("load empty b").is_none());
+        assert!(database.load_notes_sync_cursor().expect("load empty cursor b").is_none());
+        let mut second = NoteRecord::new("same-note-id".to_string(), 2);
+        second.title = "Account B".to_string();
+        database.save_note(&second).expect("save note b");
+        database.save_notes_sync_cursor("cursor-b").expect("save cursor b");
+
+        settings.server_url = "https://one.example".to_string();
+        database.save_settings(&settings).expect("restore settings one");
+        database.save_session(&session("user-a")).expect("restore session a");
+        assert_eq!(database.load_note("same-note-id").unwrap().unwrap().title, "Account A");
+        assert_eq!(database.load_notes_sync_cursor().unwrap().as_deref(), Some("cursor-a"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_notes_are_writable_and_claimed_by_the_next_account() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let mut settings = AppSettings::new("D:/downloads".to_string());
+        settings.server_url = "https://notes.example".to_string();
+        database.save_settings(&settings).expect("save settings");
+
+        let local_tag = NoteTagRecord {
+            id: "local-tag".to_string(),
+            name: "Work".to_string(),
+            revision: 0,
+            base_revision: 0,
+            sync_state: "pending".to_string(),
+            deleted: false,
+            created_at: 1,
+            updated_at: 1,
+        };
+        database.save_note_tag(&local_tag).expect("save local tag");
+        database
+            .save_note_attachment(&NoteAttachmentRecord {
+                id: "local-attachment".to_string(),
+                kind: "file".to_string(),
+                file_name: "draft.txt".to_string(),
+                media_type: "text/plain".to_string(),
+                size: 5,
+                sha256: "digest".to_string(),
+                sync_state: "pending".to_string(),
+                deleted: false,
+                created_at: 1,
+            })
+            .expect("save local attachment");
+        let mut local_note = NoteRecord::new("local-note".to_string(), 1);
+        local_note.title = "Local draft".to_string();
+        local_note.tag_ids = vec![local_tag.id.clone()];
+        local_note.attachment_ids = vec!["local-attachment".to_string()];
+        database.save_note(&local_note).expect("save local note");
+        assert_eq!(database.current_notes_scope().unwrap(), LOCAL_ACCOUNT_SCOPE);
+        assert_eq!(database.load_notes().unwrap().len(), 1);
+
+        let session = SessionRecord {
+            user_id: "user-a".to_string(),
+            username: "user-a".to_string(),
+            access_token: "token".to_string(),
+            refresh_token: "refresh".to_string(),
+            access_token_expires_at: i64::MAX,
+            access_token_refresh_at: i64::MAX,
+        };
+        database.save_session(&session).expect("save session");
+        let target_scope = account_notes_scope(&settings, &session);
+        database
+            .save_note_tag(&NoteTagRecord {
+                id: "account-tag".to_string(),
+                name: "work".to_string(),
+                revision: 3,
+                base_revision: 3,
+                sync_state: "synced".to_string(),
+                deleted: false,
+                created_at: 1,
+                updated_at: 2,
+            })
+            .expect("save account tag");
+
+        let claimed = database.claim_local_notes(&target_scope).expect("claim local notes");
+        assert_eq!(claimed.len(), 1);
+        let claimed_note = database.load_note("local-note").unwrap().unwrap();
+        assert_eq!(claimed_note.title, "Local draft");
+        assert_eq!(claimed_note.tag_ids, vec!["account-tag"]);
+        assert_eq!(claimed_note.attachment_ids, vec!["local-attachment"]);
+        assert_eq!(claimed_note.revision, 0);
+        assert_eq!(claimed_note.sync_state, "pending");
+
+        database
+            .transfer_notes_scope(&target_scope, LOCAL_ACCOUNT_SCOPE)
+            .expect("release account notes");
+        database.clear_session().expect("clear session");
+        let released_note = database.load_note("local-note").unwrap().unwrap();
+        assert_eq!(released_note.title, "Local draft");
+        assert_eq!(released_note.revision, 0);
+        assert_eq!(released_note.sync_state, "pending");
+        assert_eq!(database.load_note_tags().unwrap().len(), 1);
+        assert_eq!(database.load_note_attachments().unwrap().len(), 1);
+
+        settings.server_url = "https://other.example".to_string();
+        database.save_settings(&settings).expect("save other server");
+        let other_session = SessionRecord {
+            user_id: "user-b".to_string(),
+            username: "user-b".to_string(),
+            access_token: "other-token".to_string(),
+            refresh_token: "other-refresh".to_string(),
+            access_token_expires_at: i64::MAX,
+            access_token_refresh_at: i64::MAX,
+        };
+        database.save_session(&other_session).expect("save other session");
+        let other_scope = account_notes_scope(&settings, &other_session);
+        database
+            .claim_local_notes(&other_scope)
+            .expect("claim notes for other account");
+        let reclaimed_note = database.load_note("local-note").unwrap().unwrap();
+        assert_eq!(reclaimed_note.title, "Local draft");
+        assert_eq!(reclaimed_note.revision, 0);
+        assert_eq!(reclaimed_note.sync_state, "pending");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_22_moves_unassigned_notes_to_local_scope() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+        database
+            .save_note(&NoteRecord::new("legacy-note".to_string(), 1))
+            .expect("save local note");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute(
+                "UPDATE notes SET account_scope = '__legacy_unassigned__' WHERE id = 'legacy-note'",
+                [],
+            )
+            .expect("restore legacy scope");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version IN (22, 23)", [])
+            .expect("remove v22 marker");
+        drop(connection);
+
+        database.initialize().expect("apply v22");
+        assert_eq!(database.load_note("legacy-note").unwrap().unwrap().id, "legacy-note");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_23_allows_pending_and_cloud_tags_with_the_same_name() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+        database
+            .save_note_tag(&NoteTagRecord {
+                id: "pending-tag".to_string(),
+                name: "Work".to_string(),
+                revision: 0,
+                base_revision: 0,
+                sync_state: "pending".to_string(),
+                deleted: false,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("seed pending tag");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute(
+                "CREATE UNIQUE INDEX idx_note_tags_name_normalized ON note_tags (account_scope, name_normalized) WHERE deleted = 0",
+                [],
+            )
+            .expect("restore legacy tag index");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 23", [])
+            .expect("remove v23 marker");
+        drop(connection);
+
+        database.initialize().expect("apply v23");
+        database
+            .save_note_tag(&NoteTagRecord {
+                id: "cloud-tag".to_string(),
+                name: "Work".to_string(),
+                revision: 1,
+                base_revision: 1,
+                sync_state: "synced".to_string(),
+                deleted: false,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("save same-name cloud tag");
+        assert_eq!(database.load_all_note_tag_rows().expect("load tags").len(), 2);
+
+        let connection = Connection::open(&path).expect("reopen db");
+        let index_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_note_tags_name_normalized'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check tag index");
+        assert_eq!(index_count, 0);
+        drop(connection);
+
+        database.initialize().expect("repeat initialization");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pending_note_deletions_are_hidden_without_leaving_the_sync_queue() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let mut settings = AppSettings::new("D:/downloads".to_string());
+        settings.server_url = "https://notes.example".to_string();
+        database.save_settings(&settings).expect("save settings");
+        database
+            .save_session(&SessionRecord {
+                user_id: "user-a".to_string(),
+                username: "user-a".to_string(),
+                access_token: "token".to_string(),
+                refresh_token: "refresh".to_string(),
+                access_token_expires_at: i64::MAX,
+                access_token_refresh_at: i64::MAX,
+            })
+            .expect("save session");
+
+        let mut note = NoteRecord::new("note-a".to_string(), 1);
+        note.sync_state = NOTE_STATE_PENDING_DELETE.to_string();
+        note.revision = 1;
+        note.base_revision = 1;
+        database.save_note(&note).expect("save note");
+        database
+            .save_note_tag(&NoteTagRecord {
+                id: "tag-a".to_string(),
+                name: "Tag".to_string(),
+                revision: 1,
+                base_revision: 1,
+                sync_state: NOTE_STATE_PENDING_DELETE.to_string(),
+                deleted: false,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .expect("save tag");
+
+        assert!(database.load_notes().expect("load notes").is_empty());
+        assert!(database.load_note_tags().expect("load tags").is_empty());
+        assert_eq!(database.load_all_note_rows().expect("all notes").len(), 1);
+        assert_eq!(database.load_all_note_tag_rows().expect("all tags").len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn notes_transaction_rolls_back_resources_and_cursor_together() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let mut settings = AppSettings::new("D:/downloads".to_string());
+        settings.server_url = "https://notes.example".to_string();
+        database.save_settings(&settings).expect("save settings");
+        database
+            .save_session(&SessionRecord {
+                user_id: "user-a".to_string(),
+                username: "user-a".to_string(),
+                access_token: "token".to_string(),
+                refresh_token: "refresh".to_string(),
+                access_token_expires_at: i64::MAX,
+                access_token_refresh_at: i64::MAX,
+            })
+            .expect("save session");
+
+        let result = database.with_notes_transaction(|store| {
+            store.save_note(&NoteRecord::new("note-a".to_string(), 1))?;
+            store.save_cursor("cursor-a")?;
+            Err::<(), _>(crate::error::AppError::message("abort page"))
+        });
+
+        assert!(result.is_err());
+        assert!(database.load_note("note-a").expect("load note").is_none());
+        assert!(database
+            .load_notes_sync_cursor()
+            .expect("load cursor")
+            .is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_21_preserves_notes_and_clears_all_notes_cursors() {
+        let path = temp_db_path();
+        let database = Database::new(path.clone());
+        database.initialize().expect("db init");
+
+        let connection = Connection::open(&path).expect("open db");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version IN (21, 22, 23)", [])
+            .expect("remove v21 marker");
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('notes_sync_cursor', 'legacy', 1), ('notes_sync_cursor:scope-a', 'cursor-a', 1)",
+                [],
+            )
+            .expect("seed cursors");
+        connection
+            .execute(
+                "INSERT INTO notes (account_scope, id, title, markdown, tag_ids, attachment_ids, revision, base_revision, sync_state, conflict_kind, conflict_title, conflict_markdown, conflict_tag_ids, conflict_attachment_ids, conflict_revision, ancestor_title, ancestor_markdown, ancestor_tag_ids, ancestor_attachment_ids, ancestor_revision, deleted, created_at, updated_at) VALUES ('scope-a', 'note-a', 'Title', 'Body', '[]', '[]', 1, 1, 'synced', NULL, NULL, NULL, NULL, NULL, NULL, 'Title', 'Body', '[]', '[]', 1, 0, 1, 2)",
+                [],
+            )
+            .expect("seed note");
+        drop(connection);
+
+        database.initialize().expect("apply v21");
+        let connection = Connection::open(&path).expect("reopen db");
+        let note_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes WHERE id = 'note-a'", [], |row| row.get(0))
+            .expect("count notes");
+        let cursor_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM kv_store WHERE key LIKE 'notes_sync_cursor%'", [], |row| row.get(0))
+            .expect("count cursors");
+        assert_eq!(note_count, 1);
+        assert_eq!(cursor_count, 0);
+        drop(connection);
 
         let _ = fs::remove_file(path);
     }
@@ -1768,7 +2394,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -1784,7 +2410,7 @@ mod tests {
 
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -1800,7 +2426,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (13, 14, 15, 16, 17, 18)",
+                "DELETE FROM schema_migrations WHERE version IN (13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)",
                 [],
             )
             .expect("remove v13 marker");
@@ -1824,7 +2450,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -1866,7 +2492,7 @@ mod tests {
         assert!(settings.auto_accept_file_offers);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -1882,7 +2508,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)",
+                "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)",
                 [],
             )
             .expect("remove v3 marker");
@@ -1917,7 +2543,7 @@ mod tests {
         assert_eq!(devices[0].public_key_updated_at, None);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -1986,7 +2612,7 @@ mod tests {
         assert_eq!(legacy_count, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2002,7 +2628,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)",
+                "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)",
                 [],
             )
             .expect("remove v5 marker");
@@ -2045,7 +2671,7 @@ mod tests {
         assert_eq!(old_table_exists, 0);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2061,7 +2687,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)",
+                "DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)",
                 [],
             )
             .expect("remove v6 marker");
@@ -2099,7 +2725,7 @@ mod tests {
         );
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2163,7 +2789,7 @@ mod tests {
         assert!(!cloud.trusted_by_cloud);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2231,7 +2857,7 @@ mod tests {
         assert!(settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2255,7 +2881,7 @@ mod tests {
         assert!(!settings.clipboard_sync);
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);
@@ -2269,7 +2895,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (17, 18)", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (17, 18, 19, 20, 21, 22, 23)", [])
             .expect("remove v17 and v18 markers");
         connection
             .execute(
@@ -2313,7 +2939,7 @@ mod tests {
 
         let connection = Connection::open(&path).expect("open db");
         connection
-            .execute("DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18)", [])
+            .execute("DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 20, 21, 22, 23)", [])
             .expect("remove v15 marker");
         connection
             .execute(
@@ -2373,7 +2999,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open db");
         connection
             .execute(
-                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18)",
+                "DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)",
                 [],
             )
             .expect("remove v9 marker");
@@ -2408,7 +3034,7 @@ mod tests {
         assert_eq!(devices[0].lan_state, "alive");
         assert_eq!(
             migration_versions(&path),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
         );
 
         let _ = fs::remove_file(path);

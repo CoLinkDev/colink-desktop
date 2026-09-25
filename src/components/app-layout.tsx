@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Computer, FolderOpen, LogIn, LogOut, Settings2, Sun, Moon, Laptop, ArrowUpDown, Save, MonitorPlay, Terminal, Camera } from 'lucide-react'
+import { ArrowUpDown, Camera, Computer, FolderOpen, Laptop, LogIn, LogOut, MonitorPlay, Moon, NotebookPen, Save, Settings2, Sun, Terminal } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -20,22 +20,60 @@ import { Button } from './ui/button'
 export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { cloud, logout, session, theme, setTheme, settingsDirty, terminalSessionActive, headerActions } = useAppState()
+  const {
+    cloud,
+    logout,
+    session,
+    theme,
+    setTheme,
+    settingsDirty,
+    notesDraftDirty,
+    notesDraftBusy,
+    discardNotesDraft,
+    terminalSessionActive,
+    headerActions,
+  } = useAppState()
   const { t } = useTranslation()
 
   const [showThemeModal, setShowThemeModal] = useState(false)
   const [showAuthDialog, setShowAuthDialog] = useState(false)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [discardingNavigation, setDiscardingNavigation] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
   const isSettingsRoute = location.pathname === '/settings'
 
   const terminalRouteActive = terminalSessionActive && location.pathname === '/terminal'
+  const notesRouteBlocked = (notesDraftDirty || notesDraftBusy) && location.pathname === '/notes'
   const blocker = useBlocker(({ nextLocation }) =>
     nextLocation.pathname !== location.pathname && (
-      (settingsDirty && isSettingsRoute) || terminalRouteActive
+      (settingsDirty && isSettingsRoute) || terminalRouteActive || notesRouteBlocked
     )
   )
+
+  async function handleBlockedProceed() {
+    if (!notesRouteBlocked) {
+      blocker.proceed?.()
+      return
+    }
+    setDiscardingNavigation(true)
+    try {
+      if (await discardNotesDraft()) blocker.proceed?.()
+    } finally {
+      setDiscardingNavigation(false)
+    }
+  }
+
+  useEffect(() => {
+    if (
+      blocker.state === 'blocked' &&
+      location.pathname === '/notes' &&
+      !notesDraftDirty &&
+      !notesDraftBusy
+    ) {
+      blocker.proceed()
+    }
+  }, [blocker, location.pathname, notesDraftBusy, notesDraftDirty])
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -113,6 +151,12 @@ export function AppLayout({ children }: PropsWithChildren) {
           description: t('navDesc.camera'),
           icon: Camera,
         }
+      case '/notes':
+        return {
+          title: t('nav.notes'),
+          description: t('navDesc.notes'),
+          icon: NotebookPen,
+        }
       default:
         return {
           title: 'CoLink Desktop',
@@ -142,6 +186,7 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={Computer} label={t('nav.devices')} to="/devices" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={FolderOpen} label={t('nav.files')} to="/files" />
+          <SidebarLink icon={NotebookPen} label={t('nav.notes')} to="/notes" />
           <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
           <SidebarLink icon={Camera} label={t('nav.camera')} to="/camera" />
@@ -249,7 +294,7 @@ export function AppLayout({ children }: PropsWithChildren) {
 
         <main className={cn(
           "flex-1 min-h-0",
-          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal' || location.pathname === '/camera')
+          (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal' || location.pathname === '/camera' || location.pathname === '/notes')
             ? "overflow-hidden"
             : "overflow-y-auto px-8 py-6"
         )}>
@@ -338,23 +383,27 @@ export function AppLayout({ children }: PropsWithChildren) {
       {blocker.state === 'blocked' && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-xl border bg-[hsl(var(--panel))] p-6 shadow-xl animate-scale-in">
-            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">{t(terminalRouteActive ? 'terminal.leaveTitle' : 'settings.unsavedChangesTitle')}</div>
+            <div className="text-[16px] font-semibold text-[hsl(var(--text))] select-none">
+              {t(notesRouteBlocked ? 'notes.discardChangesTitle' : terminalRouteActive ? 'terminal.leaveTitle' : 'settings.unsavedChangesTitle')}
+            </div>
             <p className="mt-2 text-[13px] leading-relaxed text-[hsl(var(--text-secondary))]">
-              {t(terminalRouteActive ? 'terminal.leaveDescription' : 'settings.unsavedChangesDesc')}
+              {t(notesRouteBlocked ? 'notes.discardChangesDescription' : terminalRouteActive ? 'terminal.leaveDescription' : 'settings.unsavedChangesDesc')}
             </p>
 
             <div className="mt-6 flex justify-end gap-2">
               <Button
-                onClick={() => blocker.reset()}
+                disabled={discardingNavigation}
+                onClick={() => blocker.reset?.()}
                 variant="secondary"
               >
                 {t('common.cancel')}
               </Button>
               <Button
-                onClick={() => blocker.proceed()}
+                disabled={discardingNavigation || notesDraftBusy}
+                onClick={() => { void handleBlockedProceed() }}
                 variant="danger"
               >
-                {t(terminalRouteActive ? 'terminal.leave' : 'settings.leave')}
+                {t(notesRouteBlocked ? 'notes.discardChanges' : terminalRouteActive ? 'terminal.leave' : 'settings.leave')}
               </Button>
             </div>
           </div>

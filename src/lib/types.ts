@@ -272,6 +272,97 @@ export interface CameraEntry {
   position?: string | null
 }
 
+export type NoteSyncState = 'synced' | 'pending' | 'pendingDelete' | 'conflict' | 'conflictDelete'
+
+export type NoteConflictKind = 'edit' | 'cloudDeleted' | 'delete'
+
+export interface NoteRecord {
+  id: string
+  title: string
+  markdown: string
+  tagIds: string[]
+  attachmentIds: string[]
+  revision: number
+  baseRevision: number
+  syncState: NoteSyncState
+  conflictKind: NoteConflictKind | null
+  conflictTitle: string | null
+  conflictMarkdown: string | null
+  conflictTagIds: string[] | null
+  conflictAttachmentIds: string[] | null
+  conflictRevision: number | null
+  ancestorTitle: string
+  ancestorMarkdown: string
+  ancestorTagIds: string[]
+  ancestorAttachmentIds: string[]
+  ancestorRevision: number
+  deleted: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteTagRecord {
+  id: string
+  name: string
+  revision: number
+  baseRevision: number
+  syncState: NoteSyncState
+  deleted: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteAttachmentRecord {
+  id: string
+  kind: 'image' | 'file' | string
+  fileName: string
+  mediaType: string
+  size: number
+  sha256: string
+  syncState: NoteSyncState
+  deleted: boolean
+  createdAt: number
+}
+
+export interface NoteUpsertPayload {
+  id?: string
+  title: string
+  markdown: string
+  tagIds: string[]
+  attachmentIds: string[]
+}
+
+export interface ConflictResolutionPayload {
+  noteId: string
+  resolution: 'local' | 'cloud' | 'merged' | 'confirm_delete' | 'cancel_delete'
+  title?: string
+  markdown?: string
+  tagIds?: string[]
+  attachmentIds?: string[]
+}
+
+export interface NotesSyncOutcome {
+  status: 'ok' | 'offline' | 'error'
+  message: string | null
+  pushedNotes: number
+  pushedTags: number
+  pushedAttachments: number
+  pulledNotes: number
+  pulledTags: number
+  conflicts: number
+  repairedReferences: number
+}
+
+export interface NotesStorageInfo {
+  usedBytes: number
+  limitBytes: number
+  remainingBytes: number
+  attachmentBytes: number
+  markdownBytes: number
+  maxAttachmentBytes: number
+  maxMarkdownBytes: number
+}
+
 export const defaultSettings: AppSettings = {
   serverUrl: 'http://127.0.0.1:8080',
   autoStart: isReleaseBuild,

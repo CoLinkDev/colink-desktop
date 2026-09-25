@@ -171,3 +171,76 @@
 .animate-pulse-soft {
   animation: pulse-soft 2s ease-in-out infinite;
 }
+
+@layer components {
+  .rich-editor-toolbar {
+    @apply flex min-h-11 shrink-0 items-center justify-between gap-1 border-b px-3 py-1.5 sm:px-5;
+    background: hsl(var(--panel));
+  }
+
+  .rich-editor-separator {
+    @apply mx-1 h-5 w-px shrink-0;
+    background: hsl(var(--border));
+  }
+
+  .rich-editor-content {
+    @apply mx-auto min-h-full w-full max-w-4xl px-5 py-6 text-[15px] leading-7 outline-none sm:px-8 sm:py-7;
+    color: hsl(var(--text));
+  }
+
+  .rich-editor-content > *:first-child {
+    margin-top: 0;
+  }
+
+  .rich-editor-content h1,
+  .rich-editor-content h2,
+  .rich-editor-content h3 {
+    @apply font-semibold;
+  }
+
+  .rich-editor-content h1 { @apply mb-4 mt-7 text-2xl; }
+  .rich-editor-content h2 { @apply mb-3 mt-6 text-xl; }
+  .rich-editor-content h3 { @apply mb-2 mt-5 text-lg; }
+  .rich-editor-content p { @apply my-2; }
+  .rich-editor-content ul { @apply my-2 list-disc pl-6; }
+  .rich-editor-content ol { @apply my-2 list-decimal pl-6; }
+  .rich-editor-content li { @apply my-1; }
+  .rich-editor-content blockquote {
+    @apply my-3 border-l-2 pl-4;
+    color: hsl(var(--text-secondary));
+  }
+  .rich-editor-content code {
+    @apply rounded px-1.5 py-0.5 text-[0.9em];
+    background: hsl(var(--panel-2));
+  }
+  .rich-editor-content pre {
+    @apply my-4 overflow-x-auto rounded-md p-4;
+    background: hsl(var(--panel-2));
+  }
+  .rich-editor-content pre code { @apply bg-transparent p-0; }
+  .rich-editor-content a {
+    @apply cursor-pointer underline underline-offset-2;
+    color: hsl(var(--accent));
+  }
+  .rich-editor-content ul[data-type='taskList'] { @apply list-none pl-0; }
+  .rich-editor-content ul[data-type='taskList'] li { @apply flex items-start gap-2; }
+  .rich-editor-content ul[data-type='taskList'] li > label { @apply mt-1 shrink-0; }
+  .rich-editor-content ul[data-type='taskList'] li > div { @apply min-w-0 flex-1; }
+  .rich-editor-content p.is-editor-empty:first-child::before {
+    @apply pointer-events-none float-left h-0;
+    color: hsl(var(--muted));
+    content: attr(data-placeholder);
+  }
+
+  .rich-editor-image {
+    @apply my-4 block w-fit max-w-full rounded-md border p-1;
+    background: hsl(var(--panel));
+  }
+  .rich-editor-image[data-selected] { @apply ring-2 ring-[hsl(var(--ring)/0.35)]; }
+  .rich-editor-image img { @apply max-h-[28rem] max-w-full rounded object-contain; }
+  .rich-editor-image-loading { @apply h-40 w-64 max-w-full animate-pulse rounded bg-[hsl(var(--panel-2))]; }
+  .rich-editor-image-fallback {
+    @apply flex h-24 min-w-48 items-center justify-center gap-2 rounded border border-dashed px-4 text-sm;
+    color: hsl(var(--muted));
+  }
+}

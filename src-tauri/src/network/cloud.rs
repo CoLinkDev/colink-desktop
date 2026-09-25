@@ -927,6 +927,13 @@ impl CloudConnectionManager {
             return;
         }
 
+        if let Err(error) = crate::notes::service::release_current_account_data(
+            &self.app,
+            &self.database,
+        ) {
+            error!(%error, "failed to release notes during auth invalidation");
+            return;
+        }
         if let Err(error) = self.database.clear_session() {
             error!(%error, "failed to clear session during auth invalidation");
         }

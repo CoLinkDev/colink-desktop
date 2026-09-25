@@ -15,6 +15,7 @@ mod i18n;
 mod models;
 mod music;
 mod network;
+mod notes;
 mod protocol;
 mod runtime;
 mod runtime_events;
@@ -45,6 +46,11 @@ use commands::{
     get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive,
     close_remote_camera,
     get_pending_share_files, parse_send_args, SYSTEM_SHARE_FILES_EVENT,
+    notes_list, notes_get, notes_upsert, notes_delete, notes_new_id,
+    notes_tags_list, notes_tags_create, notes_tags_rename, notes_tags_delete,
+    notes_attachments_stage, notes_attachments_list, notes_attachments_delete,
+    notes_attachments_resolve_path, notes_attachments_open,
+    notes_sync, notes_resolve_conflict, notes_storage,
 };
 use state::AppState;
 use tauri::{Manager, WindowEvent};
@@ -193,6 +199,23 @@ fn main() {
             send_camera_alive,
             close_remote_camera,
             get_pending_share_files,
+            notes_list,
+            notes_get,
+            notes_upsert,
+            notes_delete,
+            notes_new_id,
+            notes_tags_list,
+            notes_tags_create,
+            notes_tags_rename,
+            notes_tags_delete,
+            notes_attachments_stage,
+            notes_attachments_list,
+            notes_attachments_delete,
+            notes_attachments_resolve_path,
+            notes_attachments_open,
+            notes_sync,
+            notes_resolve_conflict,
+            notes_storage,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CoLink desktop")

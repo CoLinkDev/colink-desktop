@@ -21,7 +21,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/notes-attachments/**",
+          "$DATA/dev.colink.desktop.debug/notes-attachments/**"
+        ]
+      }
     }
   },
   "bundle": {

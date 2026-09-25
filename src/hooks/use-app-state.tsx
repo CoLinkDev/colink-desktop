@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type PropsWithChildren,
   type ReactNode,
@@ -29,6 +30,9 @@ import {
   sendText as sendTextRequest,
   updateDeviceName as updateDeviceNameRequest,
   updateSettings as updateSettingsRequest,
+  notesList as notesListRequest,
+  notesTagsList as notesTagsListRequest,
+  notesSync as notesSyncRequest,
 } from '../lib/api'
 import {
   defaultCloudStatus,
@@ -40,6 +44,9 @@ import {
   type FileTransferRecord,
   type LocalDeviceSummary,
   type LoginPayload,
+  type NoteRecord,
+  type NoteTagRecord,
+  type NotesSyncOutcome,
   type RegisterPayload,
   type SendFilePayload,
   type SendTextPayload,
@@ -60,6 +67,15 @@ interface AppStateValue {
   cloud: CloudStatus
   messages: TextMessageRecord[]
   transfers: FileTransferRecord[]
+  notes: NoteRecord[]
+  notesTags: NoteTagRecord[]
+  notesSyncing: boolean
+  refreshNotes: () => Promise<void>
+  syncNotes: () => Promise<NotesSyncOutcome | null>
+  applyNoteRecord: (record: NoteRecord) => void
+  removeNoteRecord: (noteId: string) => void
+  applyNoteTagRecord: (record: NoteTagRecord) => void
+  removeNoteTagRecord: (tagId: string) => void
   transferSpeeds: Record<string, number>
   theme: 'light' | 'dark' | 'auto'
   setTheme: (theme: 'light' | 'dark' | 'auto') => void
@@ -80,6 +96,12 @@ interface AppStateValue {
   clearTransfers: () => Promise<void>
   settingsDirty: boolean
   setSettingsDirty: (dirty: boolean) => void
+  notesDraftDirty: boolean
+  setNotesDraftDirty: (dirty: boolean) => void
+  notesDraftBusy: boolean
+  setNotesDraftBusy: (busy: boolean) => void
+  registerNotesDiscardHandler: (handler: (() => Promise<boolean>) | null) => void
+  discardNotesDraft: () => Promise<boolean>
   terminalSessionActive: boolean
   setTerminalSessionActive: (active: boolean) => void
   headerActions: ReactNode
@@ -128,6 +150,24 @@ function pruneTransferSpeeds(current: Record<string, number>, transfers: FileTra
   return next
 }
 
+function mergeNoteRecord(current: NoteRecord[], record: NoteRecord) {
+  const next = current.filter((item) => item.id !== record.id)
+  if (!record.deleted && record.syncState !== 'pendingDelete') {
+    next.push(record)
+  }
+  next.sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+  return next
+}
+
+function mergeNoteTagRecord(current: NoteTagRecord[], record: NoteTagRecord) {
+  const next = current.filter((item) => item.id !== record.id)
+  if (!record.deleted && record.syncState !== 'pendingDelete') {
+    next.push(record)
+  }
+  next.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  return next
+}
+
 export function readErrorMessage(error: unknown, fallback = i18n.t('common.requestFailed')) {
   if (typeof error === 'string') {
     return error
@@ -146,6 +186,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<SessionSummary | null>(null)
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [settingsDirty, setSettingsDirty] = useState(false)
+  const [notesDraftDirty, setNotesDraftDirty] = useState(false)
+  const [notesDraftBusy, setNotesDraftBusy] = useState(false)
+  const notesDiscardHandlerRef = useRef<(() => Promise<boolean>) | null>(null)
   const [terminalSessionActive, setTerminalSessionActive] = useState(false)
   const [headerActions, setHeaderActions] = useState<ReactNode>(null)
   const [device, setDevice] = useState<LocalDeviceSummary | null>(null)
@@ -154,6 +197,110 @@ export function AppStateProvider({ children }: PropsWithChildren) {
   const [messages, setMessages] = useState<TextMessageRecord[]>([])
   const [transfers, setTransfers] = useState<FileTransferRecord[]>([])
   const [transferSpeeds, setTransferSpeeds] = useState<Record<string, number>>({})
+  const [notes, setNotes] = useState<NoteRecord[]>([])
+  const [notesTags, setNotesTags] = useState<NoteTagRecord[]>([])
+  const [notesSyncing, setNotesSyncing] = useState(false)
+  const notesSyncingRef = useRef(false)
+  const notesRefreshRef = useRef({ requested: 0, completed: 0, inFlight: null as Promise<void> | null })
+
+  const registerNotesDiscardHandler = useCallback((handler: (() => Promise<boolean>) | null) => {
+    notesDiscardHandlerRef.current = handler
+  }, [])
+
+  const discardNotesDraft = useCallback(async () => {
+    return notesDiscardHandlerRef.current ? notesDiscardHandlerRef.current() : true
+  }, [])
+
+  const refreshNotes = useCallback((): Promise<void> => {
+    const refresh = notesRefreshRef.current
+    refresh.requested += 1
+    if (!refresh.inFlight) {
+      refresh.inFlight = (async () => {
+        while (refresh.completed < refresh.requested) {
+          const version = refresh.requested
+          try {
+            const [nextNotes, nextTags] = await Promise.all([notesListRequest(), notesTagsListRequest()])
+            if (version === refresh.requested) {
+              setNotes(nextNotes)
+              setNotesTags(nextTags)
+            }
+          } catch (error) {
+            console.error('Failed to refresh notes', error)
+          } finally {
+            refresh.completed = version
+          }
+        }
+      })().finally(() => {
+        refresh.inFlight = null
+      })
+    }
+    return refresh.inFlight
+  }, [])
+
+  const applyNoteRecord = useCallback((record: NoteRecord) => {
+    setNotes((current) => mergeNoteRecord(current, record))
+  }, [])
+
+  const removeNoteRecord = useCallback((noteId: string) => {
+    setNotes((current) => current.filter((record) => record.id !== noteId))
+  }, [])
+
+  const applyNoteTagRecord = useCallback((record: NoteTagRecord) => {
+    setNotesTags((current) => mergeNoteTagRecord(current, record))
+  }, [])
+
+  const removeNoteTagRecord = useCallback((tagId: string) => {
+    setNotesTags((current) => current.filter((record) => record.id !== tagId))
+    setNotes((current) => current.map((record) => (
+      record.tagIds.includes(tagId)
+        ? { ...record, tagIds: record.tagIds.filter((id) => id !== tagId) }
+        : record
+    )))
+  }, [])
+
+  const syncNotes = useCallback(async () => {
+    if (notesSyncingRef.current) {
+      return null
+    }
+    notesSyncingRef.current = true
+    setNotesSyncing(true)
+    try {
+      const outcome = await notesSyncRequest()
+      await refreshNotes()
+      return outcome
+    } catch (error) {
+      console.error('Failed to sync notes', error)
+      return null
+    } finally {
+      notesSyncingRef.current = false
+      setNotesSyncing(false)
+    }
+  }, [refreshNotes])
+
+  useEffect(() => {
+    void refreshNotes()
+  }, [refreshNotes, session?.userId])
+
+  // Sync after the cloud connection is restored and periodically.
+  useEffect(() => {
+    if (cloud.state === 'connected' && session) {
+      void syncNotes()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloud.state, session?.userId])
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => {
+        if (session) {
+          void syncNotes()
+        }
+      },
+      5 * 60 * 1000,
+    )
+    return () => window.clearInterval(timer)
+  }, [session?.userId, syncNotes])
+
 
   const [theme, setThemeState] = useState<'light' | 'dark' | 'auto'>(() => {
     const saved = localStorage.getItem('colink-theme')
@@ -267,6 +414,7 @@ export function AppStateProvider({ children }: PropsWithChildren) {
     let unlistenMessages: (() => void) | null = null
     let unlistenTransfers: (() => void) | null = null
     let unlistenTransferProgress: (() => void) | null = null
+    let unlistenNotes: (() => void) | null = null
 
     void (async () => {
       try {
@@ -314,6 +462,12 @@ export function AppStateProvider({ children }: PropsWithChildren) {
           }
         })
 
+        unlistenNotes = await listen('notes-updated', () => {
+          if (!disposed) {
+            void refreshNotes()
+          }
+        })
+
       } catch {
         // Ignore browser-mode event failures. The desktop runtime provides these events.
       }
@@ -327,8 +481,9 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       unlistenMessages?.()
       unlistenTransfers?.()
       unlistenTransferProgress?.()
+      unlistenNotes?.()
     }
-  }, [refreshBootstrap])
+  }, [refreshBootstrap, refreshNotes])
 
   const login = useCallback(
     async (payload: LoginPayload) => {
@@ -420,6 +575,15 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       cloud,
       messages,
       transfers,
+      notes,
+      notesTags,
+      notesSyncing,
+      refreshNotes,
+      syncNotes,
+      applyNoteRecord,
+      removeNoteRecord,
+      applyNoteTagRecord,
+      removeNoteTagRecord,
       transferSpeeds,
       theme,
       setTheme,
@@ -440,6 +604,12 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      notesDraftDirty,
+      setNotesDraftDirty,
+      notesDraftBusy,
+      setNotesDraftBusy,
+      registerNotesDiscardHandler,
+      discardNotesDraft,
       terminalSessionActive,
       setTerminalSessionActive,
       headerActions,
@@ -475,6 +645,19 @@ export function AppStateProvider({ children }: PropsWithChildren) {
       clearTransfers,
       settingsDirty,
       setSettingsDirty,
+      notesDraftDirty,
+      notesDraftBusy,
+      notes,
+      notesTags,
+      notesSyncing,
+      refreshNotes,
+      syncNotes,
+      applyNoteRecord,
+      removeNoteRecord,
+      applyNoteTagRecord,
+      removeNoteTagRecord,
+      registerNotesDiscardHandler,
+      discardNotesDraft,
       terminalSessionActive,
       headerActions,
     ],

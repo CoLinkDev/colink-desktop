@@ -596,6 +596,7 @@ fn absolute_url(base_url: &str, value: &str) -> AppResult<String> {
 
 fn clear_auth_state(state: &AppState) -> AppResult<()> {
     state.cloud.stop_quiet();
+    crate::notes::service::release_current_account_data(&state.app, &state.database)?;
     state.database.clear_session()?;
     state.database.clear_cached_devices()?;
     state.database.clear_cloud_trust()?;
@@ -624,6 +625,8 @@ async fn save_session_and_bootstrap(
 
     let identity = ensure_cloud_device_identity(state, &session).await?;
     state.database.save_session(&session)?;
+    let notes_scope = crate::store::notes::account_notes_scope(&settings, &session);
+    crate::notes::service::claim_local_data(state, &notes_scope)?;
     let devices = fetch_devices(state, &session).await?;
     let devices = state.runtime.replace_cached_devices(devices, true)?;
     state.cloud.start();
