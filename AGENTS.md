@@ -51,3 +51,8 @@ Release tags MUST be annotated tags (`git tag -a v1.25.0 -m "Release v1.25.0"`),
 ## Version Management
 
 Git tag is the version source of truth. CI rewrites version fields in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` from the tag during release builds. Do not manually update these for releases.
+
+# Error Prompts & Fallback Specifications
+
+- **No raw error leakage**: Do not expose raw backend English messages, HTTP status codes (e.g. 404/500), or raw system network errors to end users. All user-facing errors must be localized via `i18n.ts`. For uncovered unknown errors, use a friendly generic message (e.g. "Request failed. Please try again later.") as the fallback.
+- **Unified prompt style**: For regular operation failures, select the prompt type based on the corresponding UI logic. Toast notifications in the upper-right corner are commonly used.
