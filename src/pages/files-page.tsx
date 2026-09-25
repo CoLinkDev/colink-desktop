@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { LucideIcon } from 'lucide-react'
@@ -29,6 +28,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '../components/ui/button'
+import { DeviceSidebar, useTargetDevices } from '../components/device-sidebar'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import {
   downloadRemoteFilesystemFile,
@@ -54,8 +54,16 @@ const REMOTE_FILESYSTEM_UNSUPPORTED_ERROR = 'colink:filesystem.unsupported.v1'
 
 export function FilesPage() {
   const { t } = useTranslation()
-  const { devices, device, transfers, setHeaderActions, pickFiles, cancelTransfer } = useAppState()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const { transfers, setHeaderActions, pickFiles, cancelTransfer } = useAppState()
+  const {
+    devices: targetDevices,
+    selectedDeviceId,
+    selectedDevice,
+    selectDevice,
+  } = useTargetDevices({
+    onlineOnly: true,
+    autoSelectFirst: false,
+  })
   const [roots, setRoots] = useState<RemoteFilesystemRoot[]>([])
   const [entries, setEntries] = useState<RemoteFilesystemEntry[]>([])
   const [currentPath, setCurrentPath] = useState<string | null>(null)
@@ -69,19 +77,6 @@ export function FilesPage() {
   const [uploads, setUploads] = useState<RemoteFilesystemUpload[]>([])
   const generationRef = useRef(0)
   const refreshedUploadSessionIds = useRef(new Set<string>())
-
-  const targetDevices = useMemo(
-    () => devices.filter((item) => item.deviceId !== device?.deviceId && item.online),
-    [device?.deviceId, devices],
-  )
-  const selectedDeviceId = useMemo(() => {
-    const requestedDeviceId = searchParams.get('deviceId')
-    if (requestedDeviceId && targetDevices.some((item) => item.deviceId === requestedDeviceId)) {
-      return requestedDeviceId
-    }
-    return targetDevices[0]?.deviceId ?? ''
-  }, [searchParams, targetDevices])
-  const selectedDevice = targetDevices.find((item) => item.deviceId === selectedDeviceId) ?? null
   const selectedDeviceKey = selectedDevice?.deviceId ?? null
 
   const loadRoots = useCallback(async () => {
@@ -355,10 +350,6 @@ export function FilesPage() {
     return () => setHeaderActions(null)
   }, [currentPath, loading, loadingMore, refresh, requestUpload, selectedDevice, setHeaderActions, t, unsupported])
 
-  function selectDevice(deviceId: string) {
-    setSearchParams({ deviceId })
-  }
-
   function navigateUp() {
     const parent = currentPath ? remoteParent(currentPath) : null
     if (parent) {
@@ -370,40 +361,13 @@ export function FilesPage() {
 
   return (
     <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden animate-fade-in">
-      <aside className="h-full overflow-y-auto border-r py-6 pl-8 pr-4 scrollbar-thin">
-        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">
-          {t('files.sidebarTitle')}
-        </div>
-        {targetDevices.length === 0 ? (
-          <div className="px-1 py-8 text-center text-[13px] text-[hsl(var(--muted))]">
-            {t('files.emptyDevices')}
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {targetDevices.map((item) => (
-              <button
-                className={cn(
-                  'w-full rounded-lg border px-3 py-2.5 text-left transition-all',
-                  item.deviceId === selectedDeviceId
-                    ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm'
-                    : 'border-transparent hover:bg-[hsl(var(--panel-2)/0.5)]',
-                )}
-                key={item.deviceId}
-                onClick={() => selectDevice(item.deviceId)}
-                type="button"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
-                </div>
-                <div className="mt-1 truncate text-[11px] text-[hsl(var(--muted))]">
-                  {formatPlatformName(item.type, t)}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </aside>
+      <DeviceSidebar
+        devices={targetDevices}
+        emptyText={t('files.emptyDevices')}
+        onSelectDevice={selectDevice}
+        selectedDeviceId={selectedDeviceId}
+        title={t('files.sidebarTitle')}
+      />
 
       <div className="min-w-0 h-full overflow-y-auto px-8 py-6 scrollbar-thin">
         {!selectedDevice ? (

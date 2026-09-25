@@ -1,16 +1,16 @@
 import { listen } from '@tauri-apps/api/event'
 import { ArrowUpDown, HardDriveUpload, Paperclip, Send } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { FileOfferBubble, TransferBubbleCard } from '../components/transfer-bubble'
 import { TransferDetailDialog } from '../components/transfer-detail-dialog'
+import { DeviceSidebar, useTargetDevices } from '../components/device-sidebar'
 import { Button } from '../components/ui/button'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 import { openReceivedFile, pendingFileOffers, respondFileOffer, revealReceivedFile } from '../lib/api'
-import { cn, formatPlatformName, formatTimestamp } from '../lib/utils'
+import { cn, formatTimestamp } from '../lib/utils'
 import type { FileOfferRequest, FileTransferRecord, TextMessageRecord, TransferPreparingPayload } from '../lib/types'
 
 const TRANSFER_PREPARING_EVENT = 'transfer-preparing'
@@ -27,9 +27,7 @@ type TimelineItem =
 
 export function TransfersPage() {
   const { t, i18n } = useTranslation()
-  const [searchParams, setSearchParams] = useSearchParams()
   const {
-    device,
     devices,
     messages,
     transfers,
@@ -40,6 +38,15 @@ export function TransfersPage() {
     sendFiles,
     cancelTransfer,
   } = useAppState()
+  const {
+    devices: targetDevices,
+    selectedDeviceId,
+    selectedDevice,
+    selectDevice,
+  } = useTargetDevices({
+    sort: 'online-first',
+    autoSelectFirst: true,
+  })
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,19 +57,6 @@ export function TransfersPage() {
   const [actingOfferId, setActingOfferId] = useState<string | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const selectedDeviceIdRef = useRef('')
-
-  const targetDevices = useMemo(
-    () => devices
-      .filter((item) => item.deviceId !== device?.deviceId)
-      .sort((left, right) => left.online === right.online ? 0 : left.online ? -1 : 1),
-    [device?.deviceId, devices],
-  )
-  const selectedDeviceId = useMemo(() => {
-    const requested = searchParams.get('deviceId')
-    if (requested && targetDevices.some((item) => item.deviceId === requested)) return requested
-    return targetDevices[0]?.deviceId ?? ''
-  }, [searchParams, targetDevices])
-  const selectedDevice = targetDevices.find((item) => item.deviceId === selectedDeviceId) ?? null
 
   useEffect(() => {
     selectedDeviceIdRef.current = selectedDeviceId
@@ -232,34 +226,13 @@ export function TransfersPage() {
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)] animate-fade-in overflow-hidden">
-      <aside className="h-full overflow-y-auto border-r py-6 pl-8 pr-4 scrollbar-thin">
-        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">{t('transfers.sidebarTitle')}</div>
-        {targetDevices.length === 0 ? (
-          <div className="px-1 py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('transfers.emptyDevices')}</div>
-        ) : (
-          <div className="space-y-1">
-            {targetDevices.map((item) => (
-              <button
-                className={cn(
-                  'w-full rounded-lg border px-3 py-2.5 text-left transition-all',
-                  item.deviceId === selectedDeviceId
-                    ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm'
-                    : 'border-transparent hover:bg-[hsl(var(--panel-2)/0.5)]',
-                )}
-                key={item.deviceId}
-                onClick={() => setSearchParams({ deviceId: item.deviceId })}
-                type="button"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
-                </div>
-                <div className="mt-1 truncate text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type, t)}</div>
-              </button>
-            ))}
-          </div>
-        )}
-      </aside>
+      <DeviceSidebar
+        devices={targetDevices}
+        emptyText={t('transfers.emptyDevices')}
+        onSelectDevice={selectDevice}
+        selectedDeviceId={selectedDeviceId}
+        title={t('transfers.sidebarTitle')}
+      />
 
       <section className="flex min-h-0 flex-col gap-3 py-5 px-8">
         <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-[hsl(var(--panel))]">
