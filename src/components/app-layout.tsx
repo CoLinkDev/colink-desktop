@@ -295,8 +295,8 @@ export function AppLayout({ children }: PropsWithChildren) {
           </div>
         </header>
 
-        <main className={cn(
-          "flex-1 min-h-0",
+        <main key={location.pathname} className={cn(
+          "flex-1 min-h-0 animate-page-enter",
           (location.pathname === '/messages' || location.pathname === '/transfers' || location.pathname === '/files' || location.pathname === '/terminal' || location.pathname === '/camera' || location.pathname === '/notes')
             ? "overflow-hidden"
             : "overflow-y-auto px-8 py-6"

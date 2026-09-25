@@ -248,7 +248,7 @@ export function DevicesPage() {
   }
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-5">
       {viewMode === 'list' && (
         <div className="flex items-center gap-3">
           <div className="relative min-w-0 max-w-sm flex-1">

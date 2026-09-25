@@ -360,7 +360,7 @@ export function FilesPage() {
   }
 
   return (
-    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden animate-fade-in">
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden">
       <DeviceSidebar
         devices={targetDevices}
         emptyText={t('files.emptyDevices')}

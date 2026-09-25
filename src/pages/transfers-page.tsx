@@ -225,7 +225,7 @@ export function TransfersPage() {
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)] animate-fade-in overflow-hidden">
+    <div className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)] overflow-hidden">
       <DeviceSidebar
         devices={targetDevices}
         emptyText={t('transfers.emptyDevices')}

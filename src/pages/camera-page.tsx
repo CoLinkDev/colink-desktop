@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { useSearchParams } from 'react-router-dom'
 import { Camera, LoaderCircle, RefreshCw, Square, Video } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { useAppState } from '../hooks/use-app-state'
+import { DeviceSidebar, useTargetDevices } from '../components/device-sidebar'
 import { closeRemoteCamera, getRemoteCameraSupport, listRemoteCameras, openRemoteCamera, sendCameraAlive } from '../lib/api'
 import { isReleaseBuild } from '../lib/app-meta'
 import type { CameraEntry, RemoteCameraSupport } from '../lib/types'
@@ -143,8 +142,15 @@ function annexBNalTypes(bytes: Uint8Array) {
 
 export function CameraPage() {
   const { t } = useTranslation()
-  const { devices, device } = useAppState()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const {
+    devices: cameraDevices,
+    selectedDeviceId,
+    selectedDevice,
+    selectDevice,
+  } = useTargetDevices({
+    onlineOnly: true,
+    autoSelectFirst: false,
+  })
 
   const [supportState, setSupportState] = useState<{ deviceId: string; value: RemoteCameraSupport } | null>(null)
   const [cameras, setCameras] = useState<CameraEntry[]>([])
@@ -164,25 +170,7 @@ export function CameraPage() {
   const renderAnimationRef = useRef<number | null>(null)
   const debugCountersRef = useRef(newCameraDebugCounters())
 
-  const cameraDevices = useMemo(
-    () => devices.filter((item) => item.deviceId !== device?.deviceId && item.online),
-    [device?.deviceId, devices],
-  )
-
-  const selectedDeviceId = useMemo(() => {
-    const requestedDeviceId = searchParams.get('deviceId')
-    if (requestedDeviceId && cameraDevices.some((item) => item.deviceId === requestedDeviceId)) {
-      return requestedDeviceId
-    }
-    return cameraDevices[0]?.deviceId ?? ''
-  }, [searchParams, cameraDevices])
-
-  const selectedDevice = cameraDevices.find((item) => item.deviceId === selectedDeviceId) ?? null
   const support = supportState?.deviceId === selectedDeviceId ? supportState.value : 'loading'
-
-  function selectDevice(deviceId: string) {
-    setSearchParams({ deviceId })
-  }
 
   const closeStream = useCallback(() => {
     const currentSession = sessionRef.current
@@ -630,37 +618,14 @@ export function CameraPage() {
   }
 
   return (
-    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden animate-fade-in">
-      <aside className="h-full overflow-y-auto border-r py-6 pl-8 pr-4 scrollbar-thin">
-        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">
-          {t('camera.sidebarTitle')}
-        </div>
-        {cameraDevices.length === 0 ? (
-          <div className="px-1 py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('camera.emptyDevices')}</div>
-        ) : (
-          <div className="space-y-1">
-            {cameraDevices.map((item) => (
-              <button
-                className={cn(
-                  'w-full rounded-lg border px-3 py-2.5 text-left transition-all',
-                  item.deviceId === selectedDeviceId
-                    ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm'
-                    : 'border-transparent hover:bg-[hsl(var(--panel-2)/0.5)]',
-                )}
-                key={item.deviceId}
-                onClick={() => selectDevice(item.deviceId)}
-                type="button"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
-                </div>
-                <div className="mt-1 truncate text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type, t)}</div>
-              </button>
-            ))}
-          </div>
-        )}
-      </aside>
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden">
+      <DeviceSidebar
+        devices={cameraDevices}
+        emptyText={t('camera.emptyDevices')}
+        onSelectDevice={selectDevice}
+        selectedDeviceId={selectedDeviceId}
+        title={t('camera.sidebarTitle')}
+      />
 
       <main className="min-w-0 h-full overflow-y-auto px-8 py-6 scrollbar-thin">
         {!selectedDevice ? (

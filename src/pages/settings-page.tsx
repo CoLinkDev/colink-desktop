@@ -219,7 +219,7 @@ function SettingsForm({ settings, onSave, onPickDownloadDirectory }: SettingsFor
   }
 
   return (
-    <div className="max-w-2xl animate-fade-in space-y-6">
+    <div className="max-w-2xl space-y-6">
       <UpdateDialog
         update={availableUpdate}
         required={requiredUpdate}

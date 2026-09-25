@@ -1,16 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { useSearchParams } from 'react-router-dom'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { LoaderCircle, Terminal as TerminalIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { DeviceSidebar, useTargetDevices } from '../components/device-sidebar'
 import { useAppState } from '../hooks/use-app-state'
 import { closeTerminal, getRemoteTerminalSupport, openTerminal, resizeTerminal, writeTerminal } from '../lib/api'
 import type { RemoteTerminalSupport } from '../lib/types'
-import { cn, formatPlatformName } from '../lib/utils'
+import { formatPlatformName } from '../lib/utils'
 
 interface TerminalEvent {
   sessionId: string
@@ -26,8 +26,17 @@ interface ActiveSession {
 
 export function TerminalPage() {
   const { t } = useTranslation()
-  const { devices, device, setTerminalSessionActive } = useAppState()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const { setTerminalSessionActive } = useAppState()
+  const {
+    devices: terminalDevices,
+    selectedDeviceId,
+    selectedDevice,
+    selectDevice,
+  } = useTargetDevices({
+    onlineOnly: true,
+    allowedTypes: ['windows', 'macos', 'linux'],
+    autoSelectFirst: false,
+  })
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -39,25 +48,9 @@ export function TerminalPage() {
   const [terminalVersion, setTerminalVersion] = useState(0)
   const [supportState, setSupportState] = useState<{ deviceId: string; value: RemoteTerminalSupport } | null>(null)
 
-  const terminalDevices = useMemo(
-    () => devices.filter((item) => item.deviceId !== device?.deviceId && item.online && ['windows', 'macos', 'linux'].includes(item.type)),
-    [device?.deviceId, devices],
-  )
-  const selectedDeviceId = useMemo(() => {
-    const requestedDeviceId = searchParams.get('deviceId')
-    if (requestedDeviceId && terminalDevices.some((item) => item.deviceId === requestedDeviceId)) {
-      return requestedDeviceId
-    }
-    return terminalDevices[0]?.deviceId ?? ''
-  }, [searchParams, terminalDevices])
-  const selectedDevice = terminalDevices.find((item) => item.deviceId === selectedDeviceId) ?? null
   const connecting = connectingDeviceId === selectedDeviceId
   const connected = connectedDeviceId === selectedDeviceId
   const support = supportState?.deviceId === selectedDeviceId ? supportState.value : 'loading'
-
-  function selectDevice(deviceId: string) {
-    setSearchParams({ deviceId })
-  }
 
   const closeActiveTerminal = useCallback(() => {
     const activeSession = activeSessionRef.current
@@ -196,37 +189,14 @@ export function TerminalPage() {
   }, [connect, selectedDeviceId, support])
 
   return (
-    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden animate-fade-in">
-      <aside className="h-full overflow-y-auto border-r py-6 pl-8 pr-4 scrollbar-thin">
-        <div className="px-1 pb-2 text-[11px] font-medium uppercase tracking-widest text-[hsl(var(--muted))]">
-          {t('terminal.sidebarTitle')}
-        </div>
-        {terminalDevices.length === 0 ? (
-          <div className="px-1 py-8 text-center text-[13px] text-[hsl(var(--muted))]">{t('terminal.emptyDevices')}</div>
-        ) : (
-          <div className="space-y-1">
-            {terminalDevices.map((item) => (
-              <button
-                className={cn(
-                  'w-full rounded-lg border px-3 py-2.5 text-left transition-all',
-                  item.deviceId === selectedDeviceId
-                    ? 'border-[hsl(var(--text)/0.25)] bg-[hsl(var(--panel))] shadow-sm'
-                    : 'border-transparent hover:bg-[hsl(var(--panel-2)/0.5)]',
-                )}
-                key={item.deviceId}
-                onClick={() => selectDevice(item.deviceId)}
-                type="button"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium text-[hsl(var(--text))]">{item.name}</span>
-                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', item.online ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--muted))]')} />
-                </div>
-                <div className="mt-1 truncate text-[11px] text-[hsl(var(--muted))]">{formatPlatformName(item.type, t)}</div>
-              </button>
-            ))}
-          </div>
-        )}
-      </aside>
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden">
+      <DeviceSidebar
+        devices={terminalDevices}
+        emptyText={t('terminal.emptyDevices')}
+        onSelectDevice={selectDevice}
+        selectedDeviceId={selectedDeviceId}
+        title={t('terminal.sidebarTitle')}
+      />
 
       <main className="min-w-0 h-full overflow-y-auto px-8 py-6 scrollbar-thin">
         {!selectedDevice ? (
