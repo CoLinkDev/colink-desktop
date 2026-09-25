@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { ArrowUpDown, Camera, Computer, FolderOpen, Laptop, LogIn, LogOut, MonitorPlay, Moon, NotebookPen, Save, Settings2, Sun, Terminal } from 'lucide-react'
+import { ArrowUpDown, Camera, Cast, Computer, FolderOpen, Laptop, LogIn, LogOut, Moon, Save, Settings2, SquarePen, Sun, Terminal } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { PropsWithChildren } from 'react'
 import { useEffect, useState } from 'react'
@@ -137,7 +137,7 @@ export function AppLayout({ children }: PropsWithChildren) {
         return {
           title: t('nav.castboard'),
           description: t('navDesc.castboard'),
-          icon: MonitorPlay,
+          icon: Cast,
         }
       case '/terminal':
         return {
@@ -155,7 +155,7 @@ export function AppLayout({ children }: PropsWithChildren) {
         return {
           title: t('nav.notes'),
           description: t('navDesc.notes'),
-          icon: NotebookPen,
+          icon: SquarePen,
         }
       default:
         return {
@@ -186,8 +186,8 @@ export function AppLayout({ children }: PropsWithChildren) {
           <SidebarLink icon={Computer} label={t('nav.devices')} to="/devices" />
           <SidebarLink icon={ArrowUpDown} label={t('nav.transfers')} to="/transfers" />
           <SidebarLink icon={FolderOpen} label={t('nav.files')} to="/files" />
-          <SidebarLink icon={NotebookPen} label={t('nav.notes')} to="/notes" />
-          <SidebarLink icon={MonitorPlay} label={t('nav.castboard')} to="/castboard" />
+          <SidebarLink icon={SquarePen} label={t('nav.notes')} to="/notes" />
+          <SidebarLink icon={Cast} label={t('nav.castboard')} to="/castboard" />
           <SidebarLink icon={Terminal} label={t('nav.terminal')} to="/terminal" />
           <SidebarLink icon={Camera} label={t('nav.camera')} to="/camera" />
           <SidebarLink icon={Settings2} label={t('nav.settings')} to="/settings" />
