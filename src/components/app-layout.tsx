@@ -218,7 +218,7 @@ export function AppLayout({ children }: PropsWithChildren) {
               className="flex items-center justify-between gap-2"
               title={lanHealthy ? t('devices.online') : t('devices.offline')}
             >
-              <span className="min-w-0 truncate text-[12px] font-medium text-[hsl(var(--text))]">
+              <span className="min-w-0 truncate text-[12px] font-medium text-[hsl(var(--muted))]">
                 {t('devices.lan')}
               </span>
               <span
@@ -239,7 +239,7 @@ export function AppLayout({ children }: PropsWithChildren) {
               }
             >
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="shrink-0 text-[12px] font-medium text-[hsl(var(--text))]">
+                <span className="shrink-0 text-[12px] font-medium text-[hsl(var(--muted))]">
                   {t('devices.cloud')}
                 </span>
                 {session && (
