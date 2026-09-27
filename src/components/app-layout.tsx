@@ -21,6 +21,7 @@ export function AppLayout({ children }: PropsWithChildren) {
   const navigate = useNavigate()
   const location = useLocation()
   const {
+    bootstrapError,
     cloud,
     logout,
     session,
@@ -34,6 +35,21 @@ export function AppLayout({ children }: PropsWithChildren) {
     headerActions,
   } = useAppState()
   const { t } = useTranslation()
+
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true)
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  const lanHealthy = isOnline && !bootstrapError
 
   const [showThemeModal, setShowThemeModal] = useState(false)
   const [showAuthDialog, setShowAuthDialog] = useState(false)
@@ -196,23 +212,51 @@ export function AppLayout({ children }: PropsWithChildren) {
         {/* Bottom area */}
         <div className="mt-auto border-t p-3 space-y-2">
           {/* Connection Status Widget */}
-          <div
-            className="rounded-lg bg-[hsl(var(--panel-2))] border px-3 py-2 select-none"
-            title={getCloudLabel(cloud.state, cloud.attempt, t)}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[hsl(var(--muted))]">
-                {session ? session.username || session.userId : t('devices.lan')}
+          <div className="rounded-lg bg-[hsl(var(--panel-2))] border px-3 py-2 select-none space-y-1.5">
+            {/* 上一栏：局域网 */}
+            <div
+              className="flex items-center justify-between gap-2"
+              title={lanHealthy ? t('devices.online') : t('devices.offline')}
+            >
+              <span className="min-w-0 truncate text-[12px] font-medium text-[hsl(var(--text))]">
+                {t('devices.lan')}
               </span>
-              <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[hsl(var(--muted))]">
-                <span
-                  className={cn(
-                    "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
-                    cloud.connected ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
-                  )}
-                />
-                {getCloudLabel(cloud.state, cloud.attempt, t)}
-              </span>
+              <span
+                className={cn(
+                  "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                  lanHealthy ? "bg-[hsl(var(--success))]" : "bg-[hsl(var(--danger))]"
+                )}
+              />
+            </div>
+
+            {/* 下一栏：云端 */}
+            <div
+              className="flex items-center justify-between gap-2"
+              title={
+                !session
+                  ? t('cloud.notLoggedIn')
+                  : `${session.username || session.userId} (${getCloudLabel(cloud.state, cloud.attempt, t)})`
+              }
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="shrink-0 text-[12px] font-medium text-[hsl(var(--text))]">
+                  {t('devices.cloud')}
+                </span>
+                {session && (
+                  <span
+                    className="min-w-0 truncate text-[11px] text-[hsl(var(--muted))]"
+                    title={session.username || session.userId}
+                  >
+                    ({session.username || session.userId})
+                  </span>
+                )}
+              </div>
+              <span
+                className={cn(
+                  "inline-flex h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                  getCloudDotClass(session, cloud)
+                )}
+              />
             </div>
           </div>
 
@@ -452,6 +496,19 @@ function ThemeOption({
   )
 }
 
+
+function getCloudDotClass(session: unknown, cloud: { connected: boolean; state: string }): string {
+  if (!session) {
+    return 'bg-[hsl(var(--muted))]'
+  }
+  if (cloud.connected) {
+    return 'bg-[hsl(var(--success))]'
+  }
+  if (cloud.state === 'connecting' || cloud.state === 'reconnecting') {
+    return 'bg-[hsl(var(--warning))]'
+  }
+  return 'bg-[hsl(var(--danger))]'
+}
 
 function getCloudLabel(state: string, attempt: number, t: TFunction) {
   if (state === 'connected') {

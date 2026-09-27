@@ -240,6 +240,7 @@ const resources = {
         connecting: '连接中',
         reconnecting: '重连中 #{{attempt}}',
         disconnected: '未连接',
+        notLoggedIn: '未登录',
       },
       devices: {
         title: '设备',
@@ -794,6 +795,7 @@ const resources = {
         connecting: 'Connecting',
         reconnecting: 'Reconnecting #{{attempt}}',
         disconnected: 'Disconnected',
+        notLoggedIn: 'Not logged in',
       },
       devices: {
         title: 'Devices',
@@ -1348,6 +1350,7 @@ const resources = {
         connecting: '連接中',
         reconnecting: '重連中 #{{attempt}}',
         disconnected: '未連接',
+        notLoggedIn: '未登入',
       },
       devices: {
         title: '設備',
@@ -1902,6 +1905,7 @@ const resources = {
         connecting: '接続中',
         reconnecting: '再接続中 #{{attempt}}',
         disconnected: '未接続',
+        notLoggedIn: '未ログイン',
       },
       devices: {
         title: 'デバイス',
@@ -2456,6 +2460,7 @@ const resources = {
         connecting: '연결 중',
         reconnecting: '재연결 중 #{{attempt}}',
         disconnected: '연결 끊김',
+        notLoggedIn: '로그인되지 않음',
       },
       devices: {
         title: '디바이스',
@@ -3010,6 +3015,7 @@ const resources = {
         connecting: 'Conectando',
         reconnecting: 'Reconectando #{{attempt}}',
         disconnected: 'Desconectado',
+        notLoggedIn: 'No iniciado',
       },
       devices: {
         title: 'Dispositivos',
@@ -3564,6 +3570,7 @@ const resources = {
         connecting: 'Verbinden...',
         reconnecting: 'Verbindung wird wiederhergestellt #{{attempt}}',
         disconnected: 'Nicht verbunden',
+        notLoggedIn: 'Nicht angemeldet',
       },
       devices: {
         title: 'Geräte',
@@ -4118,6 +4125,7 @@ const resources = {
         connecting: 'Подключение...',
         reconnecting: 'Повторное подключение #{{attempt}}',
         disconnected: 'Не подключено',
+        notLoggedIn: 'Не выполнен вход',
       },
       devices: {
         title: 'Устройства',
