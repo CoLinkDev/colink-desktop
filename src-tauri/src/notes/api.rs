@@ -22,6 +22,7 @@ pub(crate) const CODE_NOTE_STORAGE_LIMIT_REACHED: i32 = 6007;
 pub(crate) const CODE_INVALID_NOTE_REFERENCE: i32 = 6008;
 pub(crate) const CODE_SYNC_CURSOR_EXPIRED: i32 = 6009;
 pub(crate) const CODE_ATTACHMENT_ID_UNAVAILABLE: i32 = 6011;
+pub(crate) const CODE_NOTE_ID_UNAVAILABLE: i32 = 6012;
 
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 

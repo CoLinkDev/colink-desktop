@@ -343,7 +343,6 @@ export interface ConflictResolutionPayload {
 
 export interface NotesSyncOutcome {
   status: 'ok' | 'offline' | 'unsupported' | 'storage_full' | 'error'
-  message: string | null
   pushedNotes: number
   pushedTags: number
   pushedAttachments: number

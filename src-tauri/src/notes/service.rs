@@ -16,8 +16,9 @@ use crate::notes::api::{
     sha256_hex, AttachmentDto, ChangesDto, CreateNoteRequest, NoteDeleteDto, NoteDto,
     NotesHttpClient, SnapshotDto, StorageDto, TagDeleteDto, TagDto, TagListDto,
     UpdateNoteRequest, CODE_ATTACHMENT_ID_UNAVAILABLE, CODE_ATTACHMENT_NOT_FOUND,
-    CODE_INVALID_NOTE_REFERENCE, CODE_NOTE_NOT_FOUND, CODE_NOTE_STORAGE_LIMIT_REACHED,
-    CODE_REVISION_CONFLICT, CODE_SYNC_CURSOR_EXPIRED, CODE_TAG_NOT_FOUND,
+    CODE_INVALID_NOTE_REFERENCE, CODE_NOTE_ID_UNAVAILABLE, CODE_NOTE_NOT_FOUND,
+    CODE_NOTE_STORAGE_LIMIT_REACHED, CODE_REVISION_CONFLICT, CODE_SYNC_CURSOR_EXPIRED,
+    CODE_TAG_NOT_FOUND,
     NOTE_ATTACHMENTS_PATH, NOTES_CHANGES_PATH, NOTES_PATH, NOTES_SNAPSHOT_PATH,
     NOTES_STORAGE_PATH, NOTE_TAGS_PATH,
 };
@@ -47,7 +48,6 @@ const CODE_ATTACHMENT_IN_USE: i32 = 6006;
 #[serde(rename_all = "camelCase")]
 pub struct NotesSyncOutcome {
     pub status: String,
-    pub message: Option<String>,
     pub pushed_notes: u32,
     pub pushed_tags: u32,
     pub pushed_attachments: u32,
@@ -67,7 +67,6 @@ impl NotesSyncOutcome {
     fn empty(status: &str) -> Self {
         Self {
             status: status.to_string(),
-            message: None,
             pushed_notes: 0,
             pushed_tags: 0,
             pushed_attachments: 0,
@@ -625,11 +624,7 @@ pub async fn sync(state: &AppState) -> NotesSyncOutcome {
         ) {
             NotesSyncOutcome::empty("storage_full")
         } else {
-            NotesSyncOutcome {
-                status: "error".to_string(),
-                message: Some(error.to_string()),
-                ..NotesSyncOutcome::empty("error")
-            }
+            NotesSyncOutcome::empty("error")
         }
     });
     let _ = state.app.emit(NOTES_UPDATED_EVENT, &outcome);
@@ -683,7 +678,6 @@ async fn run_sync(state: &AppState) -> AppResult<NotesSyncOutcome> {
 fn outcome_from(context: &SyncContext) -> NotesSyncOutcome {
     NotesSyncOutcome {
         status: "ok".to_string(),
-        message: None,
         pushed_notes: context.pushed_notes,
         pushed_tags: context.pushed_tags,
         pushed_attachments: context.pushed_attachments,
@@ -1173,35 +1167,8 @@ async fn push_note_create(
             mark_note_synced(state, record, &dto)?;
             context.pushed_notes += 1;
         }
-        Err(AppError::Protocol { code, .. }) if code == 4002 => {
-            // Uncertain outcome: inspect the server state before retrying.
-            let path = format!("{NOTES_PATH}/{}", record.id);
-            match context.get::<NoteDto>(&path).await {
-                Ok(cloud) => {
-                    if cloud_content_matches(&record, &cloud) {
-                        mark_note_synced(state, record, &cloud)?;
-                        context.pushed_notes += 1;
-                    } else {
-                        enter_conflict(&state.database, record, &cloud, CONFLICT_KIND_EDIT)?;
-                        context.count_conflict();
-                    }
-                }
-                Err(AppError::Protocol { code, .. }) if code == CODE_NOTE_NOT_FOUND => {
-                    // The id is free: retry once with the original id.
-                    let dto = context
-                        .http
-                        .post::<CreateNoteRequest<'_>, NoteDto>(
-                            &context.base_url,
-                            NOTES_PATH,
-                            &request,
-                            &context.token,
-                        )
-                        .await?;
-                    mark_note_synced(state, record, &dto)?;
-                    context.pushed_notes += 1;
-                }
-                Err(error) => return Err(error),
-            }
+        Err(AppError::Protocol { code, .. }) if code == CODE_NOTE_ID_UNAVAILABLE => {
+            reconcile_unavailable_note_id(state, context, record).await?;
         }
         Err(error @ AppError::Protocol { code: CODE_INVALID_NOTE_REFERENCE, .. }) => {
             if !allow_reference_recovery {
@@ -1212,6 +1179,33 @@ async fn push_note_create(
         Err(error) => return Err(error),
     }
 
+    Ok(())
+}
+
+async fn reconcile_unavailable_note_id(
+    state: &AppState,
+    context: &mut SyncContext,
+    record: NoteRecord,
+) -> AppResult<()> {
+    let path = format!("{NOTES_PATH}/{}", record.id);
+    match context.get::<NoteDto>(&path).await {
+        Ok(cloud) => {
+            if cloud_content_matches(&record, &cloud) {
+                mark_note_synced(state, record, &cloud)?;
+                context.pushed_notes += 1;
+            } else {
+                enter_conflict(&state.database, record, &cloud, CONFLICT_KIND_EDIT)?;
+                context.count_conflict();
+            }
+        }
+        Err(AppError::Protocol { code, .. }) if code == CODE_NOTE_NOT_FOUND => {
+            // The ID is permanently reserved by a tombstone. Keep the local
+            // content and let the user discard it or save it under a new ID.
+            enter_cloud_deleted_conflict(state, record)?;
+            context.count_conflict();
+        }
+        Err(error) => return Err(error),
+    }
     Ok(())
 }
 

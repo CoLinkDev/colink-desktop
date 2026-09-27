@@ -21,7 +21,7 @@ import { toast } from 'sonner'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { RichEditor, type RichEditorHandle } from '../components/notes/rich-editor'
-import { readErrorMessage, useAppState } from '../hooks/use-app-state'
+import { useAppState } from '../hooks/use-app-state'
 import { hasHttpStatus, hasProtocolCode } from '../lib/command-error'
 import {
   notesAttachmentsOpen,
@@ -317,10 +317,10 @@ export function NotesPage() {
       }
       setDraft(nextDraft)
       setDraftOrigin(nextDraft)
-    } catch (error) {
-      toast.error(String(error))
+    } catch {
+      toast.error(t('common.requestFailed'))
     }
-  }, [tagFilter])
+  }, [tagFilter, t])
 
   const startNewNote = useCallback(() => {
     leaveEditor(() => { void beginNewNote() })
@@ -360,9 +360,9 @@ export function NotesPage() {
       setDraftOrigin(nextDraft)
       toast.success(t('notes.saved'))
     })
-    saveQueue.current = operation.catch((error) => {
+    saveQueue.current = operation.catch(() => {
       if (editSession.current === session) {
-        toast.error(String(error))
+        toast.error(t('common.requestFailed'))
       }
     }).finally(() => {
       setSaving(false)
@@ -377,15 +377,14 @@ export function NotesPage() {
     results.forEach((result, index) => {
       if (result.status === 'rejected') stagedAttachmentIds.current.add(ids[index])
     })
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
-    if (failure) {
-      toast.error(String(failure.reason))
+    if (results.some((result) => result.status === 'rejected')) {
+      toast.error(t('common.requestFailed'))
       refreshAttachments()
       return false
     }
     if (ids.length > 0) refreshAttachments()
     return true
-  }, [refreshAttachments])
+  }, [refreshAttachments, t])
 
   const confirmDelete = useCallback(
     async (note: NoteRecord) => {
@@ -400,11 +399,11 @@ export function NotesPage() {
           setDraftOrigin(null)
         }
         setDeleteNote(null)
-      } catch (error) {
-        toast.error(String(error))
+      } catch {
+        toast.error(t('common.requestFailed'))
       }
     },
-    [cleanupStagedAttachments, removeNoteRecord, selectedId],
+    [cleanupStagedAttachments, removeNoteRecord, selectedId, t],
   )
 
   const addTagToDraft = useCallback(
@@ -422,13 +421,13 @@ export function NotesPage() {
             ? { ...current, tagIds: [...current.tagIds, tag.id] }
             : current,
         )
-      } catch (error) {
-        toast.error(String(error))
+      } catch {
+        toast.error(t('common.requestFailed'))
       } finally {
         setAddingDraftTag(false)
       }
     },
-    [applyNoteTagRecord, draft, editorBusy],
+    [applyNoteTagRecord, draft, editorBusy, t],
   )
 
   const createSidebarTag = useCallback(async () => {
@@ -440,12 +439,12 @@ export function NotesPage() {
       applyNoteTagRecord(tag)
       setNewTagName('')
       setAddingTag(false)
-    } catch (error) {
-      toast.error(String(error))
+    } catch {
+      toast.error(t('common.requestFailed'))
     } finally {
       setTagMutating(false)
     }
-  }, [applyNoteTagRecord, newTagName, tagMutating])
+  }, [applyNoteTagRecord, newTagName, tagMutating, t])
 
   const renameSidebarTag = useCallback(async () => {
     if (!renameTag || tagMutating) return
@@ -456,12 +455,12 @@ export function NotesPage() {
       const tag = await notesTagsRename(renameTag.id, name)
       applyNoteTagRecord(tag)
       setRenameTag(null)
-    } catch (error) {
-      toast.error(String(error))
+    } catch {
+      toast.error(t('common.requestFailed'))
     } finally {
       setTagMutating(false)
     }
-  }, [applyNoteTagRecord, renameTag, tagMutating])
+  }, [applyNoteTagRecord, renameTag, tagMutating, t])
 
   const deleteSidebarTag = useCallback(async () => {
     if (!deleteTag || tagMutating) return
@@ -471,12 +470,12 @@ export function NotesPage() {
       removeNoteTagRecord(deleteTag.id)
       if (tagFilter === deleteTag.id) setTagFilter(null)
       setDeleteTag(null)
-    } catch (error) {
-      toast.error(String(error))
+    } catch {
+      toast.error(t('common.requestFailed'))
     } finally {
       setTagMutating(false)
     }
-  }, [deleteTag, removeNoteTagRecord, tagFilter, tagMutating])
+  }, [deleteTag, removeNoteTagRecord, tagFilter, tagMutating, t])
 
   const stageAttachment = useCallback(
     async (kind: 'image' | 'file', insertIntoNote = true) => {
@@ -504,13 +503,13 @@ export function NotesPage() {
           richEditorRef.current?.insertAttachment(record, kind)
         }
         refreshAttachments()
-      } catch (error) {
-        toast.error(String(error))
+      } catch {
+        toast.error(t('common.requestFailed'))
       } finally {
         setStagingAttachment(false)
       }
     },
-    [draft, editorBusy, pickFiles, refreshAttachments],
+    [draft, editorBusy, pickFiles, refreshAttachments, t],
   )
 
   const removeAttachment = useCallback(
@@ -560,7 +559,7 @@ export function NotesPage() {
             if (syncOutcome?.status === 'offline') {
               toast.info(t('notes.offlineHint'))
             } else if (syncOutcome?.status === 'error') {
-              toast.error(syncOutcome.message ?? t('notes.syncFailed'))
+              toast.error(t('notes.syncFailed'))
             } else if (!syncOutcome) {
               toast.error(t('notes.syncFailed'))
             }
@@ -589,7 +588,7 @@ export function NotesPage() {
         if (stillReferenced) {
           toast.error(t('notes.attachmentStillReferenced'))
         } else {
-          toast.error(readErrorMessage(error))
+          toast.error(t('common.requestFailed'))
         }
         return
       } finally {
@@ -663,13 +662,13 @@ export function NotesPage() {
         toast.warning(t('notes.referencesRemovedToast', { count: outcome.repairedReferences }))
       }
       if (outcome.status === 'offline') {
-        toast.info(outcome.message ?? t('notes.offlineHint'))
+        toast.info(t('notes.offlineHint'))
       } else if (outcome.status === 'unsupported') {
         toast.info(t('notes.serverUnsupported'), { id: 'notes-server-unsupported' })
       } else if (outcome.status === 'storage_full') {
         toast.error(t('notes.storageFull'), { id: 'notes-storage-full' })
       } else if (outcome.status === 'error') {
-        toast.error(outcome.message ?? t('notes.syncFailed'))
+        toast.error(t('notes.syncFailed'))
       } else if (outcome.conflicts > 0) {
         toast.warning(t('notes.conflictDetectedToast', { count: outcome.conflicts }))
       } else {
@@ -705,11 +704,11 @@ export function NotesPage() {
           resolution,
         })
         setConflictNote(null)
-      } catch (error) {
-        toast.error(String(error))
+      } catch {
+        toast.error(t('common.requestFailed'))
       }
     },
-    [conflictNote],
+    [conflictNote, t],
   )
 
   const resolveMerged = useCallback(async () => {
@@ -726,10 +725,10 @@ export function NotesPage() {
         attachmentIds: conflictDraft?.attachmentIds,
       })
       setConflictNote(null)
-    } catch (error) {
-      toast.error(String(error))
+    } catch {
+      toast.error(t('common.requestFailed'))
     }
-  }, [conflictNote, conflictDraft])
+  }, [conflictNote, conflictDraft, t])
 
   // Do not interrupt an active local edit with conflict resolution.
   useEffect(() => {
