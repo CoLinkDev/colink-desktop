@@ -177,10 +177,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows the CastBoard window to send requests through its single host bridge command.",
+          "description": "Allows the CastBoard window to send events through its single host bridge command.",
           "type": "string",
-          "const": "allow-castboard-request",
-          "markdownDescription": "Allows the CastBoard window to send requests through its single host bridge command."
+          "const": "allow-castboard-event",
+          "markdownDescription": "Allows the CastBoard window to send events through its single host bridge command."
         },
         {
           "description": "Allows the main application window to invoke its application commands.",

@@ -340,9 +340,16 @@ impl AppRuntime {
         self.inner.music.notify_config_change();
     }
 
-    pub fn begin_local_castboard(&self, window_label: &str) {
-        self.inner.music.begin_local_session(window_label);
-        self.inner.sysinfo.begin_local_session(window_label);
+    pub fn handle_local_ready(&self, window_label: &str) {
+        self.inner.music.handle_local_ready(window_label);
+    }
+
+    pub fn handle_local_music_alive(&self, window_label: &str) {
+        self.inner.music.handle_local_alive(window_label);
+    }
+
+    pub fn handle_local_sysinfo_alive(&self, window_label: &str) {
+        self.inner.sysinfo.handle_local_alive(window_label);
     }
 
     pub fn end_local_castboard(&self, window_label: &str) {

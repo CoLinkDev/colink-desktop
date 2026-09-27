@@ -9,5 +9,5 @@
       "http://localhost:5173/*"
     ]
   },
-  "permissions": ["allow-castboard-request"]
+  "permissions": ["allow-castboard-event"]
 }

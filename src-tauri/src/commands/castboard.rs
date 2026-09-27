@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{
-    castboard_ipc::{self, CastBoardRequest, INITIALIZATION_SCRIPT, WINDOW_LABEL},
+    castboard_ipc::{self, CastBoardEvent, INITIALIZATION_SCRIPT, WINDOW_LABEL},
     protocol::BUSINESS_PROTOCOL_VERSION,
     state::AppState,
 };
@@ -90,12 +90,12 @@ pub fn get_castboard_status(app: AppHandle) -> CastBoardStatus {
 }
 
 #[tauri::command]
-pub fn castboard_request(
+pub fn castboard_event(
     window: WebviewWindow,
     state: State<'_, AppState>,
-    request: CastBoardRequest,
+    event: CastBoardEvent,
 ) -> Result<serde_json::Value, String> {
-    castboard_ipc::handle_request(&window, &state.runtime, request)
+    castboard_ipc::handle_event(&window, &state.runtime, event)
 }
 
 #[tauri::command]

@@ -52,7 +52,7 @@ struct MusicState {
     running: bool,
     cancel: Option<watch::Sender<bool>>,
     active_receivers: HashMap<String, Instant>,
-    local_windows: HashSet<String>,
+    local_windows: HashMap<String, Instant>,
     snapshot: MusicSnapshot,
 }
 
@@ -169,36 +169,52 @@ impl MusicService {
                 running: false,
                 cancel: None,
                 active_receivers: HashMap::new(),
-                local_windows: HashSet::new(),
+                local_windows: HashMap::new(),
                 snapshot: MusicSnapshot::default(),
             })),
         }
     }
 
-    pub fn begin_local_session(&self, window_label: &str) {
+    pub fn handle_local_ready(&self, window_label: &str) {
         let label = window_label.trim();
         if label.is_empty() {
             return;
         }
 
-        let (should_start, snapshot) = {
+        let (was_new, should_start, snapshot) = {
             let mut state = self.state.lock_unpoisoned();
-            state.local_windows.insert(label.to_string());
-            let should_start = if state.running {
-                false
-            } else {
-                state.running = true;
-                true
-            };
-            (should_start, state.snapshot.clone())
+            let (was_new, should_start) = refresh_local_session_locked(&mut state, label);
+            (was_new, should_start, state.snapshot.clone())
         };
 
         if should_start {
             self.start_loop();
             self.log_info("music sync activated by local CastBoard".to_string());
         }
-        info!(window_label = label, "music local CastBoard session started");
+        if was_new {
+            info!(window_label = label, "music local CastBoard session started");
+        }
         self.dispatch_snapshot_to_local(label, &snapshot);
+    }
+
+    pub fn handle_local_alive(&self, window_label: &str) {
+        let label = window_label.trim();
+        if label.is_empty() {
+            return;
+        }
+
+        let (was_new, should_start) = {
+            let mut state = self.state.lock_unpoisoned();
+            refresh_local_session_locked(&mut state, label)
+        };
+
+        if should_start {
+            self.start_loop();
+            self.log_info("music sync activated by local CastBoard".to_string());
+        }
+        if was_new {
+            info!(window_label = label, "music local CastBoard session started");
+        }
     }
 
     pub fn end_local_session(&self, window_label: &str) {
@@ -609,21 +625,31 @@ impl MusicService {
     }
 
     fn local_windows(&self) -> Vec<String> {
-        self.state
-            .lock_unpoisoned()
+        let mut state = self.state.lock_unpoisoned();
+        prune_expired_receivers_locked(&mut state.local_windows);
+        state
             .local_windows
-            .iter()
+            .keys()
             .cloned()
             .collect()
     }
 
     fn finish_run(&self) {
-        let mut state = self.state.lock_unpoisoned();
-        state.running = false;
-        state.cancel = None;
-        state.active_receivers.clear();
-        state.local_windows.clear();
-        state.snapshot = MusicSnapshot::default();
+        let should_restart = {
+            let mut state = self.state.lock_unpoisoned();
+            prune_expired_receivers_locked(&mut state.active_receivers);
+            prune_expired_receivers_locked(&mut state.local_windows);
+            state.running = false;
+            state.cancel = None;
+            let should_restart = !state.active_receivers.is_empty() || !state.local_windows.is_empty();
+            if !should_restart {
+                state.snapshot = MusicSnapshot::default();
+            }
+            should_restart
+        };
+        if should_restart {
+            self.start_loop();
+        }
     }
 
     async fn send_snapshot_to_device(
@@ -761,7 +787,7 @@ impl MusicService {
         let Some(window) = self.app.get_webview_window(window_label) else {
             return;
         };
-        if let Err(error) = castboard_ipc::dispatch_business_event(&window, message_type, payload) {
+        if let Err(error) = castboard_ipc::dispatch_protocol_event(&window, message_type, payload) {
             warn!(
                 %error,
                 %window_label,
@@ -770,6 +796,21 @@ impl MusicService {
             );
         }
     }
+}
+
+fn refresh_local_session_locked(state: &mut MusicState, label: &str) -> (bool, bool) {
+    prune_expired_receivers_locked(&mut state.local_windows);
+    let was_new = state
+        .local_windows
+        .insert(label.to_string(), Instant::now())
+        .is_none();
+    let should_start = if state.running {
+        false
+    } else {
+        state.running = true;
+        true
+    };
+    (was_new, should_start)
 }
 
 async fn handle_active_track(

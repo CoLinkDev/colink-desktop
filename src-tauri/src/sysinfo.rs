@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -35,7 +35,8 @@ struct SysInfoState {
     running: bool,
     cancel: Option<watch::Sender<bool>>,
     active_receivers: HashMap<String, ReceiverState>,
-    local_windows: HashSet<String>,
+    local_windows: HashMap<String, ReceiverState>,
+    snapshot: Option<SysInfoStatsPayload>,
 }
 
 struct ReceiverState {
@@ -56,33 +57,49 @@ impl SysInfoService {
                 running: false,
                 cancel: None,
                 active_receivers: HashMap::new(),
-                local_windows: HashSet::new(),
+                local_windows: HashMap::new(),
+                snapshot: None,
             })),
         }
     }
 
-    pub fn begin_local_session(&self, window_label: &str) {
+    pub fn handle_local_alive(&self, window_label: &str) {
         let label = window_label.trim();
         if label.is_empty() {
             return;
         }
 
-        let should_start = {
+        let (was_new, should_start, snapshot) = {
             let mut state = self.state.lock_unpoisoned();
-            state.local_windows.insert(label.to_string());
-            if state.running {
+            prune_expired_receivers_locked(&mut state.local_windows);
+            let was_new = state
+                .local_windows
+                .insert(
+                    label.to_string(),
+                    ReceiverState {
+                        last_seen: Instant::now(),
+                    },
+                )
+                .is_none();
+            let should_start = if state.running {
                 false
             } else {
                 state.running = true;
                 true
-            }
+            };
+            (was_new, should_start, state.snapshot.clone())
         };
 
         if should_start {
             self.start_loop();
             self.log_info("sysinfo sync activated by local CastBoard".to_string());
         }
-        info!(window_label = label, "sysinfo local CastBoard session started");
+        if was_new {
+            info!(window_label = label, "sysinfo local CastBoard session started");
+        }
+        if let Some(snapshot) = snapshot {
+            self.dispatch_to_local_window(label, &snapshot);
+        }
     }
 
     pub fn end_local_session(&self, window_label: &str) {
@@ -96,7 +113,7 @@ impl SysInfoService {
             return;
         }
 
-        let should_start = {
+        let (should_start, snapshot) = {
             let mut state = self.state.lock_unpoisoned();
             prune_expired_receivers_locked(&mut state.active_receivers);
             let receiver = state
@@ -106,17 +123,21 @@ impl SysInfoService {
                     last_seen: Instant::now(),
                 });
             receiver.last_seen = Instant::now();
-            if state.running {
+            let should_start = if state.running {
                 false
             } else {
                 state.running = true;
                 true
-            }
+            };
+            (should_start, state.snapshot.clone())
         };
 
         if should_start {
             self.start_loop();
             self.log_info(format!("sysinfo sync activated by {device_id}"));
+        }
+        if let Some(snapshot) = snapshot {
+            self.send_snapshot_to_device(device_id, snapshot).await;
         }
     }
 
@@ -126,6 +147,7 @@ impl SysInfoService {
             state.running = false;
             state.active_receivers.clear();
             state.local_windows.clear();
+            state.snapshot = None;
             state.cancel.take()
         };
 
@@ -154,6 +176,7 @@ impl SysInfoService {
 
     async fn run(&self, mut cancel_rx: watch::Receiver<bool>) {
         info!("sysinfo sync loop started");
+        let mut sample_immediately = true;
 
         loop {
             if is_cancelled(&cancel_rx) {
@@ -164,6 +187,14 @@ impl SysInfoService {
             let local_windows = self.local_windows();
             if targets.is_empty() && local_windows.is_empty() {
                 break;
+            }
+
+            if sample_immediately {
+                sample_immediately = false;
+                if let Some(snapshot) = sample_system_info().await {
+                    self.publish_snapshot(snapshot).await;
+                }
+                continue;
             }
 
             tokio::select! {
@@ -189,6 +220,7 @@ impl SysInfoService {
         let targets = {
             let mut state = self.state.lock_unpoisoned();
             prune_expired_receivers_locked(&mut state.active_receivers);
+            state.snapshot = Some(snapshot.clone());
             state.active_receivers.keys().cloned().collect::<Vec<_>>()
         };
 
@@ -219,20 +251,32 @@ impl SysInfoService {
     }
 
     fn local_windows(&self) -> Vec<String> {
-        self.state
-            .lock_unpoisoned()
+        let mut state = self.state.lock_unpoisoned();
+        prune_expired_receivers_locked(&mut state.local_windows);
+        state
             .local_windows
-            .iter()
+            .keys()
             .cloned()
             .collect()
     }
 
     fn finish_run(&self) {
-        let mut state = self.state.lock_unpoisoned();
-        state.running = false;
-        state.cancel = None;
-        state.active_receivers.clear();
-        state.local_windows.clear();
+        let should_restart = {
+            let mut state = self.state.lock_unpoisoned();
+            prune_expired_receivers_locked(&mut state.active_receivers);
+            prune_expired_receivers_locked(&mut state.local_windows);
+            state.running = false;
+            state.cancel = None;
+            let should_restart =
+                !state.active_receivers.is_empty() || !state.local_windows.is_empty();
+            if !should_restart {
+                state.snapshot = None;
+            }
+            should_restart
+        };
+        if should_restart {
+            self.start_loop();
+        }
     }
 
     fn log_info(&self, message: impl Into<String>) {
@@ -241,12 +285,16 @@ impl SysInfoService {
 
     fn dispatch_to_local(&self, snapshot: &SysInfoStatsPayload) {
         for label in self.local_windows() {
-            if let Some(window) = self.app.get_webview_window(&label) {
-                if let Err(error) =
-                    castboard_ipc::dispatch_business_event(&window, SYSINFO_STATS_TYPE, snapshot)
-                {
-                    warn!(%error, window_label = %label, "sysinfo local CastBoard dispatch failed");
-                }
+            self.dispatch_to_local_window(&label, snapshot);
+        }
+    }
+
+    fn dispatch_to_local_window(&self, window_label: &str, snapshot: &SysInfoStatsPayload) {
+        if let Some(window) = self.app.get_webview_window(window_label) {
+            if let Err(error) =
+                castboard_ipc::dispatch_protocol_event(&window, SYSINFO_STATS_TYPE, snapshot)
+            {
+                warn!(%error, %window_label, "sysinfo local CastBoard dispatch failed");
             }
         }
     }

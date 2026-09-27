@@ -11,18 +11,10 @@ pub const WINDOW_LABEL: &str = "castboard";
 
 pub const INITIALIZATION_SCRIPT: &str = r#"
 (() => {
-  let nextId = 1;
   const listeners = new Set();
 
-  function request({ type, payload }) {
-    const request = {
-      channel: "castboard",
-      kind: "request",
-      id: String(nextId++),
-      type,
-      payload: payload || {},
-    };
-    return window.__TAURI_INTERNALS__.invoke("castboard_request", { request });
+  function send(event) {
+    return window.__TAURI_INTERNALS__.invoke("castboard_event", { event });
   }
 
   function _dispatch(message) {
@@ -36,18 +28,17 @@ pub const INITIALIZATION_SCRIPT: &str = r#"
     return () => listeners.delete(listener);
   }
 
-  window.castboardIPC = { request, subscribe, _dispatch };
+  window.castboardIPC = { send, subscribe, _dispatch };
 })();
 "#;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CastBoardRequest {
+pub struct CastBoardEvent {
     channel: String,
-    kind: String,
-    id: String,
+    id: Option<String>,
     #[serde(rename = "type")]
-    request_type: String,
+    event_type: String,
     payload: Value,
 }
 
@@ -56,37 +47,33 @@ enum CastBoardAction {
     Close,
     OpenDevTools,
     Ready,
+    MusicAlive,
     SysInfoAlive,
     MediaControl(SystemControlAction),
 }
 
-impl CastBoardRequest {
+impl CastBoardEvent {
     fn validate(&self) -> Result<(), String> {
         if self.channel != "castboard" {
-            return Err("invalid CastBoard request channel".to_string());
+            return Err("invalid CastBoard event channel".to_string());
         }
-        if self.kind != "request" {
-            return Err("invalid CastBoard message kind".to_string());
-        }
-        if self.id.trim().is_empty() {
-            return Err("CastBoard request id must not be empty".to_string());
-        }
-        if !self.payload.is_object() {
-            return Err("CastBoard request payload must be an object".to_string());
+        if self.event_type.trim().is_empty() {
+            return Err("CastBoard event type must not be empty".to_string());
         }
         Ok(())
     }
 
     fn action(&self) -> Result<CastBoardAction, String> {
-        match self.request_type.as_str() {
-            "castboard.close" => Ok(CastBoardAction::Close),
-            "castboard.openDevTools" => Ok(CastBoardAction::OpenDevTools),
-            "castboard.ready" => Ok(CastBoardAction::Ready),
-            "castboard.sysinfo.alive" => Ok(CastBoardAction::SysInfoAlive),
-            "castboard.media.control" => self.media_control_action(),
+        match self.event_type.as_str() {
+            "app.close" => Ok(CastBoardAction::Close),
+            "app.openDevTools" => Ok(CastBoardAction::OpenDevTools),
+            "page.ready" => Ok(CastBoardAction::Ready),
+            "music.alive" => Ok(CastBoardAction::MusicAlive),
+            "sysinfo.alive" => Ok(CastBoardAction::SysInfoAlive),
+            "media.control" => self.media_control_action(),
             _ => Err(format!(
-                "unknown CastBoard request type: {}",
-                self.request_type
+                "unknown CastBoard event type: {}",
+                self.event_type
             )),
         }
     }
@@ -108,17 +95,17 @@ impl CastBoardRequest {
     }
 }
 
-pub fn handle_request(
+pub fn handle_event(
     window: &WebviewWindow,
     runtime: &AppRuntime,
-    request: CastBoardRequest,
+    event: CastBoardEvent,
 ) -> Result<Value, String> {
     if window.label() != WINDOW_LABEL {
-        return Err("CastBoard requests are only accepted from the CastBoard window".to_string());
+        return Err("CastBoard events are only accepted from the CastBoard window".to_string());
     }
 
-    request.validate()?;
-    match request.action()? {
+    event.validate()?;
+    match event.action()? {
         CastBoardAction::Close => {
             window.close().map_err(|error| error.to_string())?;
         }
@@ -127,10 +114,20 @@ pub fn handle_request(
             window.open_devtools();
         }
         CastBoardAction::Ready => {
-            runtime.begin_local_castboard(WINDOW_LABEL);
-            dispatch_host_ready(window)?;
+            let id = event
+                .id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| "CastBoard page.ready event requires an id".to_string())?;
+            runtime.handle_local_ready(window.label());
+            dispatch_host_ready(window, id)?;
         }
-        CastBoardAction::SysInfoAlive => {}
+        CastBoardAction::MusicAlive => {
+            runtime.handle_local_music_alive(WINDOW_LABEL);
+        }
+        CastBoardAction::SysInfoAlive => {
+            runtime.handle_local_sysinfo_alive(WINDOW_LABEL);
+        }
         CastBoardAction::MediaControl(action) => {
             runtime.execute_local_media_control(action)?;
         }
@@ -138,11 +135,11 @@ pub fn handle_request(
     Ok(Value::Null)
 }
 
-pub fn dispatch_host_ready(window: &WebviewWindow) -> Result<(), String> {
-    dispatch_event(window, host_ready_event())
+pub fn dispatch_host_ready(window: &WebviewWindow, id: &str) -> Result<(), String> {
+    dispatch_event(window, host_ready_event(id))
 }
 
-pub fn dispatch_business_event<T>(
+pub fn dispatch_protocol_event<T>(
     window: &WebviewWindow,
     message_type: &str,
     payload: &T,
@@ -150,16 +147,23 @@ pub fn dispatch_business_event<T>(
 where
     T: Serialize,
 {
+    let event_type = castboard_event_type(message_type)?;
     let message = serde_json::json!({
         "channel": "castboard",
-        "kind": "event",
-        "type": "business",
-        "payload": {
-            "type": message_type,
-            "payload": payload,
-        },
+        "type": event_type,
+        "payload": payload,
     });
     dispatch_event(window, message)
+}
+
+fn castboard_event_type(message_type: &str) -> Result<&'static str, String> {
+    match message_type {
+        "music.v1.track" => Ok("music.track"),
+        "music.v1.lyric" => Ok("music.lyric"),
+        "music.v1.progress" => Ok("music.progress"),
+        "sysinfo.v1.stats" => Ok("sysinfo.stats"),
+        _ => Err(format!("unsupported CastBoard protocol event type: {message_type}")),
+    }
 }
 
 fn dispatch_event(window: &WebviewWindow, message: Value) -> Result<(), String> {
@@ -169,65 +173,65 @@ fn dispatch_event(window: &WebviewWindow, message: Value) -> Result<(), String> 
         .map_err(|error| error.to_string())
 }
 
-fn host_ready_event() -> Value {
+fn host_ready_event(id: &str) -> Value {
     serde_json::json!({
         "channel": "castboard",
-        "kind": "event",
         "type": "host.ready",
-        "payload": {},
+        "id": id,
+        "payload": { "ok": true },
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     use crate::protocol::SystemControlAction;
 
-    use super::{host_ready_event, CastBoardAction, CastBoardRequest};
+    use super::{castboard_event_type, host_ready_event, CastBoardAction, CastBoardEvent};
 
-    fn request(request_type: &str) -> CastBoardRequest {
-        CastBoardRequest {
+    fn event(event_type: &str) -> CastBoardEvent {
+        CastBoardEvent {
             channel: "castboard".to_string(),
-            kind: "request".to_string(),
-            id: "1".to_string(),
-            request_type: request_type.to_string(),
+            id: None,
+            event_type: event_type.to_string(),
             payload: json!({}),
         }
     }
 
-    fn media_control_request(action: &str) -> CastBoardRequest {
-        let mut request = request("castboard.media.control");
-        request.payload = json!({ "action": action });
-        request
+    fn media_control_event(action: &str) -> CastBoardEvent {
+        let mut event = event("media.control");
+        event.payload = json!({ "action": action });
+        event
     }
 
     #[test]
     fn accepts_the_supported_actions() {
-        assert_eq!(request("castboard.close").action(), Ok(CastBoardAction::Close));
+        assert_eq!(event("app.close").action(), Ok(CastBoardAction::Close));
         assert_eq!(
-            request("castboard.openDevTools").action(),
+            event("app.openDevTools").action(),
             Ok(CastBoardAction::OpenDevTools)
         );
-        assert_eq!(request("castboard.ready").action(), Ok(CastBoardAction::Ready));
+        assert_eq!(event("page.ready").action(), Ok(CastBoardAction::Ready));
+        assert_eq!(event("music.alive").action(), Ok(CastBoardAction::MusicAlive));
         assert_eq!(
-            request("castboard.sysinfo.alive").action(),
+            event("sysinfo.alive").action(),
             Ok(CastBoardAction::SysInfoAlive)
         );
         assert_eq!(
-            media_control_request("play").action(),
+            media_control_event("play").action(),
             Ok(CastBoardAction::MediaControl(SystemControlAction::Play))
         );
         assert_eq!(
-            media_control_request("pause").action(),
+            media_control_event("pause").action(),
             Ok(CastBoardAction::MediaControl(SystemControlAction::Pause))
         );
         assert_eq!(
-            media_control_request("next").action(),
+            media_control_event("next").action(),
             Ok(CastBoardAction::MediaControl(SystemControlAction::Next))
         );
         assert_eq!(
-            media_control_request("previous").action(),
+            media_control_event("previous").action(),
             Ok(CastBoardAction::MediaControl(SystemControlAction::Previous))
         );
     }
@@ -235,65 +239,73 @@ mod tests {
     #[test]
     fn serializes_the_host_ready_event() {
         assert_eq!(
-            host_ready_event(),
+            host_ready_event("7"),
             json!({
                 "channel": "castboard",
-                "kind": "event",
                 "type": "host.ready",
-                "payload": {},
+                "id": "7",
+                "payload": { "ok": true },
             }),
         );
     }
 
     #[test]
     fn deserializes_the_protocol_envelope() {
-        let request: CastBoardRequest = serde_json::from_value(json!({
+        let event: CastBoardEvent = serde_json::from_value(json!({
             "channel": "castboard",
-            "kind": "request",
             "id": "7",
-            "type": "castboard.ready",
+            "type": "page.ready",
             "payload": {},
         }))
-        .expect("valid CastBoard request");
+        .expect("valid CastBoard event");
 
-        assert_eq!(request.validate(), Ok(()));
-        assert_eq!(request.action(), Ok(CastBoardAction::Ready));
+        assert_eq!(event.validate(), Ok(()));
+        assert_eq!(event.action(), Ok(CastBoardAction::Ready));
     }
 
     #[test]
     fn rejects_invalid_envelopes() {
-        let mut invalid = request("castboard.ready");
+        let mut invalid = event("page.ready");
         invalid.channel = "other".to_string();
         assert_eq!(
             invalid.validate(),
-            Err("invalid CastBoard request channel".to_string())
+            Err("invalid CastBoard event channel".to_string())
         );
 
-        let mut invalid = request("castboard.ready");
-        invalid.payload = Value::Null;
+        let mut invalid = event("page.ready");
+        invalid.event_type = " ".to_string();
         assert_eq!(
             invalid.validate(),
-            Err("CastBoard request payload must be an object".to_string())
+            Err("CastBoard event type must not be empty".to_string())
         );
     }
 
     #[test]
     fn rejects_unknown_actions() {
         assert_eq!(
-            request("castboard.unknown").action(),
-            Err("unknown CastBoard request type: castboard.unknown".to_string())
+            event("castboard.unknown").action(),
+            Err("unknown CastBoard event type: castboard.unknown".to_string())
         );
     }
 
     #[test]
     fn rejects_non_media_control_actions() {
         assert_eq!(
-            media_control_request("shutdown").action(),
+            media_control_event("shutdown").action(),
             Err("unsupported CastBoard media control action: shutdown".to_string())
         );
         assert_eq!(
-            request("castboard.media.control").action(),
+            event("media.control").action(),
             Err("CastBoard media control action must be a string".to_string())
         );
+    }
+
+    #[test]
+    fn maps_protocol_types_to_flat_event_types() {
+        assert_eq!(castboard_event_type("music.v1.track"), Ok("music.track"));
+        assert_eq!(castboard_event_type("music.v1.lyric"), Ok("music.lyric"));
+        assert_eq!(castboard_event_type("music.v1.progress"), Ok("music.progress"));
+        assert_eq!(castboard_event_type("sysinfo.v1.stats"), Ok("sysinfo.stats"));
+        assert!(castboard_event_type("unknown").is_err());
     }
 }
