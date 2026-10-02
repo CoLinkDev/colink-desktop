@@ -185,7 +185,6 @@
 
 .animate-page-enter {
   animation: page-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
 }
 
 @media (prefers-reduced-motion: reduce) {
