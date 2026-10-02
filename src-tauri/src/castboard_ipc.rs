@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
+use tracing::warn;
 
 use crate::{
+    castboard_plugins,
     protocol::SystemControlAction,
     runtime::AppRuntime,
 };
@@ -121,6 +123,11 @@ pub fn handle_event(
                 .ok_or_else(|| "CastBoard page.ready event requires an id".to_string())?;
             runtime.handle_local_ready(window.label());
             dispatch_host_ready(window, id)?;
+            match castboard_plugins::registrations(window.app_handle()) {
+                Ok(plugins) if !plugins.is_empty() => dispatch_plugins(window, plugins)?,
+                Ok(_) => {}
+                Err(error) => warn!(%error, "failed to load CastBoard plugins"),
+            }
         }
         CastBoardAction::MusicAlive => {
             runtime.handle_local_music_alive(WINDOW_LABEL);
@@ -137,6 +144,17 @@ pub fn handle_event(
 
 pub fn dispatch_host_ready(window: &WebviewWindow, id: &str) -> Result<(), String> {
     dispatch_event(window, host_ready_event(id))
+}
+
+fn dispatch_plugins(window: &WebviewWindow, plugins: Vec<Value>) -> Result<(), String> {
+    dispatch_event(
+        window,
+        serde_json::json!({
+            "channel": "castboard",
+            "type": "plugins.register",
+            "payload": { "plugins": plugins },
+        }),
+    )
 }
 
 pub fn dispatch_protocol_event<T>(

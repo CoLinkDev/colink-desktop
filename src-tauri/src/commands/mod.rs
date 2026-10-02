@@ -17,8 +17,10 @@ pub use auth::{
     clear_saved_login, get_saved_login, login, logout, register_account, save_saved_login,
 };
 pub use castboard::{
-    castboard_event, get_castboard_status, handle_castboard_window_event, list_castboard_monitors,
-    open_castboard_on_monitor, stop_castboard,
+    castboard_event, delete_castboard_plugin, get_castboard_status,
+    handle_castboard_window_event, import_castboard_plugin, list_castboard_monitors,
+    list_castboard_plugins, open_castboard_on_monitor, pick_castboard_plugin,
+    stop_castboard, toggle_castboard_plugin,
 };
 pub use device::{
     create_pair_string, delete_device, forget_lan_trust, list_devices, list_lan_pairing_candidates,

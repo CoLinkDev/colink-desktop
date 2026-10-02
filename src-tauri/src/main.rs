@@ -5,6 +5,7 @@ use std::time::Duration;
 mod api;
 mod auth;
 mod castboard_ipc;
+mod castboard_plugins;
 mod commands;
 mod crypto;
 mod dev_log;
@@ -30,17 +31,19 @@ mod tray_indicator;
 
 use commands::{
     bootstrap_app, cancel_transfer, check_update, clear_saved_login, clear_transfers,
-    castboard_event, delete_device, forget_lan_trust, get_castboard_status, get_music_providers, get_saved_login,
+    castboard_event, delete_castboard_plugin, delete_device, forget_lan_trust,
+    get_castboard_status, get_music_providers, get_saved_login,
     get_settings, handle_castboard_window_event, list_available_music_providers,
-    create_pair_string, list_castboard_monitors, list_devices, list_lan_pairing_candidates,
+    create_pair_string, import_castboard_plugin, list_castboard_monitors,
+    list_castboard_plugins, list_devices, list_lan_pairing_candidates,
     refresh_devices,
     list_remote_filesystem, list_remote_filesystem_downloads, list_remote_filesystem_uploads, list_remote_filesystem_roots, login, logout,
     install_tauri_update, open_castboard_on_monitor, open_received_file, open_update_download,
     pending_file_offers,
-    pick_download_directory, pick_files, register_account, respond_file_offer,
+    pick_castboard_plugin, pick_download_directory, pick_files, register_account, respond_file_offer,
     respond_lan_pairing, reveal_received_file, rotate_device_key, save_saved_login, send_files,
     send_text, start_lan_pairing, stop_castboard, update_device_name, update_music_providers,
-    update_settings,
+    update_settings, toggle_castboard_plugin,
     download_remote_filesystem_file, upload_remote_filesystem_file,
     get_remote_terminal_support, open_terminal, write_terminal, resize_terminal, close_terminal,
     get_remote_camera_support, list_remote_cameras, open_remote_camera, send_camera_alive,
@@ -75,7 +78,11 @@ fn forward_share_files<R: tauri::Runtime>(app: &tauri::AppHandle<R>, paths: Vec<
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+    let builder = tauri::Builder::default()
+        .register_uri_scheme_protocol("colink-plugin", |context, request| {
+            castboard_plugins::protocol_response(context, request)
+        })
+        .plugin(tauri_plugin_notification::init());
 
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
         tracing::debug!(args = ?args, cwd = %_cwd, "received single-instance invocation");
@@ -175,6 +182,11 @@ fn main() {
             open_castboard_on_monitor,
             stop_castboard,
             castboard_event,
+            list_castboard_plugins,
+            pick_castboard_plugin,
+            import_castboard_plugin,
+            toggle_castboard_plugin,
+            delete_castboard_plugin,
             check_update,
             open_update_download,
             install_tauri_update,

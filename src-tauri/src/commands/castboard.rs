@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{Mutex, OnceLock},
 };
 
@@ -13,6 +14,7 @@ use url::Url;
 
 use crate::{
     castboard_ipc::{self, CastBoardEvent, INITIALIZATION_SCRIPT, WINDOW_LABEL},
+    castboard_plugins::{self, PluginInfo},
     protocol::BUSINESS_PROTOCOL_VERSION,
     state::AppState,
 };
@@ -96,6 +98,43 @@ pub fn castboard_event(
     event: CastBoardEvent,
 ) -> Result<serde_json::Value, String> {
     castboard_ipc::handle_event(&window, &state.runtime, event)
+}
+
+#[tauri::command]
+pub fn list_castboard_plugins(app: AppHandle) -> Result<Vec<PluginInfo>, String> {
+    castboard_plugins::list(&app)
+}
+
+#[tauri::command]
+pub fn pick_castboard_plugin(app: AppHandle) -> Result<Option<PluginInfo>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("CastBoard plugin", &["zip"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    import_castboard_plugin(app, path.to_string_lossy().into_owned()).map(Some)
+}
+
+#[tauri::command]
+pub fn import_castboard_plugin(app: AppHandle, file_path: String) -> Result<PluginInfo, String> {
+    let plugin = castboard_plugins::import(&app, &PathBuf::from(file_path))?;
+    refresh_castboard_window(&app);
+    Ok(plugin)
+}
+
+#[tauri::command]
+pub fn toggle_castboard_plugin(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    castboard_plugins::toggle(&app, &id, enabled)?;
+    refresh_castboard_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_castboard_plugin(app: AppHandle, id: String) -> Result<(), String> {
+    castboard_plugins::delete(&app, &id)?;
+    refresh_castboard_window(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -219,6 +258,16 @@ fn place_castboard_window(
     );
     window.set_fullscreen(true).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn refresh_castboard_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+        return;
+    };
+    match window.url().and_then(|url| window.navigate(url)) {
+        Ok(()) => info!("reloaded CastBoard after plugin change"),
+        Err(error) => warn!(%error, "failed to reload CastBoard after plugin change"),
+    }
 }
 
 fn resolve_monitor(

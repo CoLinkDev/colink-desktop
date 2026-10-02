@@ -206,6 +206,18 @@ export interface CastBoardStatus {
   message: string | null
 }
 
+export interface CastBoardPlugin {
+  id: string
+  name: Record<string, string>
+  description: Record<string, string> | null
+  version: string
+  minCastBoardVersion: string
+  type: 'navigable' | 'transient'
+  entry: string
+  enabled: boolean
+  installedAt: number
+}
+
 export interface SendTextPayload {
   deviceId: string
   text: string

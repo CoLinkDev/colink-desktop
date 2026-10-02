@@ -2,7 +2,7 @@
   "name": "colink-desktop",
   "private": true,
   "version": "0.1.0",
-  "castboardVersion": "2.2.0",
+  "castboardVersion": "2.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

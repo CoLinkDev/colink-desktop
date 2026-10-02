@@ -12,6 +12,7 @@ import type {
   MusicProviderConfig,
   MusicProviderMeta,
   CastBoardMonitor,
+  CastBoardPlugin,
   CastBoardStatus,
   RegisterPayload,
   RemoteFilesystemDownload,
@@ -162,6 +163,26 @@ export function openCastBoardOnMonitor(monitorId: string, language: string) {
 
 export function stopCastBoard() {
   return invoke<void>('stop_castboard')
+}
+
+export function listCastBoardPlugins() {
+  return invoke<CastBoardPlugin[]>('list_castboard_plugins')
+}
+
+export function pickCastBoardPlugin() {
+  return invoke<CastBoardPlugin | null>('pick_castboard_plugin')
+}
+
+export function importCastBoardPlugin(filePath: string) {
+  return invoke<CastBoardPlugin>('import_castboard_plugin', { filePath })
+}
+
+export function toggleCastBoardPlugin(id: string, enabled: boolean) {
+  return invoke<void>('toggle_castboard_plugin', { id, enabled })
+}
+
+export function deleteCastBoardPlugin(id: string) {
+  return invoke<void>('delete_castboard_plugin', { id })
 }
 
 export function checkUpdate() {
