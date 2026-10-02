@@ -38,7 +38,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: colink-desktop
-          submodules: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,6 +48,12 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: latest
+
+      - name: Cache CastBoard release
+        uses: actions/cache@v4
+        with:
+          path: colink-desktop/node_modules/.cache/colink/castboard
+          key: castboard-${{ runner.os }}-${{ hashFiles('colink-desktop/package.json') }}
 
       - name: Read pinned Rust toolchain
         id: rust-toolchain

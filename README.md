@@ -13,7 +13,6 @@ Desktop client for CoLink — clipboard sync, file transfer, text messaging, now
 ## Development
 
 ```sh
-git submodule update --init
 pnpm install
 pnpm tauri:debug-dev
 ```
@@ -21,7 +20,9 @@ pnpm tauri:debug-dev
 Vite serves the frontend on port 1420; Tauri connects to it automatically. In dev mode, CastBoard loads from an external dev server (default `http://127.0.0.1:5173`). Start the CastBoard dev server separately:
 
 ```sh
-cd castboard && pnpm dev
+cd ../colink-castboard
+pnpm install
+pnpm dev
 ```
 
 Override the CastBoard dev URL with `COLINK_CASTBOARD_DEV_URL` environment variable if needed.
@@ -38,6 +39,8 @@ pnpm tauri build
 
 - Windows: NSIS installer (`.exe`). When updater signing is configured, Tauri also creates a signed update archive (`.nsis.zip`) and its signature (`.nsis.zip.sig`).
 - Ubuntu and Debian: Debian package (`.deb`), installed through the system package manager.
+
+Production builds download the immutable CastBoard release declared by `castboardVersion` in `package.json` and cache it under `node_modules/.cache/colink/castboard/`. To test an unreleased local CastBoard build, run `pnpm build` in that project and set `COLINK_CASTBOARD_LOCAL_PATH` to either its project root or its `dist/` directory before building Desktop.
 
 ### Windows update signing
 
