@@ -5,13 +5,14 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use tokio::sync::mpsc;
 
 use crate::{
     error::{AppError, AppResult},
-    protocol::CameraEntry,
+    protocol::{CameraCapabilities, CameraEntry, CameraFpsRange, CameraResolution},
     runtime_events::RuntimeEvent,
     sync::MutexExt,
 };
@@ -26,7 +27,7 @@ pub(super) struct CameraCaptureRequest {
     pub fps: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct CameraCaptureProfile {
     pub width: u32,
     pub height: u32,
@@ -37,6 +38,14 @@ pub(super) struct CameraCaptureProfile {
 pub(super) struct CameraCaptureService {
     state: Arc<Mutex<CaptureState>>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    capability_cache: Arc<Mutex<HashMap<String, CachedCameraCapabilities>>>,
+    enumeration_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct CachedCameraCapabilities {
+    capabilities: CameraCapabilities,
+    cached_at: Instant,
 }
 
 #[derive(Default)]
@@ -63,11 +72,55 @@ impl CameraCaptureService {
         Self {
             state: Arc::new(Mutex::new(CaptureState::default())),
             event_tx,
+            capability_cache: Arc::new(Mutex::new(HashMap::new())),
+            enumeration_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub(super) fn list_devices(&self) -> AppResult<Vec<CameraEntry>> {
         platform::list_devices()
+    }
+
+    pub(super) fn list_devices_v2(&self) -> AppResult<Vec<CameraEntry>> {
+        const CAPABILITY_CACHE_TTL: Duration = Duration::from_secs(30);
+
+        let _enumeration_guard = self.enumeration_lock.lock_unpoisoned();
+        let cached = {
+            let now = Instant::now();
+            let mut cache = self.capability_cache.lock_unpoisoned();
+            cache.retain(|_, entry| {
+                now.saturating_duration_since(entry.cached_at) < CAPABILITY_CACHE_TTL
+            });
+            cache
+                .iter()
+                .map(|(camera_id, entry)| {
+                    (camera_id.clone(), entry.capabilities.clone())
+                })
+                .collect::<HashMap<_, _>>()
+        };
+        let cameras = platform::list_devices_v2(&cached)?;
+        let visible_camera_ids = cameras
+            .iter()
+            .map(|camera| camera.camera_id.as_str())
+            .collect::<HashSet<_>>();
+        let mut cache = self.capability_cache.lock_unpoisoned();
+        cache.retain(|camera_id, _| visible_camera_ids.contains(camera_id.as_str()));
+        let cached_at = Instant::now();
+        for camera in &cameras {
+            if cached.contains_key(&camera.camera_id) {
+                continue;
+            }
+            if let Some(capabilities) = camera.capabilities.clone() {
+                cache.insert(
+                    camera.camera_id.clone(),
+                    CachedCameraCapabilities {
+                        capabilities,
+                        cached_at,
+                    },
+                );
+            }
+        }
+        Ok(cameras)
     }
 
     pub(super) fn negotiate(
@@ -78,6 +131,16 @@ impl CameraCaptureService {
         fps: u32,
     ) -> AppResult<CameraCaptureProfile> {
         platform::negotiate(camera_id, width, height, fps)
+    }
+
+    pub(super) fn negotiate_exact(
+        &self,
+        camera_id: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> AppResult<CameraCaptureProfile> {
+        platform::negotiate_exact(camera_id, width, height, fps)
     }
 
     pub(super) fn start(&self, request: CameraCaptureRequest) -> AppResult<()> {
@@ -199,6 +262,161 @@ impl CameraCaptureService {
     }
 }
 
+const MAX_CAMERA_RESOLUTION_TIERS: usize = 5;
+
+fn camera_probe_candidates(
+    modes: impl IntoIterator<Item = CameraCaptureProfile>,
+) -> Vec<CameraCaptureProfile> {
+    let Some(capabilities) = promised_capabilities(modes) else {
+        return Vec::new();
+    };
+    let target_area = f64::from(1280 * 720);
+    let mut resolutions = capabilities.resolutions;
+    resolutions.sort_by(|left, right| {
+        let area = |resolution: &CameraResolution| {
+            f64::from(resolution.width) * f64::from(resolution.height)
+        };
+        (area(left).ln() - target_area.ln())
+            .abs()
+            .total_cmp(&(area(right).ln() - target_area.ln()).abs())
+            .then_with(|| {
+                (u64::from(right.width) * u64::from(right.height))
+                    .cmp(&(u64::from(left.width) * u64::from(left.height)))
+            })
+    });
+
+    let resolutions = resolutions
+        .into_iter()
+        .filter_map(|resolution| {
+            let mut rates = resolution
+                .fps
+                .into_iter()
+                .flat_map(|range| [range.min, range.max])
+                .filter(|fps| *fps > 0)
+                .collect::<Vec<_>>();
+            rates.sort_unstable();
+            rates.dedup();
+            let minimum = *rates.first()?;
+            let normal = rates
+                .iter()
+                .copied()
+                .filter(|fps| *fps <= 30)
+                .max()
+                .unwrap_or(minimum);
+            let low = rates
+                .iter()
+                .copied()
+                .filter(|fps| *fps <= 15)
+                .max()
+                .unwrap_or(minimum);
+            let high = *rates.last()?;
+            Some((resolution.width, resolution.height, [normal, low, high]))
+        })
+        .collect::<Vec<_>>();
+
+    let mut candidates = Vec::with_capacity(resolutions.len() * 3);
+    let mut selected = HashSet::new();
+    for stage in 0..3 {
+        for (width, height, rates) in &resolutions {
+            let profile = CameraCaptureProfile {
+                width: *width,
+                height: *height,
+                fps: rates[stage],
+            };
+            if selected.insert(profile) {
+                candidates.push(profile);
+            }
+        }
+    }
+    candidates
+}
+
+fn promised_capabilities(
+    modes: impl IntoIterator<Item = CameraCaptureProfile>,
+) -> Option<CameraCapabilities> {
+    let mut grouped = HashMap::<(u32, u32), HashSet<u32>>::new();
+    for mode in modes {
+        if mode.width == 0 || mode.height == 0 || mode.fps == 0 {
+            continue;
+        }
+        grouped
+            .entry((mode.width, mode.height))
+            .or_default()
+            .insert(mode.fps);
+    }
+    let mut resolutions = grouped
+        .into_iter()
+        .map(|((width, height), rates)| {
+            let mut rates = rates.into_iter().collect::<Vec<_>>();
+            rates.sort_unstable();
+            CameraResolution {
+                width,
+                height,
+                fps: rates
+                    .into_iter()
+                    .map(|fps| CameraFpsRange { min: fps, max: fps })
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    resolutions.sort_by_key(|resolution| {
+        (u64::from(resolution.width) * u64::from(resolution.height), resolution.width, resolution.height)
+    });
+    if resolutions.is_empty() {
+        return None;
+    }
+    if resolutions.len() > MAX_CAMERA_RESOLUTION_TIERS {
+        let tier_count = MAX_CAMERA_RESOLUTION_TIERS.min(resolutions.len());
+        let mut selected = vec![0, resolutions.len() - 1];
+        let log_area = |index: usize| {
+            let resolution = &resolutions[index];
+            (f64::from(resolution.width) * f64::from(resolution.height)).ln()
+        };
+        let minimum = log_area(0);
+        let maximum = log_area(resolutions.len() - 1);
+        for tier in 1..tier_count - 1 {
+            let target = minimum
+                + (maximum - minimum) * tier as f64 / (tier_count - 1) as f64;
+            let nearest = (0..resolutions.len()).min_by(|left, right| {
+                (log_area(*left) - target)
+                    .abs()
+                    .total_cmp(&(log_area(*right) - target).abs())
+                    .then_with(|| left.cmp(right))
+            });
+            if let Some(nearest) = nearest.filter(|index| !selected.contains(index)) {
+                selected.push(nearest);
+            }
+        }
+        while selected.len() < tier_count {
+            let next = (0..resolutions.len())
+                .filter(|index| !selected.contains(index))
+                .max_by(|left, right| {
+                    let separation = |index: usize| {
+                        selected
+                            .iter()
+                            .map(|selected_index| (log_area(index) - log_area(*selected_index)).abs())
+                            .fold(f64::INFINITY, f64::min)
+                    };
+                    separation(*left)
+                        .total_cmp(&separation(*right))
+                        .then_with(|| right.cmp(left))
+                });
+            let Some(next) = next else { break; };
+            selected.push(next);
+        }
+        selected.sort_unstable();
+        resolutions = selected
+            .into_iter()
+            .map(|index| resolutions[index].clone())
+            .collect();
+    }
+    resolutions.reverse();
+    Some(CameraCapabilities {
+        resolutions,
+        fps_range: None,
+    })
+}
+
 impl CaptureState {
     fn reserve(&mut self, request: &CameraCaptureRequest, cancelled: Arc<AtomicBool>) -> AppResult<()> {
         if self.active.contains_key(&request.session_id) {
@@ -307,9 +525,19 @@ impl CaptureState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::{
+        collections::HashSet,
+        sync::{atomic::AtomicBool, Arc},
+    };
 
-    use super::{CameraCaptureRequest, CaptureState};
+    use super::{
+        camera_probe_candidates, promised_capabilities, CameraCaptureProfile,
+        CameraCaptureRequest, CaptureState, MAX_CAMERA_RESOLUTION_TIERS,
+    };
+
+    fn profile(width: u32, height: u32, fps: u32) -> CameraCaptureProfile {
+        CameraCaptureProfile { width, height, fps }
+    }
 
     fn request(session_id: &str, camera_id: &str) -> CameraCaptureRequest {
         CameraCaptureRequest {
@@ -383,15 +611,132 @@ mod tests {
 
         assert!(state.reserve(&request("session", "camera"), Arc::new(AtomicBool::new(false))).is_err());
     }
+
+    #[test]
+    fn promised_capabilities_keep_valid_modes_and_singleton_frame_rates() {
+        let capabilities = promised_capabilities([
+            profile(1280, 720, 30),
+            profile(640, 360, 15),
+            profile(1280, 720, 15),
+            profile(1280, 720, 30),
+            profile(0, 720, 30),
+        ])
+        .expect("camera capabilities");
+
+        assert_eq!(capabilities.resolutions.len(), 2);
+        assert_eq!((capabilities.resolutions[0].width, capabilities.resolutions[0].height), (1280, 720));
+        assert_eq!(
+            capabilities.resolutions[0]
+                .fps
+                .iter()
+                .map(|range| (range.min, range.max))
+                .collect::<Vec<_>>(),
+            vec![(15, 15), (30, 30)],
+        );
+        assert_eq!((capabilities.resolutions[1].width, capabilities.resolutions[1].height), (640, 360));
+    }
+
+    #[test]
+    fn promised_capabilities_limit_resolutions_and_spread_them_logarithmically() {
+        let capabilities = promised_capabilities([
+            profile(160, 90, 30),
+            profile(240, 135, 30),
+            profile(320, 180, 30),
+            profile(480, 270, 30),
+            profile(640, 360, 30),
+            profile(960, 540, 30),
+            profile(1280, 720, 30),
+            profile(1920, 1080, 30),
+        ])
+        .expect("camera capabilities");
+
+        assert_eq!(capabilities.resolutions.len(), 5);
+        assert_eq!(
+            (capabilities.resolutions[0].width, capabilities.resolutions[0].height),
+            (1920, 1080),
+        );
+        assert_eq!(
+            (
+                capabilities.resolutions[4].width,
+                capabilities.resolutions[4].height,
+            ),
+            (160, 90),
+        );
+        assert!(capabilities.resolutions.windows(2).all(|pair| {
+            let larger_area = f64::from(pair[0].width) * f64::from(pair[0].height);
+            let smaller_area = f64::from(pair[1].width) * f64::from(pair[1].height);
+            larger_area / smaller_area <= 4.01
+        }));
+    }
+
+    #[test]
+    fn promised_capabilities_return_none_without_a_valid_mode() {
+        assert!(promised_capabilities([profile(0, 0, 0)]).is_none());
+    }
+
+    #[test]
+    fn camera_probe_candidates_prioritize_normal_then_low_and_high_frame_rates() {
+        let candidates = camera_probe_candidates(
+            [(640, 360), (1280, 720), (1920, 1080)]
+                .into_iter()
+                .flat_map(|(width, height)| {
+                    [10, 15, 24, 30, 60]
+                        .into_iter()
+                        .map(move |fps| profile(width, height, fps))
+                }),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                profile(1280, 720, 30),
+                profile(1920, 1080, 30),
+                profile(640, 360, 30),
+                profile(1280, 720, 15),
+                profile(1920, 1080, 15),
+                profile(640, 360, 15),
+                profile(1280, 720, 60),
+                profile(1920, 1080, 60),
+                profile(640, 360, 60),
+            ],
+        );
+    }
+
+    #[test]
+    fn camera_probe_candidates_limit_resolution_count_and_remove_duplicates() {
+        let candidates = camera_probe_candidates(
+            [
+                (160, 90),
+                (240, 135),
+                (320, 180),
+                (480, 270),
+                (640, 360),
+                (960, 540),
+                (1280, 720),
+                (1920, 1080),
+            ]
+            .into_iter()
+            .flat_map(|(width, height)| {
+                [30, 30]
+                    .into_iter()
+                    .map(move |fps| profile(width, height, fps))
+            }),
+        );
+
+        assert_eq!(candidates.len(), MAX_CAMERA_RESOLUTION_TIERS);
+        assert_eq!(candidates.iter().copied().collect::<HashSet<_>>().len(), candidates.len());
+    }
 }
 
 #[cfg(windows)]
 mod platform {
     use std::{
+        collections::{HashMap, HashSet},
         mem::ManuallyDrop,
         ptr,
         sync::{atomic::{AtomicBool, Ordering}, Arc},
-        time::Duration,
+        thread,
+        time::{Duration, Instant},
     };
 
     use windows::{
@@ -416,6 +761,7 @@ mod platform {
                 MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
                 MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
                 MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK,
+                MFT_SET_TYPE_TEST_ONLY,
                 MFSampleExtension_CleanPoint, MF_SOURCE_READER_ALL_STREAMS,
                 MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
                 METransformDrainComplete, METransformHaveOutput, METransformNeedInput, MFSTARTUP_FULL, MF_VERSION,
@@ -425,11 +771,21 @@ mod platform {
         },
     };
 
-    use crate::{error::{AppError, AppResult}, protocol::CameraEntry};
+    use crate::{
+        error::{AppError, AppResult},
+        protocol::{CameraCapabilities, CameraEntry},
+    };
 
-    use super::{CameraCaptureProfile, CameraCaptureRequest};
+    use super::{
+        camera_probe_candidates, promised_capabilities, CameraCaptureProfile,
+        CameraCaptureRequest,
+    };
 
     const HNS_PER_SECOND: u64 = 10_000_000;
+    const CAMERA_FORMAT_OPEN_ATTEMPTS: usize = 2;
+    const CAMERA_FORMAT_OPEN_RETRY_DELAY: Duration = Duration::from_millis(250);
+    const CAMERA_ENUMERATION_WORKERS: usize = 2;
+    const CAMERA_PROBE_BUDGET: Duration = Duration::from_secs(2);
 
     pub(super) fn list_devices() -> AppResult<Vec<CameraEntry>> {
         let _com = ComApartment::new()?;
@@ -447,6 +803,124 @@ mod platform {
         })
     }
 
+    pub(super) fn list_devices_v2(
+        cached: &HashMap<String, CameraCapabilities>,
+    ) -> AppResult<Vec<CameraEntry>> {
+        let devices = {
+            let _com = ComApartment::new()?;
+            let _media_foundation = MediaFoundation::new()?;
+            enumerate_devices()?
+        };
+        let mut cameras = vec![None; devices.len()];
+        let mut pending = Vec::new();
+        for (index, device) in devices.into_iter().enumerate() {
+            if let Some(capabilities) = cached.get(&device.id) {
+                cameras[index] = Some(CameraEntry {
+                    camera_id: device.id,
+                    label: device.label,
+                    position: None,
+                    capabilities: Some(capabilities.clone()),
+                });
+            } else {
+                pending.push((index, device));
+            }
+        }
+
+        let worker_count = CAMERA_ENUMERATION_WORKERS.min(pending.len());
+        let mut buckets = (0..worker_count).map(|_| Vec::new()).collect::<Vec<_>>();
+        for (offset, pending_device) in pending.into_iter().enumerate() {
+            buckets[offset % worker_count].push(pending_device);
+        }
+        let mut workers = Vec::with_capacity(worker_count);
+        for (worker_index, bucket) in buckets.into_iter().enumerate() {
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("camera-probe-{worker_index}"))
+                    .spawn(move || probe_camera_batch(bucket))
+                    .map_err(|error| AppError::message(error.to_string()))?,
+            );
+        }
+
+        let mut first_worker_error = None;
+        for worker in workers {
+            match worker.join() {
+                Ok(Ok(entries)) => {
+                    for (index, camera) in entries {
+                        cameras[index] = Some(camera);
+                    }
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "camera capability worker failed");
+                    first_worker_error.get_or_insert(error);
+                }
+                Err(_) => {
+                    tracing::warn!("camera capability worker panicked");
+                    first_worker_error.get_or_insert_with(|| {
+                        AppError::message("camera capability worker panicked")
+                    });
+                }
+            }
+        }
+        if cameras.iter().all(Option::is_none) {
+            if let Some(error) = first_worker_error {
+                return Err(error);
+            }
+        }
+        Ok(cameras.into_iter().flatten().collect())
+    }
+
+    fn probe_camera_batch(
+        devices: Vec<(usize, NativeCameraDevice)>,
+    ) -> AppResult<Vec<(usize, CameraEntry)>> {
+        let _com = ComApartment::new()?;
+        let _media_foundation = MediaFoundation::new()?;
+        let mut cameras = Vec::new();
+        for (index, device) in devices {
+            let started_at = Instant::now();
+            let deadline = started_at + CAMERA_PROBE_BUDGET;
+            match enumerate_encodable_camera_modes(&device.id, deadline) {
+                Ok(modes) => {
+                    if let Some(capabilities) = promised_capabilities(modes) {
+                        cameras.push((
+                            index,
+                            CameraEntry {
+                                camera_id: device.id.clone(),
+                                label: device.label.clone(),
+                                position: None,
+                                capabilities: Some(capabilities),
+                            },
+                        ));
+                    } else {
+                        tracing::warn!(
+                            camera_id = %device.id,
+                            camera_label = %device.label,
+                            "camera omitted because no promised mode could be verified"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        camera_id = %device.id,
+                        camera_label = %device.label,
+                        %error,
+                        "camera omitted because its promised modes could not be verified"
+                    );
+                }
+            }
+            let elapsed = started_at.elapsed();
+            if elapsed > CAMERA_PROBE_BUDGET {
+                tracing::warn!(
+                    camera_id = %device.id,
+                    camera_label = %device.label,
+                    elapsed_ms = elapsed.as_millis(),
+                    budget_ms = CAMERA_PROBE_BUDGET.as_millis(),
+                    "camera capability probe exceeded its soft time budget"
+                );
+            }
+        }
+        Ok(cameras)
+    }
+
     pub(super) fn negotiate(
         camera_id: &str,
         width: u32,
@@ -458,6 +932,20 @@ mod platform {
         let profile = select_camera_profile(camera_id, width, height, fps)?;
         activate_h264_encoder()?;
         Ok(profile)
+    }
+
+    pub(super) fn negotiate_exact(
+        camera_id: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> AppResult<CameraCaptureProfile> {
+        let _com = ComApartment::new()?;
+        let _media_foundation = MediaFoundation::new()?;
+        verify_encodable_camera_mode(
+            camera_id,
+            CameraCaptureProfile { width, height, fps },
+        )
     }
 
     pub(super) fn capture(
@@ -703,12 +1191,6 @@ mod platform {
         label: String,
     }
 
-    struct NativeCameraMode {
-        width: u32,
-        height: u32,
-        fps: u32,
-    }
-
     struct ComApartment;
 
     impl ComApartment {
@@ -807,14 +1289,21 @@ mod platform {
         requested_height: u32,
         requested_fps: u32,
     ) -> AppResult<CameraCaptureProfile> {
-        let activate = find_device(camera_id)?;
-        let source = MediaSourceSession(
-            unsafe { activate.ActivateObject::<IMFMediaSource>() }
-                .map_err(|error| camera_error("open camera for format negotiation", error))?,
-        );
-        let reader = unsafe { MFCreateSourceReaderFromMediaSource(&source.0, None) }
-            .map_err(|error| camera_error("create camera format reader", error))?;
-        let mut modes = Vec::new();
+        let modes = enumerate_camera_modes(camera_id)?;
+        let requested = CameraCaptureProfile {
+            width: requested_width,
+            height: requested_height,
+            fps: requested_fps,
+        };
+        modes
+            .into_iter()
+            .min_by_key(|mode| camera_mode_score(mode, requested))
+            .ok_or_else(|| AppError::message("camera has no native NV12 capture mode"))
+    }
+
+    fn enumerate_camera_modes(camera_id: &str) -> AppResult<Vec<CameraCaptureProfile>> {
+        let (_source, reader) = camera_format_reader(camera_id)?;
+        let mut modes = HashSet::new();
         for index in 0.. {
             let media_type = match unsafe {
                 reader.GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, index)
@@ -822,46 +1311,198 @@ mod platform {
                 Ok(media_type) => media_type,
                 Err(_) => break,
             };
-            let major_type = unsafe { media_type.GetGUID(&MF_MT_MAJOR_TYPE) }.unwrap_or_default();
-            let subtype = unsafe { media_type.GetGUID(&MF_MT_SUBTYPE) }.unwrap_or_default();
-            let frame_size = unsafe { media_type.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or_default();
-            let frame_rate = unsafe { media_type.GetUINT64(&MF_MT_FRAME_RATE) }.unwrap_or_default();
-            let width = (frame_size >> 32) as u32;
-            let height = frame_size as u32;
-            let rate_numerator = (frame_rate >> 32) as u32;
-            let rate_denominator = frame_rate as u32;
-            if major_type != MFMediaType_Video
-                || subtype != MFVideoFormat_NV12
-                || width == 0
-                || height == 0
-                || rate_numerator == 0
-                || rate_denominator == 0
+            if let Some(profile) = native_nv12_profile(&media_type) {
+                modes.insert(profile);
+            }
+        }
+        Ok(modes.into_iter().collect())
+    }
+
+    fn enumerate_encodable_camera_modes(
+        camera_id: &str,
+        deadline: Instant,
+    ) -> AppResult<Vec<CameraCaptureProfile>> {
+        let (_source, reader) = camera_format_reader_until(camera_id, Some(deadline))?;
+        if Instant::now() >= deadline {
+            return Err(AppError::message("camera capability probe timed out"));
+        }
+        let mut native_types = HashMap::new();
+        for index in 0.. {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let media_type = match unsafe {
+                reader.GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, index)
+            } {
+                Ok(media_type) => media_type,
+                Err(_) => break,
+            };
+            let Some(profile) = native_nv12_profile(&media_type) else { continue; };
+            native_types.entry(profile).or_insert(media_type);
+        }
+        let candidates = camera_probe_candidates(native_types.keys().copied());
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        if Instant::now() >= deadline {
+            return Err(AppError::message("camera capability probe timed out"));
+        }
+        let encoder = activate_h264_encoder()?;
+        let mut modes = Vec::new();
+        for profile in candidates {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let Some(media_type) = native_types.get(&profile) else { continue; };
+            if unsafe {
+                reader.SetCurrentMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
+                    None,
+                    media_type,
+                )
+            }
+            .is_err()
             {
                 continue;
             }
-            modes.push(NativeCameraMode {
-                width,
-                height,
-                fps: (rate_numerator / rate_denominator).max(1),
-            });
+            let Ok(actual_input_type) = (unsafe {
+                reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32)
+            }) else {
+                continue;
+            };
+            if native_nv12_profile(&actual_input_type) != Some(profile) {
+                continue;
+            }
+            if h264_encoder_accepts(&encoder.transform, &actual_input_type, profile)? {
+                modes.push(profile);
+            }
         }
-        let requested = CameraCaptureProfile {
-            width: requested_width,
-            height: requested_height,
-            fps: requested_fps,
-        };
-        let mode = modes
-            .into_iter()
-            .min_by_key(|mode| camera_mode_score(mode, requested))
-            .ok_or_else(|| AppError::message("camera has no native NV12 capture mode"))?;
-        Ok(CameraCaptureProfile {
-            width: mode.width,
-            height: mode.height,
-            fps: mode.fps,
+        if modes.is_empty() && Instant::now() >= deadline {
+            return Err(AppError::message("camera capability probe timed out"));
+        }
+        Ok(modes)
+    }
+
+    fn verify_encodable_camera_mode(
+        camera_id: &str,
+        profile: CameraCaptureProfile,
+    ) -> AppResult<CameraCaptureProfile> {
+        let (_source, reader) = camera_format_reader(camera_id)?;
+        let media_type = native_nv12_type(&reader, profile)
+            .map_err(|_| AppError::message("requested camera mode was not promised"))?;
+        unsafe {
+            reader.SetCurrentMediaType(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
+                None,
+                &media_type,
+            )
+        }
+        .map_err(|_| AppError::message("requested camera mode was not promised"))?;
+        let actual_input_type = unsafe {
+            reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32)
+        }
+        .map_err(windows_error)?;
+        if native_nv12_profile(&actual_input_type) != Some(profile) {
+            return Err(AppError::message("requested camera mode was not promised"));
+        }
+        let encoder = activate_h264_encoder()?;
+        if !h264_encoder_accepts(&encoder.transform, &actual_input_type, profile)? {
+            return Err(AppError::message("requested camera mode was not promised"));
+        }
+        Ok(profile)
+    }
+
+    fn camera_format_reader(camera_id: &str) -> AppResult<(MediaSourceSession, IMFSourceReader)> {
+        camera_format_reader_until(camera_id, None)
+    }
+
+    fn camera_format_reader_until(
+        camera_id: &str,
+        deadline: Option<Instant>,
+    ) -> AppResult<(MediaSourceSession, IMFSourceReader)> {
+        let mut last_error = None;
+        for attempt in 1..=CAMERA_FORMAT_OPEN_ATTEMPTS {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(last_error
+                    .unwrap_or_else(|| AppError::message("camera capability probe timed out")));
+            }
+            let result = (|| {
+                let activate = find_device(camera_id)?;
+                let source = MediaSourceSession(
+                    unsafe { activate.ActivateObject::<IMFMediaSource>() }
+                        .map_err(|error| camera_error("open camera for format negotiation", error))?,
+                );
+                let reader = unsafe { MFCreateSourceReaderFromMediaSource(&source.0, None) }
+                    .map_err(|error| camera_error("create camera format reader", error))?;
+                Ok((source, reader))
+            })();
+            match result {
+                Ok(reader) => return Ok(reader),
+                Err(error) if attempt < CAMERA_FORMAT_OPEN_ATTEMPTS => {
+                    if deadline.is_some_and(|deadline| {
+                        Instant::now() + CAMERA_FORMAT_OPEN_RETRY_DELAY >= deadline
+                    }) {
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        %camera_id,
+                        attempt,
+                        %error,
+                        "camera format reader open failed; retrying"
+                    );
+                    last_error = Some(error);
+                    std::thread::sleep(CAMERA_FORMAT_OPEN_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| AppError::message("camera format reader open failed")))
+    }
+
+    fn native_nv12_profile(media_type: &IMFMediaType) -> Option<CameraCaptureProfile> {
+        let major_type = unsafe { media_type.GetGUID(&MF_MT_MAJOR_TYPE) }.ok()?;
+        let subtype = unsafe { media_type.GetGUID(&MF_MT_SUBTYPE) }.ok()?;
+        let frame_size = unsafe { media_type.GetUINT64(&MF_MT_FRAME_SIZE) }.ok()?;
+        let frame_rate = unsafe { media_type.GetUINT64(&MF_MT_FRAME_RATE) }.ok()?;
+        let width = (frame_size >> 32) as u32;
+        let height = frame_size as u32;
+        let rate_numerator = (frame_rate >> 32) as u32;
+        let rate_denominator = frame_rate as u32;
+        if major_type != MFMediaType_Video
+            || subtype != MFVideoFormat_NV12
+            || width == 0
+            || height == 0
+            || rate_numerator == 0
+            || rate_denominator == 0
+        {
+            return None;
+        }
+        Some(CameraCaptureProfile {
+            width,
+            height,
+            fps: rate_numerator
+                .saturating_add(rate_denominator / 2)
+                .checked_div(rate_denominator)?
+                .max(1),
         })
     }
 
-    fn camera_mode_score(mode: &NativeCameraMode, requested: CameraCaptureProfile) -> (u8, u64, u64, u32) {
+    fn h264_encoder_accepts(
+        encoder: &IMFTransform,
+        input_type: &IMFMediaType,
+        profile: CameraCaptureProfile,
+    ) -> AppResult<bool> {
+        let output_type = h264_video_type(profile.width, profile.height, profile.fps)?;
+        let test_only = MFT_SET_TYPE_TEST_ONLY.0 as u32;
+        if unsafe { encoder.SetOutputType(0, &output_type, test_only) }.is_err()
+            || unsafe { encoder.SetOutputType(0, &output_type, 0) }.is_err()
+        {
+            return Ok(false);
+        }
+        Ok(unsafe { encoder.SetInputType(0, input_type, test_only) }.is_ok())
+    }
+
+    fn camera_mode_score(mode: &CameraCaptureProfile, requested: CameraCaptureProfile) -> (u8, u64, u64, u32) {
         let meets_request = mode.width >= requested.width
             && mode.height >= requested.height
             && mode.fps >= requested.fps;
@@ -899,7 +1540,12 @@ mod platform {
                 && width == profile.width
                 && height == profile.height
                 && rate_denominator != 0
-                && (rate_numerator / rate_denominator).max(1) == profile.fps
+                && rate_numerator
+                    .saturating_add(rate_denominator / 2)
+                    .checked_div(rate_denominator)
+                    .unwrap_or(0)
+                    .max(1)
+                    == profile.fps
             {
                 return Ok(media_type);
             }
@@ -1050,6 +1696,11 @@ mod platform {
                             annex_b = parameter_sets;
                         }
                     }
+                }
+                if keyframe && !contains_parameter_sets(&annex_b) {
+                    return Err(AppError::message(
+                        "H.264 encoder produced a keyframe without SPS/PPS",
+                    ));
                 }
                 Ok(Some((keyframe, annex_b)))
             }
@@ -1232,16 +1883,17 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use std::{
+            collections::HashMap,
             sync::{
                 atomic::{AtomicUsize, Ordering},
                 Arc,
             },
-            time::Duration,
+            time::{Duration, Instant},
         };
 
         use super::{
-            avcc_parameter_sets_to_annex_b, capture, h264_to_annex_b, list_devices, negotiate,
-            CameraCaptureRequest, AtomicBool,
+            avcc_parameter_sets_to_annex_b, capture, h264_to_annex_b, list_devices,
+            list_devices_v2, negotiate, CameraCaptureRequest, AtomicBool,
         };
 
         #[test]
@@ -1261,6 +1913,28 @@ mod platform {
                 ]),
                 vec![0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xce],
             );
+        }
+
+        #[test]
+        #[ignore = "requires a connected Windows camera and hardware H.264 encoder"]
+        fn native_camera_v2_enumeration_smoke() {
+            let started_at = Instant::now();
+            let cameras = list_devices_v2(&HashMap::new())
+                .expect("enumerate cameras with verified H.264 capabilities");
+            assert!(!cameras.is_empty(), "no encodable camera was enumerated");
+            for camera in cameras {
+                let capabilities = camera
+                    .capabilities
+                    .expect("V2 camera must include capabilities");
+                assert!(!capabilities.resolutions.is_empty());
+                assert!(capabilities.resolutions.len() <= super::super::MAX_CAMERA_RESOLUTION_TIERS);
+                assert!(capabilities.resolutions.iter().all(|resolution| {
+                    resolution.width > 0
+                        && resolution.height > 0
+                        && !resolution.fps.is_empty()
+                }));
+            }
+            eprintln!("V2 camera enumeration completed in {:?}", started_at.elapsed());
         }
 
         #[test]
@@ -1414,9 +2088,12 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
-    use std::{sync::{atomic::AtomicBool, Arc}};
+    use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}};
 
-    use crate::{error::{AppError, AppResult}, protocol::CameraEntry};
+    use crate::{
+        error::{AppError, AppResult},
+        protocol::{CameraCapabilities, CameraEntry},
+    };
 
     use super::{CameraCaptureProfile, CameraCaptureRequest};
 
@@ -1424,7 +2101,22 @@ mod platform {
         Ok(Vec::new())
     }
 
+    pub(super) fn list_devices_v2(
+        _: &HashMap<String, CameraCapabilities>,
+    ) -> AppResult<Vec<CameraEntry>> {
+        Ok(Vec::new())
+    }
+
     pub(super) fn negotiate(
+        _: &str,
+        _: u32,
+        _: u32,
+        _: u32,
+    ) -> AppResult<CameraCaptureProfile> {
+        Err(AppError::message("native camera capture is currently available on Windows only"))
+    }
+
+    pub(super) fn negotiate_exact(
         _: &str,
         _: u32,
         _: u32,

@@ -22,6 +22,7 @@ import type {
   RemoteTerminalSupport,
   RemoteCameraSupport,
   CameraEntry,
+  CameraV2ConfigAck,
   SavedLoginCredentials,
   SendFilePayload,
   SendTextPayload,
@@ -290,8 +291,10 @@ export function closeTerminal(deviceId: string, sessionId: string) {
 }
 
 export function getRemoteCameraSupport(deviceId: string) { return invoke<RemoteCameraSupport>('get_remote_camera_support', { deviceId }) }
+export function getRemoteCameraTransportHint(deviceId: string) { return invoke<'lan' | 'relay'>('get_remote_camera_transport_hint', { deviceId }) }
 export function listRemoteCameras(deviceId: string) { return invoke<CameraEntry[]>('list_remote_cameras', { deviceId }) }
-export function openRemoteCamera(deviceId: string, cameraId: string, preferredCodecs: string[]) { return invoke<string>('open_remote_camera', { deviceId, cameraId, preferredCodecs }) }
+export function openRemoteCamera(deviceId: string, cameraId: string, preferredCodecs: string[], width = 0, height = 0, fps = 0) { return invoke<string>('open_remote_camera', { deviceId, cameraId, preferredCodecs, width, height, fps }) }
+export function configureRemoteCamera(deviceId: string, sessionId: string, width: number, height: number, fps: number) { return invoke<CameraV2ConfigAck>('configure_remote_camera', { deviceId, sessionId, width, height, fps }) }
 
 export function sendCameraAlive(deviceId: string, sessionId: string) { return invoke<void>('send_camera_alive', { deviceId, sessionId }) }
 export function closeRemoteCamera(deviceId: string, sessionId: string) { return invoke<void>('close_remote_camera', { deviceId, sessionId }) }

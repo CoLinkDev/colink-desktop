@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { Camera, LoaderCircle, RefreshCw, Square, Video } from 'lucide-react'
+import { Camera, Gauge, LoaderCircle, RefreshCw, Square, Video } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { DeviceSidebar, useTargetDevices } from '../components/device-sidebar'
-import { closeRemoteCamera, getRemoteCameraSupport, listRemoteCameras, openRemoteCamera, sendCameraAlive } from '../lib/api'
+import {
+  closeRemoteCamera,
+  configureRemoteCamera,
+  getRemoteCameraSupport,
+  getRemoteCameraTransportHint,
+  listRemoteCameras,
+  openRemoteCamera,
+  sendCameraAlive,
+} from '../lib/api'
 import { isReleaseBuild } from '../lib/app-meta'
-import type { CameraEntry, RemoteCameraSupport } from '../lib/types'
+import type { CameraEntry, CameraMode, CameraResolution, RemoteCameraSupport } from '../lib/types'
 import { cn, formatPlatformName } from '../lib/utils'
 import { Button } from '../components/ui/button'
 
@@ -79,7 +87,119 @@ interface CameraDebugSnapshot {
   delayDriftMs: number
 }
 
+interface PendingModeSwitch {
+  mode: CameraMode
+  frames: CameraEvent[]
+  bytes: number
+}
+
+interface ModeSwitchRequest {
+  mode: CameraMode
+  source: 'auto' | 'manual'
+  probeFromIndex?: number
+}
+
+interface AdaptiveCameraState {
+  windowStartedAt: number
+  windowReceived: number
+  windowMissing: number
+  windowStartDrift: number
+  lastDrift: number
+  lastFrameAt: number
+  lastSequence?: number
+  badWindows: number
+  stableSince: number
+  cooldownUntil: number
+  probe?: { fromIndex: number; deadline: number }
+}
+
 const CAMERA_DEBUG_LOGGING_ENABLED = !isReleaseBuild
+const CAMERA_MODE_WINDOW_MS = 5_000
+const CAMERA_MODE_STABLE_UPGRADE_MS = 30_000
+const CAMERA_MODE_PROBE_MS = 10_000
+const CAMERA_MODE_UPGRADE_COOLDOWN_MS = 60_000
+const CAMERA_MODE_STALL_MS = 1_800
+const CAMERA_SWITCH_MAX_FRAMES = 120
+const CAMERA_SWITCH_MAX_BYTES = 24 * 1024 * 1024
+
+function cameraModeKey(mode: CameraMode) {
+  return `${mode.width}x${mode.height}@${mode.fps}`
+}
+
+function cameraResolutionKey(resolution: Pick<CameraResolution, 'width' | 'height'>) {
+  return `${resolution.width}x${resolution.height}`
+}
+
+function sameCameraMode(left: CameraMode | null | undefined, right: CameraMode | null | undefined) {
+  return !!left && !!right && cameraModeKey(left) === cameraModeKey(right)
+}
+
+function cameraModeScore(mode: CameraMode) {
+  return mode.width * mode.height * mode.fps
+}
+
+function fpsCandidates(resolution: CameraResolution) {
+  const values = new Set<number>()
+  for (const range of resolution.fps ?? []) {
+    if (range.min <= 0 || range.max < range.min) continue
+    values.add(range.min)
+    values.add(range.max)
+    for (const standard of [15, 24, 30, 60]) {
+      if (standard >= range.min && standard <= range.max) values.add(standard)
+    }
+  }
+  return [...values].sort((left, right) => left - right)
+}
+
+function buildCameraModeLadder(camera: CameraEntry) {
+  const modes = new Map<string, CameraMode>()
+  for (const resolution of camera.capabilities?.resolutions ?? []) {
+    for (const fps of fpsCandidates(resolution)) {
+      const mode = { width: resolution.width, height: resolution.height, fps }
+      modes.set(cameraModeKey(mode), mode)
+    }
+  }
+  return [...modes.values()].sort((left, right) => {
+    const score = cameraModeScore(left) - cameraModeScore(right)
+    if (score !== 0) return score
+    const pixels = left.width * left.height - right.width * right.height
+    return pixels !== 0 ? pixels : left.fps - right.fps
+  })
+}
+
+function manualModeForResolution(resolution: CameraResolution): CameraMode | null {
+  const rates = fpsCandidates(resolution)
+  if (rates.length === 0) return null
+  const fps = rates.includes(30)
+    ? 30
+    : [...rates].reverse().find((value) => value < 30) ?? rates[0]
+  return { width: resolution.width, height: resolution.height, fps }
+}
+
+function initialCameraMode(modes: CameraMode[], transport: 'lan' | 'relay') {
+  if (modes.length === 0) return null
+  const targetPixels = transport === 'lan' ? 1280 * 720 : 640 * 360
+  const targetFps = transport === 'lan' ? 30 : 15
+  const eligible = modes.filter(
+    (mode) => mode.width * mode.height <= targetPixels && mode.fps <= targetFps,
+  )
+  return eligible.at(-1) ?? modes[0]
+}
+
+function newAdaptiveCameraState(): AdaptiveCameraState {
+  const now = performance.now()
+  return {
+    windowStartedAt: now,
+    windowReceived: 0,
+    windowMissing: 0,
+    windowStartDrift: 0,
+    lastDrift: 0,
+    lastFrameAt: now,
+    badWindows: 0,
+    stableSince: now,
+    cooldownUntil: 0,
+  }
+}
 
 function newCameraDebugCounters(sessionId = ''): CameraDebugCounters {
   const now = performance.now()
@@ -160,6 +280,10 @@ export function CameraPage() {
   const [loading, setLoading] = useState(false)
   const [fetchingCameras, setFetchingCameras] = useState(false)
   const [debugStats, setDebugStats] = useState<CameraDebugSnapshot | null>(null)
+  const [activeCamera, setActiveCamera] = useState<CameraEntry | null>(null)
+  const [currentMode, setCurrentMode] = useState<CameraMode | null>(null)
+  const [quality, setQuality] = useState('auto')
+  const [configuring, setConfiguring] = useState(false)
   const sessionRef = useRef<string | null>(null)
   const decoderRef = useRef<VideoDecoder | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -169,6 +293,16 @@ export function CameraPage() {
   const pendingVideoFrameRef = useRef<VideoFrame | null>(null)
   const renderAnimationRef = useRef<number | null>(null)
   const debugCountersRef = useRef(newCameraDebugCounters())
+  const cameraModesRef = useRef<CameraMode[]>([])
+  const currentModeRef = useRef<CameraMode | null>(null)
+  const automaticModeRef = useRef(true)
+  const configuringRef = useRef(false)
+  const pendingModeSwitchRef = useRef<PendingModeSwitch | null>(null)
+  const queuedModeSwitchRef = useRef<ModeSwitchRequest | null>(null)
+  const switchGenerationRef = useRef(0)
+  const decodeFrameRef = useRef<(event: CameraEvent) => void>(() => {})
+  const resetDecoderRef = useRef<() => void>(() => {})
+  const adaptiveRef = useRef(newAdaptiveCameraState())
 
   const support = supportState?.deviceId === selectedDeviceId ? supportState.value : 'loading'
 
@@ -179,7 +313,19 @@ export function CameraPage() {
     setStreamReady(false)
     setHasFrame(false)
     setDebugStats(null)
+    setActiveCamera(null)
+    setCurrentMode(null)
+    setQuality('auto')
+    setConfiguring(false)
     debugCountersRef.current = newCameraDebugCounters()
+    cameraModesRef.current = []
+    currentModeRef.current = null
+    automaticModeRef.current = true
+    configuringRef.current = false
+    pendingModeSwitchRef.current = null
+    queuedModeSwitchRef.current = null
+    switchGenerationRef.current += 1
+    adaptiveRef.current = newAdaptiveCameraState()
     imageDecodeGenerationRef.current += 1
     expectedSequenceRef.current = null
     decoderSyncedRef.current = false
@@ -195,6 +341,220 @@ export function CameraPage() {
       void closeRemoteCamera(selectedDeviceId, currentSession)
     }
   }, [selectedDeviceId])
+
+  const requestModeSwitch = useCallback((request: ModeSwitchRequest) => {
+    queuedModeSwitchRef.current = request
+    if (configuringRef.current) return
+    configuringRef.current = true
+    setConfiguring(true)
+    const generation = switchGenerationRef.current
+
+    const run = async () => {
+      while (queuedModeSwitchRef.current) {
+        const next = queuedModeSwitchRef.current
+        queuedModeSwitchRef.current = null
+        const activeSession = sessionRef.current
+        if (!activeSession || !selectedDeviceId || sameCameraMode(currentModeRef.current, next.mode)) {
+          continue
+        }
+
+        const pending: PendingModeSwitch = { mode: next.mode, frames: [], bytes: 0 }
+        pendingModeSwitchRef.current = pending
+        try {
+          const ack = await configureRemoteCamera(
+            selectedDeviceId,
+            activeSession,
+            next.mode.width,
+            next.mode.height,
+            next.mode.fps,
+          )
+          if (
+            generation !== switchGenerationRef.current ||
+            sessionRef.current !== activeSession
+          ) {
+            return
+          }
+          if (
+            !ack.applied ||
+            ack.width !== next.mode.width ||
+            ack.height !== next.mode.height ||
+            ack.fps !== next.mode.fps ||
+            ack.effectiveFromSequence === undefined
+          ) {
+            throw new Error('camera mode acknowledgement did not match the requested mode')
+          }
+
+          pendingModeSwitchRef.current = null
+          resetDecoderRef.current()
+          currentModeRef.current = next.mode
+          setCurrentMode(next.mode)
+          const counters = debugCountersRef.current
+          counters.width = next.mode.width
+          counters.height = next.mode.height
+          counters.fps = next.mode.fps
+          counters.baseArrivalMs = undefined
+          counters.baseTimestampMs = undefined
+          counters.delayDriftMs = 0
+          const adaptive = newAdaptiveCameraState()
+          if (next.source === 'auto') {
+            adaptive.cooldownUntil = performance.now() + CAMERA_MODE_UPGRADE_COOLDOWN_MS
+            if (next.probeFromIndex !== undefined) {
+              adaptive.probe = {
+                fromIndex: next.probeFromIndex,
+                deadline: performance.now() + CAMERA_MODE_PROBE_MS,
+              }
+            }
+          }
+          adaptiveRef.current = adaptive
+
+          for (const frame of pending.frames) {
+            if (
+              frame.sequence !== undefined &&
+              frame.sequence >= ack.effectiveFromSequence
+            ) {
+              adaptive.windowReceived += 1
+              adaptive.lastFrameAt = performance.now()
+              if (
+                adaptive.lastSequence !== undefined &&
+                frame.sequence > adaptive.lastSequence + 1
+              ) {
+                adaptive.windowMissing += frame.sequence - adaptive.lastSequence - 1
+              }
+              adaptive.lastSequence = frame.sequence
+              decodeFrameRef.current(frame)
+            }
+          }
+        } catch {
+          if (
+            generation !== switchGenerationRef.current ||
+            sessionRef.current !== activeSession
+          ) {
+            return
+          }
+          const buffered = pendingModeSwitchRef.current?.frames ?? []
+          pendingModeSwitchRef.current = null
+          let recoveryIndex = -1
+          for (let index = buffered.length - 1; index >= 0; index -= 1) {
+            if (buffered[index].keyframe) {
+              recoveryIndex = index
+              break
+            }
+          }
+          if (recoveryIndex >= 0) {
+            resetDecoderRef.current()
+          }
+          for (const frame of buffered.slice(Math.max(0, recoveryIndex))) {
+            decodeFrameRef.current(frame)
+          }
+          if (next.source === 'manual') {
+            const actualResolution = activeCamera?.capabilities?.resolutions.find(
+              (resolution) =>
+                resolution.width === currentModeRef.current?.width &&
+                resolution.height === currentModeRef.current?.height,
+            )
+            if (actualResolution) {
+              setQuality(cameraResolutionKey(actualResolution))
+            } else {
+              automaticModeRef.current = true
+              adaptiveRef.current = newAdaptiveCameraState()
+              setQuality('auto')
+            }
+          }
+          toast.error(t('camera.qualitySwitchFailed'))
+        }
+      }
+
+      if (generation === switchGenerationRef.current) {
+        configuringRef.current = false
+        setConfiguring(false)
+      }
+    }
+
+    void run()
+  }, [activeCamera, selectedDeviceId, t])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (
+        document.hidden ||
+        !streamReady ||
+        !automaticModeRef.current ||
+        configuringRef.current
+      ) {
+        return
+      }
+      const mode = currentModeRef.current
+      const modes = cameraModesRef.current
+      if (!mode || modes.length < 2) return
+      const currentIndex = modes.findIndex((candidate) => sameCameraMode(candidate, mode))
+      if (currentIndex < 0) return
+
+      const now = performance.now()
+      const adaptive = adaptiveRef.current
+      if (
+        adaptive.lastSequence !== undefined &&
+        now - adaptive.lastFrameAt >= CAMERA_MODE_STALL_MS &&
+        currentIndex > 0
+      ) {
+        adaptive.badWindows = 0
+        requestModeSwitch({ mode: modes[currentIndex - 1], source: 'auto' })
+        return
+      }
+      const elapsed = now - adaptive.windowStartedAt
+      if (elapsed < CAMERA_MODE_WINDOW_MS) return
+
+      const expectedFrames = mode.fps * elapsed / 1_000
+      const deliveryRatio = expectedFrames > 0 ? adaptive.windowReceived / expectedFrames : 1
+      const observedFrames = adaptive.windowReceived + adaptive.windowMissing
+      const gapRatio = observedFrames > 0 ? adaptive.windowMissing / observedFrames : 0
+      const driftGrowth = adaptive.lastDrift - adaptive.windowStartDrift
+      const badWindow = deliveryRatio < 0.75 || gapRatio > 0.05 || driftGrowth > 400
+
+      adaptive.windowStartedAt = now
+      adaptive.windowReceived = 0
+      adaptive.windowMissing = 0
+      adaptive.windowStartDrift = adaptive.lastDrift
+
+      if (adaptive.probe) {
+        if (badWindow) {
+          const fallback = modes[adaptive.probe.fromIndex]
+          adaptive.probe = undefined
+          if (fallback) requestModeSwitch({ mode: fallback, source: 'auto' })
+          return
+        }
+        if (now >= adaptive.probe.deadline) {
+          adaptive.probe = undefined
+          adaptive.stableSince = now
+        }
+      }
+
+      if (badWindow) {
+        adaptive.badWindows += 1
+        adaptive.stableSince = now
+        if (adaptive.badWindows >= 2 && currentIndex > 0) {
+          adaptive.badWindows = 0
+          requestModeSwitch({ mode: modes[currentIndex - 1], source: 'auto' })
+        }
+        return
+      }
+
+      adaptive.badWindows = 0
+      if (
+        !adaptive.probe &&
+        currentIndex < modes.length - 1 &&
+        now - adaptive.stableSince >= CAMERA_MODE_STABLE_UPGRADE_MS &&
+        now >= adaptive.cooldownUntil
+      ) {
+        adaptive.cooldownUntil = now + CAMERA_MODE_UPGRADE_COOLDOWN_MS
+        requestModeSwitch({
+          mode: modes[currentIndex + 1],
+          source: 'auto',
+          probeFromIndex: currentIndex,
+        })
+      }
+    }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [requestModeSwitch, streamReady])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -374,11 +734,9 @@ export function CameraPage() {
       return decoder
     }
 
-    void listen<CameraEvent>('camera-event', ({ payload }) => {
-      if (disposed) return
-      if (payload.sessionId !== sessionRef.current) return
-      if (payload.kind === 'frame' && payload.data) {
-        if (payload.codec === 'h264' && payload.sequence !== undefined) {
+    const decodeFrame = (payload: CameraEvent) => {
+      if (!payload.data) return
+      if (payload.codec === 'h264' && payload.sequence !== undefined) {
           const bytes = base64ToBytes(payload.data)
           const counters = debugCountersRef.current
           counters.receivedFrames += 1
@@ -444,7 +802,7 @@ export function CameraPage() {
             decoderSyncedRef.current = false
             counters.decodeErrors += 1
           }
-        } else if (payload.codec === 'jpeg' || payload.codec === 'webp') {
+      } else if (payload.codec === 'jpeg' || payload.codec === 'webp') {
           const generation = ++imageDecodeGenerationRef.current
           const bytes = base64ToBytes(payload.data)
           const counters = debugCountersRef.current
@@ -476,14 +834,73 @@ export function CameraPage() {
             .catch(() => {
               counters.decodeErrors += 1
             })
+      }
+    }
+    decodeFrameRef.current = decodeFrame
+
+    const resetDecoder = () => {
+      imageDecodeGenerationRef.current += 1
+      expectedSequenceRef.current = null
+      decoderSyncedRef.current = false
+      try {
+        decoderRef.current?.close()
+      } catch {
+        // Decoder may already be closed.
+      }
+      decoderRef.current = null
+      pendingVideoFrameRef.current?.close()
+      pendingVideoFrameRef.current = null
+      if (renderAnimationRef.current !== null) {
+        window.cancelAnimationFrame(renderAnimationRef.current)
+        renderAnimationRef.current = null
+      }
+    }
+    resetDecoderRef.current = resetDecoder
+
+    void listen<CameraEvent>('camera-event', ({ payload }) => {
+      if (disposed) return
+      if (payload.sessionId !== sessionRef.current) return
+      if (payload.kind === 'frame' && payload.data) {
+        if (payload.sequence !== undefined) {
+          const adaptive = adaptiveRef.current
+          adaptive.windowReceived += 1
+          adaptive.lastFrameAt = performance.now()
+          if (
+            adaptive.lastSequence !== undefined &&
+            payload.sequence > adaptive.lastSequence + 1
+          ) {
+            adaptive.windowMissing += payload.sequence - adaptive.lastSequence - 1
+          }
+          adaptive.lastSequence = payload.sequence
+          adaptive.lastDrift = debugCountersRef.current.delayDriftMs
+        }
+        const pending = pendingModeSwitchRef.current
+        if (pending) {
+          const frameBytes = Math.ceil(payload.data.length * 3 / 4)
+          pending.frames.push(payload)
+          pending.bytes += frameBytes
+          while (
+            pending.frames.length > CAMERA_SWITCH_MAX_FRAMES ||
+            pending.bytes > CAMERA_SWITCH_MAX_BYTES
+          ) {
+            const removed = pending.frames.shift()
+            if (!removed?.data) break
+            pending.bytes = Math.max(0, pending.bytes - Math.ceil(removed.data.length * 3 / 4))
+          }
+        } else {
+          decodeFrame(payload)
         }
       }
       if (payload.kind === 'opened' && payload.codec) {
         setHasFrame(false)
         setStreamReady(true)
-        imageDecodeGenerationRef.current += 1
-        expectedSequenceRef.current = null
-        decoderSyncedRef.current = false
+        resetDecoder()
+        const openedMode = payload.width && payload.height && payload.fps
+          ? { width: payload.width, height: payload.height, fps: payload.fps }
+          : null
+        currentModeRef.current = openedMode
+        setCurrentMode(openedMode)
+        adaptiveRef.current = newAdaptiveCameraState()
         debugCountersRef.current = {
           ...newCameraDebugCounters(payload.sessionId),
           codec: payload.codec,
@@ -499,12 +916,6 @@ export function CameraPage() {
           )
         }
         if (payload.codec === 'h264') {
-          try {
-            decoderRef.current?.close()
-          } catch {
-            // ignore
-          }
-          decoderRef.current = null
           try {
             createDecoder()
           } catch {
@@ -535,12 +946,24 @@ export function CameraPage() {
         setStreamReady(false)
         setHasFrame(false)
         setDebugStats(null)
+        setActiveCamera(null)
+        setCurrentMode(null)
+        setQuality('auto')
+        setConfiguring(false)
         if (CAMERA_DEBUG_LOGGING_ENABLED) {
           console.info(
             `[Camera][viewer] session=${payload.sessionId.slice(0, 8)} ${payload.kind} message=${payload.message ?? ''}`,
           )
         }
         debugCountersRef.current = newCameraDebugCounters()
+        cameraModesRef.current = []
+        currentModeRef.current = null
+        automaticModeRef.current = true
+        configuringRef.current = false
+        pendingModeSwitchRef.current = null
+        queuedModeSwitchRef.current = null
+        switchGenerationRef.current += 1
+        adaptiveRef.current = newAdaptiveCameraState()
         imageDecodeGenerationRef.current += 1
         expectedSequenceRef.current = null
         decoderSyncedRef.current = false
@@ -555,6 +978,8 @@ export function CameraPage() {
     return () => {
       disposed = true
       unlisten?.()
+      decodeFrameRef.current = () => {}
+      resetDecoderRef.current = () => {}
       imageDecodeGenerationRef.current += 1
       try {
         decoderRef.current?.close()
@@ -596,14 +1021,33 @@ export function CameraPage() {
     setLoading(true)
     setStreamReady(false)
     try {
+      const modes = buildCameraModeLadder(camera)
       const preferredCodecs = ['webp', 'jpeg']
       if ('VideoDecoder' in window) {
         const support = await VideoDecoder.isConfigSupported({ codec: 'avc1.42001f' }).catch(() => null)
         if (support?.supported) preferredCodecs.unshift('h264')
       }
-      const id = await openRemoteCamera(selectedDeviceId, camera.cameraId, preferredCodecs)
+      const transport = modes.length > 0
+        ? await getRemoteCameraTransportHint(selectedDeviceId).catch(() => 'relay' as const)
+        : 'relay'
+      const initialMode = initialCameraMode(modes, transport)
+      const id = await openRemoteCamera(
+        selectedDeviceId,
+        camera.cameraId,
+        preferredCodecs,
+        initialMode?.width,
+        initialMode?.height,
+        initialMode?.fps,
+      )
       sessionRef.current = id
       setSessionId(id)
+      setActiveCamera(camera)
+      setQuality('auto')
+      setCurrentMode(initialMode)
+      cameraModesRef.current = modes
+      currentModeRef.current = initialMode
+      automaticModeRef.current = true
+      adaptiveRef.current = newAdaptiveCameraState()
       debugCountersRef.current = newCameraDebugCounters(id)
       if (CAMERA_DEBUG_LOGGING_ENABLED) {
         console.info(
@@ -616,6 +1060,26 @@ export function CameraPage() {
       setLoading(false)
     }
   }
+
+  const changeQuality = (value: string) => {
+    setQuality(value)
+    if (value === 'auto') {
+      automaticModeRef.current = true
+      queuedModeSwitchRef.current = null
+      adaptiveRef.current = newAdaptiveCameraState()
+      return
+    }
+    automaticModeRef.current = false
+    const resolution = activeCamera?.capabilities?.resolutions.find(
+      (candidate) => cameraResolutionKey(candidate) === value,
+    )
+    const mode = resolution ? manualModeForResolution(resolution) : null
+    if (mode) requestModeSwitch({ mode, source: 'manual' })
+  }
+
+  const qualityResolutions = (activeCamera?.capabilities?.resolutions ?? []).filter(
+    (resolution) => manualModeForResolution(resolution) !== null,
+  )
 
   return (
     <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden">
@@ -658,6 +1122,33 @@ export function CameraPage() {
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
+                {sessionId && streamReady && qualityResolutions.length > 0 && (
+                  <div className="flex items-center gap-2 rounded-lg border bg-[hsl(var(--panel))] px-2.5 py-1.5 text-[12px] text-[hsl(var(--text-secondary))]">
+                    <Gauge className="h-3.5 w-3.5 text-[hsl(var(--muted))]" />
+                    <label className="sr-only" htmlFor="camera-quality">{t('camera.qualityLabel')}</label>
+                    <select
+                      aria-label={t('camera.qualityLabel')}
+                      className="bg-transparent text-[12px] font-medium text-[hsl(var(--text))] outline-none"
+                      id="camera-quality"
+                      onChange={(event) => changeQuality(event.target.value)}
+                      value={quality}
+                    >
+                      <option value="auto">{t('camera.qualityAuto')}</option>
+                      {qualityResolutions.map((resolution) => (
+                        <option key={cameraResolutionKey(resolution)} value={cameraResolutionKey(resolution)}>
+                          {resolution.width} × {resolution.height}
+                        </option>
+                      ))}
+                    </select>
+                    {configuring ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[hsl(var(--muted))]" />
+                    ) : currentMode ? (
+                      <span className="whitespace-nowrap text-[11px] text-[hsl(var(--muted))]">
+                        {currentMode.fps} FPS
+                      </span>
+                    ) : null}
+                  </div>
+                )}
                 {sessionId ? (
                   <Button onClick={closeStream} size="sm" variant="danger">
                     <Square className="h-3.5 w-3.5" />

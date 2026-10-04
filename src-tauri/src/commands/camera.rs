@@ -1,10 +1,19 @@
 use tauri::State;
 
-use crate::{protocol::CameraEntry, runtime::RemoteCameraSupport, state::AppState};
+use crate::{
+    protocol::{CameraEntry, CameraV2ConfigAckPayload},
+    runtime::RemoteCameraSupport,
+    state::AppState,
+};
 
 #[tauri::command]
 pub fn get_remote_camera_support(state: State<'_, AppState>, device_id: String) -> RemoteCameraSupport {
     state.runtime.remote_camera_support(&device_id)
+}
+
+#[tauri::command]
+pub fn get_remote_camera_transport_hint(state: State<'_, AppState>, device_id: String) -> String {
+    state.runtime.remote_camera_transport_hint(&device_id).to_string()
 }
 
 #[tauri::command]
@@ -13,8 +22,36 @@ pub async fn list_remote_cameras(state: State<'_, AppState>, device_id: String) 
 }
 
 #[tauri::command]
-pub async fn open_remote_camera(state: State<'_, AppState>, device_id: String, camera_id: String, preferred_codecs: Vec<String>) -> Result<String, String> {
-    state.runtime.open_remote_camera(&device_id, camera_id, preferred_codecs).await.map_err(|error| error.to_string())
+pub async fn open_remote_camera(
+    state: State<'_, AppState>,
+    device_id: String,
+    camera_id: String,
+    preferred_codecs: Vec<String>,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<String, String> {
+    state
+        .runtime
+        .open_remote_camera(&device_id, camera_id, preferred_codecs, width, height, fps)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn configure_remote_camera(
+    state: State<'_, AppState>,
+    device_id: String,
+    session_id: String,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<CameraV2ConfigAckPayload, String> {
+    state
+        .runtime
+        .configure_remote_camera(&device_id, &session_id, width, height, fps)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
