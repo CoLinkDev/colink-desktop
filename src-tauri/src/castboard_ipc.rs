@@ -157,6 +157,17 @@ fn dispatch_plugins(window: &WebviewWindow, plugins: Vec<Value>) -> Result<(), S
     )
 }
 
+pub fn dispatch_plugin_config(window: &WebviewWindow, id: &str, config: Value) -> Result<(), String> {
+    dispatch_event(
+        window,
+        serde_json::json!({
+            "channel": "castboard",
+            "type": "plugin.configure",
+            "payload": { "id": id, "config": config },
+        }),
+    )
+}
+
 pub fn dispatch_protocol_event<T>(
     window: &WebviewWindow,
     message_type: &str,

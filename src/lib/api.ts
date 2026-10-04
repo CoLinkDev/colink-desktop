@@ -13,6 +13,7 @@ import type {
   MusicProviderMeta,
   CastBoardMonitor,
   CastBoardPlugin,
+  CastBoardPluginConfigOverrides,
   CastBoardStatus,
   RegisterPayload,
   RemoteFilesystemDownload,
@@ -168,6 +169,14 @@ export function stopCastBoard() {
 
 export function listCastBoardPlugins() {
   return invoke<CastBoardPlugin[]>('list_castboard_plugins')
+}
+
+export function getCastBoardPluginConfig(id: string) {
+  return invoke<CastBoardPluginConfigOverrides>('get_castboard_plugin_config', { id })
+}
+
+export function updateCastBoardPluginConfig(id: string, overrides: CastBoardPluginConfigOverrides) {
+  return invoke<void>('update_castboard_plugin_config', { id, overrides })
 }
 
 export function pickCastBoardPlugin() {

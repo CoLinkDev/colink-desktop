@@ -206,6 +206,47 @@ export interface CastBoardStatus {
   message: string | null
 }
 
+export type CastBoardPluginConfigValue = boolean | number | string
+
+interface CastBoardPluginConfigFieldBase {
+  default: CastBoardPluginConfigValue
+  title?: Record<string, string>
+  description?: Record<string, string>
+}
+
+export interface CastBoardPluginBooleanConfigField extends CastBoardPluginConfigFieldBase {
+  type: 'boolean'
+  default: boolean
+}
+
+export interface CastBoardPluginNumberConfigField extends CastBoardPluginConfigFieldBase {
+  type: 'number' | 'integer'
+  default: number
+  minimum?: number
+  maximum?: number
+}
+
+export interface CastBoardPluginStringConfigField extends CastBoardPluginConfigFieldBase {
+  type: 'string'
+  default: string
+  format?: 'password'
+  enum?: string[]
+  enumTitles?: Record<string, Record<string, string>>
+}
+
+export type CastBoardPluginConfigField =
+  | CastBoardPluginBooleanConfigField
+  | CastBoardPluginNumberConfigField
+  | CastBoardPluginStringConfigField
+
+export interface CastBoardPluginConfigSchema {
+  type: 'object'
+  additionalProperties: false
+  properties: Record<string, CastBoardPluginConfigField>
+}
+
+export type CastBoardPluginConfigOverrides = Record<string, CastBoardPluginConfigValue>
+
 export interface CastBoardPlugin {
   id: string
   name: Record<string, string>
@@ -214,6 +255,7 @@ export interface CastBoardPlugin {
   minCastBoardVersion: string
   type: 'navigable' | 'transient'
   entry: string
+  configSchema: CastBoardPluginConfigSchema | null
   enabled: boolean
   installedAt: number
 }

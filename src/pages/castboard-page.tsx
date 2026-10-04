@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
-import { Monitor, Play, Puzzle, RefreshCw, Square, Trash2, Upload } from 'lucide-react'
+import { Monitor, Play, Puzzle, RefreshCw, Settings, Square, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
@@ -18,6 +18,7 @@ import {
 import type { CastBoardMonitor, CastBoardPlugin, CastBoardStatus } from '../lib/types'
 import { Button } from '../components/ui/button'
 import { Switch } from '../components/ui/switch'
+import { PluginConfigDialog } from '../components/castboard/plugin-config-dialog'
 import { cn } from '../lib/utils'
 import { readErrorMessage, useAppState } from '../hooks/use-app-state'
 
@@ -59,6 +60,7 @@ export function CastBoardPage() {
   const [importing, setImporting] = useState(false)
   const [actingPluginId, setActingPluginId] = useState<string | null>(null)
   const [deletePlugin, setDeletePlugin] = useState<CastBoardPlugin | null>(null)
+  const [configPlugin, setConfigPlugin] = useState<CastBoardPlugin | null>(null)
   const pluginsBusy = importing || actingPluginId !== null
 
   const selectedMonitor = useMemo(
@@ -301,6 +303,18 @@ export function CastBoardPage() {
                   </div>
                   {description && <p className="mt-1 line-clamp-2 text-[12px] text-[hsl(var(--muted))]">{description}</p>}
                 </div>
+                {plugin.configSchema && (
+                  <Button
+                    aria-label={t('castboard.plugins.configure', { name })}
+                    className="h-8 w-8 p-0"
+                    disabled={pluginsBusy}
+                    onClick={() => setConfigPlugin(plugin)}
+                    title={t('castboard.plugins.configure', { name })}
+                    variant="ghost"
+                  >
+                    <Settings className="h-4 w-4" />
+                  </Button>
+                )}
                 <Switch
                   aria-label={t('castboard.plugins.toggle', { name })}
                   checked={plugin.enabled}
@@ -349,6 +363,13 @@ export function CastBoardPage() {
           </div>
         </div>,
         document.body,
+      )}
+      {configPlugin && (
+        <PluginConfigDialog
+          language={language}
+          onClose={() => setConfigPlugin(null)}
+          plugin={configPlugin}
+        />
       )}
     </div>
   )

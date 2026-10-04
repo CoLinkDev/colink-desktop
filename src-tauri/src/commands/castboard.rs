@@ -106,6 +106,26 @@ pub fn list_castboard_plugins(app: AppHandle) -> Result<Vec<PluginInfo>, String>
 }
 
 #[tauri::command]
+pub fn get_castboard_plugin_config(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    castboard_plugins::config(&app, &id)
+}
+
+#[tauri::command]
+pub fn update_castboard_plugin_config(
+    app: AppHandle,
+    id: String,
+    overrides: serde_json::Value,
+) -> Result<(), String> {
+    let normalized = castboard_plugins::update_config(&app, &id, overrides)?;
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        if let Err(error) = castboard_ipc::dispatch_plugin_config(&window, &id, normalized) {
+            warn!(%id, %error, "failed to deliver CastBoard plugin configuration");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn pick_castboard_plugin(app: AppHandle) -> Result<Option<PluginInfo>, String> {
     let Some(path) = rfd::FileDialog::new()
         .add_filter("CastBoard plugin", &["zip"])

@@ -35,6 +35,8 @@ commands.allow = [
   "open_castboard_on_monitor",
   "stop_castboard",
   "list_castboard_plugins",
+  "get_castboard_plugin_config",
+  "update_castboard_plugin_config",
   "pick_castboard_plugin",
   "import_castboard_plugin",
   "toggle_castboard_plugin",

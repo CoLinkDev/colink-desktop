@@ -27,12 +27,14 @@ const MAX_ARCHIVE_FILE_SIZE: u64 = 16 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_MANIFEST_SIZE: u64 = 1024 * 1024;
 const CASTBOARD_VERSION: &str = env!("COLINK_CASTBOARD_VERSION");
+const CONFIG_SCHEMA_MIN_VERSION: (u64, u64, u64) = (2, 3, 0);
 
 pub const ERROR_INVALID_ARCHIVE: &str = "castboard_plugin_invalid_archive";
 pub const ERROR_INVALID_MANIFEST: &str = "castboard_plugin_invalid_manifest";
 pub const ERROR_INCOMPATIBLE: &str = "castboard_plugin_incompatible";
 pub const ERROR_STORAGE: &str = "castboard_plugin_storage_error";
 pub const ERROR_NOT_FOUND: &str = "castboard_plugin_not_found";
+pub const ERROR_INVALID_CONFIG: &str = "castboard_plugin_invalid_config";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +49,8 @@ pub struct PluginManifest {
     #[serde(rename = "type")]
     plugin_type: String,
     entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_schema: Option<Value>,
     #[serde(flatten)]
     additional: BTreeMap<String, Value>,
 }
@@ -62,6 +66,7 @@ pub struct PluginInfo {
     #[serde(rename = "type")]
     plugin_type: String,
     entry: String,
+    config_schema: Option<Value>,
     enabled: bool,
     installed_at: u64,
 }
@@ -71,6 +76,8 @@ pub struct PluginInfo {
 struct PluginState {
     enabled: bool,
     installed_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_overrides: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +97,7 @@ impl InstalledPlugin {
             min_cast_board_version: self.manifest.min_cast_board_version.clone(),
             plugin_type: self.manifest.plugin_type.clone(),
             entry: self.manifest.entry.clone(),
+            config_schema: self.manifest.config_schema.clone(),
             enabled: self.state.enabled,
             installed_at: self.state.installed_at,
         }
@@ -99,6 +107,7 @@ impl InstalledPlugin {
         serde_json::json!({
             "manifest": self.manifest,
             "baseUrl": plugin_base_url(&self.directory_name),
+            "config": self.state.config_overrides.clone().unwrap_or_else(|| serde_json::json!({})),
         })
     }
 }
@@ -140,8 +149,35 @@ pub fn toggle(app: &AppHandle, id: &str, enabled: bool) -> Result<(), String> {
     let next = PluginState {
         enabled,
         installed_at: plugin.state.installed_at,
+        config_overrides: plugin.state.config_overrides,
     };
     write_state_atomic(&root.join(plugin.directory_name), &next)
+}
+
+pub fn config(app: &AppHandle, id: &str) -> Result<Value, String> {
+    let plugin = find_plugin(&plugins_root(app)?, id)?;
+    if plugin.manifest.config_schema.is_none() {
+        return Err(ERROR_INVALID_CONFIG.to_string());
+    }
+    Ok(plugin.state.config_overrides.unwrap_or_else(|| serde_json::json!({})))
+}
+
+pub fn update_config(app: &AppHandle, id: &str, overrides: Value) -> Result<Value, String> {
+    let root = plugins_root(app)?;
+    let plugin = find_plugin(&root, id)?;
+    let schema = plugin
+        .manifest
+        .config_schema
+        .as_ref()
+        .ok_or_else(|| ERROR_INVALID_CONFIG.to_string())?;
+    let normalized = normalize_config_overrides(schema, &overrides, true)?;
+    let next = PluginState {
+        enabled: plugin.state.enabled,
+        installed_at: plugin.state.installed_at,
+        config_overrides: Some(normalized.clone()),
+    };
+    write_state_atomic(&root.join(plugin.directory_name), &next)?;
+    Ok(normalized)
 }
 
 pub fn delete(app: &AppHandle, id: &str) -> Result<(), String> {
@@ -226,6 +262,15 @@ fn import_archive(root: &Path, archive_path: &Path, installed_at: u64) -> Result
                 .as_ref()
                 .map(|plugin| plugin.state.installed_at)
                 .unwrap_or(installed_at),
+            config_overrides: match (&manifest.config_schema, existing.as_ref()) {
+                (Some(schema), Some(plugin)) => Some(normalize_config_overrides(
+                    schema,
+                    plugin.state.config_overrides.as_ref().unwrap_or(&serde_json::json!({})),
+                    false,
+                )?),
+                (Some(_), None) => Some(serde_json::json!({})),
+                (None, _) => None,
+            },
         };
         write_state(&package_root, &state)?;
         replace_directory(&package_root, &target)?;
@@ -328,7 +373,15 @@ fn read_manifest(directory: &Path) -> Result<PluginManifest, String> {
         return Err(ERROR_INVALID_MANIFEST.to_string());
     }
     let contents = fs::read_to_string(path).map_err(|_| ERROR_INVALID_MANIFEST.to_string())?;
-    serde_json::from_str(&contents).map_err(|_| ERROR_INVALID_MANIFEST.to_string())
+    let value: Value = serde_json::from_str(&contents).map_err(|_| ERROR_INVALID_MANIFEST.to_string())?;
+    if value
+        .as_object()
+        .and_then(|manifest| manifest.get("configSchema"))
+        .is_some_and(Value::is_null)
+    {
+        return Err(ERROR_INVALID_MANIFEST.to_string());
+    }
+    serde_json::from_value(value).map_err(|_| ERROR_INVALID_MANIFEST.to_string())
 }
 
 fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), String> {
@@ -350,6 +403,11 @@ fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), 
     if minimum > current {
         return Err(ERROR_INCOMPATIBLE.to_string());
     }
+    if let Some(schema) = &manifest.config_schema {
+        if minimum < CONFIG_SCHEMA_MIN_VERSION || !valid_config_schema(schema) {
+            return Err(ERROR_INVALID_MANIFEST.to_string());
+        }
+    }
 
     let entry = safe_package_path(&manifest.entry).ok_or_else(|| ERROR_INVALID_MANIFEST.to_string())?;
     let entry_path = directory.join(entry);
@@ -361,6 +419,129 @@ fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), 
         return Err(ERROR_INVALID_MANIFEST.to_string());
     }
     Ok(())
+}
+
+fn valid_config_schema(schema: &Value) -> bool {
+    let Some(root) = schema.as_object() else { return false };
+    if !has_exact_or_subset_keys(root, &["type", "additionalProperties", "properties"])
+        || root.len() != 3
+        || root.get("type").and_then(Value::as_str) != Some("object")
+        || root.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+    {
+        return false;
+    }
+    let Some(properties) = root.get("properties").and_then(Value::as_object) else { return false };
+    properties.iter().all(|(name, field)| !name.trim().is_empty() && valid_config_field(field))
+}
+
+fn valid_config_field(field: &Value) -> bool {
+    let Some(field) = field.as_object() else { return false };
+    let Some(field_type) = field.get("type").and_then(Value::as_str) else { return false };
+    let allowed = match field_type {
+        "boolean" => &["type", "default", "title", "description"][..],
+        "number" | "integer" => &["type", "default", "title", "description", "minimum", "maximum"][..],
+        "string" => &["type", "default", "title", "description", "format", "enum", "enumTitles"][..],
+        _ => return false,
+    };
+    if !has_exact_or_subset_keys(field, allowed) || !field.contains_key("default") {
+        return false;
+    }
+    if field.get("title").is_some_and(|value| !valid_localized_value(value))
+        || field.get("description").is_some_and(|value| !valid_localized_value(value))
+    {
+        return false;
+    }
+    if matches!(field_type, "number" | "integer") {
+        let minimum = field.get("minimum").and_then(Value::as_f64);
+        let maximum = field.get("maximum").and_then(Value::as_f64);
+        if field.get("minimum").is_some() && minimum.is_none()
+            || field.get("maximum").is_some() && maximum.is_none()
+            || minimum.zip(maximum).is_some_and(|(minimum, maximum)| minimum > maximum)
+        {
+            return false;
+        }
+    }
+    if field_type == "string" {
+        if field.get("format").is_some_and(|value| value.as_str() != Some("password")) {
+            return false;
+        }
+        let enum_values = match field.get("enum") {
+            Some(Value::Array(values)) if !values.is_empty() => {
+                let strings = values.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+                if strings.len() != values.len() || strings.iter().collect::<HashSet<_>>().len() != strings.len() {
+                    return false;
+                }
+                Some(strings)
+            }
+            Some(_) => return false,
+            None => None,
+        };
+        if let Some(titles) = field.get("enumTitles") {
+            let (Some(values), Some(titles)) = (enum_values.as_ref(), titles.as_object()) else { return false };
+            if titles.len() != values.len()
+                || values.iter().any(|value| !titles.get(*value).is_some_and(valid_localized_value))
+            {
+                return false;
+            }
+        }
+    }
+    field.get("default").is_some_and(|value| valid_config_value(value, field))
+}
+
+fn valid_localized_value(value: &Value) -> bool {
+    value.as_object().is_some_and(|entries| {
+        !entries.is_empty() && entries.iter().all(|(locale, text)| {
+            !locale.trim().is_empty() && text.as_str().is_some_and(|text| !text.trim().is_empty())
+        })
+    })
+}
+
+fn valid_config_value(value: &Value, field: &serde_json::Map<String, Value>) -> bool {
+    match field.get("type").and_then(Value::as_str) {
+        Some("boolean") => value.is_boolean(),
+        Some("string") => value.as_str().is_some_and(|value| {
+            field.get("enum").and_then(Value::as_array)
+                .is_none_or(|values| values.iter().any(|candidate| candidate.as_str() == Some(value)))
+        }),
+        Some("number") | Some("integer") => {
+            let Some(number) = value.as_f64() else { return false };
+            if !number.is_finite()
+                || field.get("type").and_then(Value::as_str) == Some("integer")
+                    && number.fract() != 0.0
+            {
+                return false;
+            }
+            field.get("minimum").and_then(Value::as_f64).is_none_or(|minimum| number >= minimum)
+                && field.get("maximum").and_then(Value::as_f64).is_none_or(|maximum| number <= maximum)
+        }
+        _ => false,
+    }
+}
+
+fn normalize_config_overrides(schema: &Value, overrides: &Value, strict: bool) -> Result<Value, String> {
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ERROR_INVALID_MANIFEST.to_string())?;
+    let values = overrides.as_object().ok_or_else(|| ERROR_INVALID_CONFIG.to_string())?;
+    if strict && values.iter().any(|(name, value)| {
+        properties.get(name).and_then(Value::as_object)
+            .is_none_or(|field| !valid_config_value(value, field))
+    }) {
+        return Err(ERROR_INVALID_CONFIG.to_string());
+    }
+    let normalized = values.iter().filter_map(|(name, value)| {
+        let field = properties.get(name)?.as_object()?;
+        if !valid_config_value(value, field) || field.get("default") == Some(value) {
+            return None;
+        }
+        Some((name.clone(), value.clone()))
+    }).collect();
+    Ok(Value::Object(normalized))
+}
+
+fn has_exact_or_subset_keys(value: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool {
+    value.keys().all(|key| allowed.contains(&key.as_str()))
 }
 
 fn valid_localized_strings(strings: &BTreeMap<String, String>) -> bool {
@@ -589,8 +770,9 @@ mod tests {
     use zip::{write::SimpleFileOptions, ZipWriter};
 
     use super::{
-        import_archive, parse_version, plugin_directory_name, safe_package_path,
-        ERROR_INVALID_ARCHIVE, ERROR_INVALID_MANIFEST,
+        import_archive, normalize_config_overrides, parse_version, plugin_directory_name,
+        safe_package_path, valid_config_schema, ERROR_INVALID_ARCHIVE, ERROR_INVALID_CONFIG,
+        ERROR_INVALID_MANIFEST,
     };
 
     #[test]
@@ -614,6 +796,62 @@ mod tests {
         let second = plugin_directory_name("com.example.two");
         assert_eq!(first.len(), 71);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn validates_and_normalizes_config_schema_values() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "step": { "type": "integer", "default": 1.0, "minimum": 1, "maximum": 10 },
+                "theme": {
+                    "type": "string",
+                    "default": "system",
+                    "enum": ["system", "dark"],
+                    "enumTitles": {
+                        "system": { "en": "System" },
+                        "dark": { "en": "Dark" }
+                    }
+                }
+            }
+        });
+        assert!(valid_config_schema(&schema));
+        assert_eq!(
+            normalize_config_overrides(
+                &schema,
+                &serde_json::json!({ "step": 5, "theme": "system", "removed": true }),
+                false,
+            ).unwrap(),
+            serde_json::json!({ "step": 5 }),
+        );
+        assert_eq!(
+            normalize_config_overrides(&schema, &serde_json::json!({ "step": 0 }), true).unwrap_err(),
+            ERROR_INVALID_CONFIG,
+        );
+    }
+
+    #[test]
+    fn rejects_config_schemas_without_valid_defaults() {
+        for schema in [
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "enabled": { "type": "boolean" } }
+            }),
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "step": { "type": "integer", "default": 0, "minimum": 1 } }
+            }),
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "nested": { "type": "object", "default": {} } }
+            }),
+        ] {
+            assert!(!valid_config_schema(&schema));
+        }
     }
 
     #[test]
