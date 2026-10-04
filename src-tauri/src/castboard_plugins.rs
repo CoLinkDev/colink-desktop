@@ -39,7 +39,8 @@ pub const ERROR_INVALID_CONFIG: &str = "castboard_plugin_invalid_config";
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
-    schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema_version: Option<String>,
     id: String,
     name: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -385,8 +386,7 @@ fn read_manifest(directory: &Path) -> Result<PluginManifest, String> {
 }
 
 fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), String> {
-    if manifest.schema_version != "1.0.0"
-        || manifest.id.trim().is_empty()
+    if manifest.id.trim().is_empty()
         || !valid_localized_strings(&manifest.name)
         || manifest
             .description
@@ -771,8 +771,8 @@ mod tests {
 
     use super::{
         import_archive, normalize_config_overrides, parse_version, plugin_directory_name,
-        safe_package_path, valid_config_schema, ERROR_INVALID_ARCHIVE, ERROR_INVALID_CONFIG,
-        ERROR_INVALID_MANIFEST,
+        read_manifest, safe_package_path, valid_config_schema, validate_manifest,
+        ERROR_INVALID_ARCHIVE, ERROR_INVALID_CONFIG, ERROR_INVALID_MANIFEST,
     };
 
     #[test]
@@ -780,6 +780,42 @@ mod tests {
         assert_eq!(parse_version("2.2.0"), Some((2, 2, 0)));
         assert_eq!(parse_version("2.2"), None);
         assert_eq!(parse_version("2.2.0-beta"), None);
+    }
+
+    #[test]
+    fn accepts_manifests_with_optional_deprecated_schema_version() {
+        let root = std::env::temp_dir().join(format!("colink-plugin-test-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("index.js"), "export default { mount() {} }").unwrap();
+        let base_manifest = serde_json::json!({
+            "id": "com.example.schema-version",
+            "name": { "en": "Test" },
+            "version": "1.0.0",
+            "minCastBoardVersion": "2.2.0",
+            "type": "navigable",
+            "entry": "index.js"
+        });
+
+        for schema_version in [None, Some("legacy")] {
+            let mut raw_manifest = base_manifest.clone();
+            if let Some(value) = schema_version {
+                raw_manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("schemaVersion".to_string(), serde_json::json!(value));
+            }
+            fs::write(
+                root.join("manifest.json"),
+                serde_json::to_vec(&raw_manifest).unwrap(),
+            )
+            .unwrap();
+
+            let manifest = read_manifest(&root).unwrap();
+            assert_eq!(manifest.schema_version.as_deref(), schema_version);
+            validate_manifest(&manifest, &root).unwrap();
+        }
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
