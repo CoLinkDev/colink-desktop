@@ -105,6 +105,9 @@ const SWIM_MAX_GOSSIP: usize = 10;
 const SWIM_MAX_BODY_BYTES: usize = 16 * 1024;
 const CAMERA_SEND_BUFFER_CAPACITY: usize = 3;
 const CAMERA_RECEIVE_BUFFER_CAPACITY: usize = 4;
+const CAMERA_MAX_FRAME_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+const CAMERA_HTTP_LINE_LIMIT: usize = 8 * 1024;
+const CAMERA_HTTP_TRAILER_LIMIT: usize = 16 * 1024;
 const REASON_AUTH_UNKNOWN_DEVICE: &str = "colink:auth.unknown_device.v1";
 const REASON_AUTH_KEY_CHANGED: &str = "colink:auth.key_changed.v1";
 const REASON_PAIRING_CANCELLED: &str = "colink:pairing.cancelled.v1";
@@ -180,6 +183,7 @@ struct LanState {
     file_v3_transfers: HashMap<String, FileV3TransferEndpoint>,
     tls_config: Option<LanTlsConfig>,
     camera_tokens: HashMap<String, String>,
+    camera_v2_tokens: HashMap<String, String>,
     camera_senders: HashMap<String, mpsc::Sender<CameraDataFrame>>,
     camera_receive_buffers: HashMap<String, CameraReceiveBuffer>,
     pending_pairings: HashMap<String, oneshot::Sender<bool>>,
@@ -616,6 +620,7 @@ impl LanManager {
                 file_v3_transfers: HashMap::new(),
                 tls_config: None,
                 camera_tokens: HashMap::new(),
+                camera_v2_tokens: HashMap::new(),
                 camera_senders: HashMap::new(),
                 camera_receive_buffers: HashMap::new(),
                 pending_pairings: HashMap::new(),
@@ -675,6 +680,7 @@ impl LanManager {
             inner.file_v3_transfers.clear();
             inner.tls_config = None;
             inner.camera_tokens.clear();
+            inner.camera_v2_tokens.clear();
             inner.camera_senders.clear();
             inner.camera_receive_buffers.clear();
             inner.pending_pairings.clear();
@@ -722,6 +728,7 @@ impl LanManager {
             inner.file_v3_transfers.clear();
             inner.tls_config = None;
             inner.camera_tokens.clear();
+            inner.camera_v2_tokens.clear();
             inner.camera_receive_buffers.clear();
             inner.pair_strings.clear();
             (
@@ -1417,10 +1424,24 @@ impl LanManager {
             .insert(session_id.to_string(), token.to_string());
     }
 
+    pub fn register_camera_v2(&self, session_id: &str, token: &str) -> AppResult<String> {
+        let mut inner = self.inner.lock_unpoisoned();
+        let fingerprint = inner
+            .tls_config
+            .as_ref()
+            .map(|config| config.cert_fingerprint.clone())
+            .ok_or_else(|| AppError::message("LAN TLS service is unavailable"))?;
+        inner
+            .camera_v2_tokens
+            .insert(session_id.to_string(), token.to_string());
+        Ok(fingerprint)
+    }
+
     pub fn unregister_camera(&self, session_id: &str) {
         let sender = {
             let mut inner = self.inner.lock_unpoisoned();
             inner.camera_tokens.remove(session_id);
+            inner.camera_v2_tokens.remove(session_id);
             inner.camera_receive_buffers.remove(session_id);
             inner.camera_senders.remove(session_id)
         };
@@ -1479,6 +1500,62 @@ impl LanManager {
             .await
             .map_err(|error| AppError::message(error.to_string()))?;
         self.attach_camera_stream(session_id.to_string(), stream).await
+    }
+
+    pub async fn connect_camera_v2(
+        &self,
+        session_id: &str,
+        token: &str,
+        ip: &str,
+        port: u16,
+        cert_fingerprint: &str,
+    ) -> AppResult<()> {
+        let expected_fingerprint = parse_certificate_fingerprint(cert_fingerprint)?;
+        let address = SocketAddr::new(
+            ip.parse::<IpAddr>()
+                .map_err(|_| AppError::message("invalid LAN camera address"))?,
+            port,
+        );
+        let tcp = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(address))
+            .await
+            .map_err(|_| AppError::message("LAN camera HTTPS connection timed out"))??;
+        let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = Arc::new(FingerprintServerCertVerifier {
+            expected_fingerprint,
+            crypto_provider: crypto_provider.clone(),
+        });
+        let config = rustls::ClientConfig::builder_with_provider(crypto_provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|error| AppError::message(error.to_string()))?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        let server_name = ServerName::try_from("colink-camera")
+            .map_err(|error| AppError::message(error.to_string()))?;
+        let mut stream = timeout(
+            HANDSHAKE_TIMEOUT,
+            TlsConnector::from(Arc::new(config)).connect(server_name, tcp),
+        )
+        .await
+        .map_err(|_| AppError::message("LAN camera HTTPS handshake timed out"))??;
+        let request = format!(
+            "GET /camera/v2/{session_id} HTTP/1.1\r\nHost: {ip}:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await?;
+        let (status, headers, buffered_body) = read_http_headers(&mut stream).await?;
+        if status != 200 {
+            return Err(AppError::message(format!(
+                "LAN camera HTTPS request failed with HTTP {status}"
+            )));
+        }
+        let body_framing = camera_v2_body_framing(&headers)?;
+        self.attach_camera_v2_reader(
+            session_id.to_string(),
+            stream,
+            buffered_body,
+            body_framing,
+        );
+        Ok(())
     }
 
     async fn run(
@@ -1874,7 +1951,8 @@ impl LanManager {
             return Ok(());
         }
         if first_byte[0] == b'G'
-            && tcp_stream_starts_with(&stream, b"GET /transfer/v3/").await?
+            && (tcp_stream_starts_with(&stream, b"GET /transfer/v3/").await?
+                || tcp_stream_starts_with(&stream, b"GET /camera/v2/").await?)
         {
             let mut stream = stream;
             write_file_v3_response(&mut stream, 421, &[], None).await?;
@@ -1899,16 +1977,9 @@ impl LanManager {
             .as_ref()
             .map(|config| config.server_config.clone())
             .ok_or_else(|| AppError::message("LAN TLS service is unavailable"))?;
-        let stream = timeout(HANDSHAKE_TIMEOUT, TlsAcceptor::from(server_config).accept(stream))
+        let mut stream = timeout(HANDSHAKE_TIMEOUT, TlsAcceptor::from(server_config).accept(stream))
             .await
             .map_err(|_| AppError::message("LAN TLS handshake timed out"))??;
-        self.handle_file_v3_https(stream).await
-    }
-
-    async fn handle_file_v3_https(
-        &self,
-        mut stream: tokio_rustls::server::TlsStream<TcpStream>,
-    ) -> AppResult<()> {
         let (method, path, headers) = match read_http_request(&mut stream).await {
             Ok(value) => value,
             Err(error) => {
@@ -1916,6 +1987,20 @@ impl LanManager {
                 return Err(error);
             }
         };
+        if path.starts_with("/camera/v2/") {
+            self.handle_camera_v2_https(stream, method, path, headers).await
+        } else {
+            self.handle_file_v3_https(stream, method, path, headers).await
+        }
+    }
+
+    async fn handle_file_v3_https(
+        &self,
+        mut stream: tokio_rustls::server::TlsStream<TcpStream>,
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+    ) -> AppResult<()> {
         if method != "GET" {
             write_file_v3_response(&mut stream, 404, &[], None).await?;
             return Ok(());
@@ -1960,6 +2045,61 @@ impl LanManager {
             .await;
         self.end_file_v3_request(session_id);
         result
+    }
+
+    async fn handle_camera_v2_https(
+        &self,
+        mut stream: tokio_rustls::server::TlsStream<TcpStream>,
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+    ) -> AppResult<()> {
+        if method != "GET" {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        }
+        let Some(session_id) = path.strip_prefix("/camera/v2/").filter(|value| !value.is_empty()) else {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        };
+        if session_id.contains('/') || path.contains('?') {
+            write_file_v3_response(&mut stream, 404, &[], None).await?;
+            return Ok(());
+        }
+        let token = headers
+            .get("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "));
+        let authorized = token.is_some_and(|token| self.consume_camera_v2_token(session_id, token));
+        if !authorized {
+            let exists = self
+                .inner
+                .lock_unpoisoned()
+                .camera_v2_tokens
+                .contains_key(session_id);
+            write_file_v3_response(&mut stream, if exists { 401 } else { 404 }, &[], None).await?;
+            return Ok(());
+        }
+        let (sender, mut receiver) = mpsc::channel::<CameraDataFrame>(CAMERA_SEND_BUFFER_CAPACITY);
+        self.inner
+            .lock_unpoisoned()
+            .camera_senders
+            .insert(session_id.to_string(), sender);
+        write_camera_v2_stream_response(&mut stream).await?;
+        info!(%session_id, "LAN camera v2 data stream attached");
+        let _ = self.event_tx.send(RuntimeEvent::LanCameraConnected {
+            session_id: session_id.to_string(),
+        });
+        while let Some(frame) = receiver.recv().await {
+            if stream.write_all(&frame.encode()).await.is_err() {
+                break;
+            }
+        }
+        self.unregister_camera(session_id);
+        info!(%session_id, "LAN camera v2 data stream detached");
+        let _ = self.event_tx.send(RuntimeEvent::LanCameraClosed {
+            session_id: session_id.to_string(),
+        });
+        Ok(())
     }
 
     fn begin_file_v3_request(&self, session_id: &str, token: &str) -> FileV3Request {
@@ -2614,6 +2754,33 @@ impl LanManager {
             let _ = manager.event_tx.send(RuntimeEvent::LanCameraClosed { session_id });
         });
         Ok(())
+    }
+
+    fn attach_camera_v2_reader(
+        &self,
+        session_id: String,
+        stream: tokio_rustls::client::TlsStream<TcpStream>,
+        buffered_body: Vec<u8>,
+        body_framing: CameraV2BodyFraming,
+    ) {
+        info!(%session_id, "LAN camera v2 data stream attached");
+        let _ = self.event_tx.send(RuntimeEvent::LanCameraConnected {
+            session_id: session_id.clone(),
+        });
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut reader = std::io::Cursor::new(buffered_body).chain(stream);
+            if let Err(error) = read_camera_v2_frames(&mut reader, body_framing, |frame| {
+                manager.queue_camera_frame(&session_id, frame);
+            })
+            .await
+            {
+                warn!(%session_id, %error, "LAN camera v2 data stream failed");
+            }
+            manager.unregister_camera(&session_id);
+            info!(%session_id, "LAN camera v2 data stream detached");
+            let _ = manager.event_tx.send(RuntimeEvent::LanCameraClosed { session_id });
+        });
     }
 
     fn queue_camera_frame(&self, session_id: &str, frame: CameraDataFrame) {
@@ -3743,6 +3910,17 @@ impl LanManager {
         match inner.camera_tokens.get(session_id) {
             Some(expected) if expected == token => {
                 inner.camera_tokens.remove(session_id);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn consume_camera_v2_token(&self, session_id: &str, token: &str) -> bool {
+        let mut inner = self.inner.lock_unpoisoned();
+        match inner.camera_v2_tokens.get(session_id) {
+            Some(expected) if constant_time_equals(expected.as_bytes(), token.as_bytes()) => {
+                inner.camera_v2_tokens.remove(session_id);
                 true
             }
             _ => false,
@@ -5732,6 +5910,209 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CameraV2BodyFraming {
+    CloseDelimited,
+    Chunked,
+}
+
+fn camera_v2_body_framing(headers: &HashMap<String, String>) -> AppResult<CameraV2BodyFraming> {
+    if headers.contains_key("content-length") {
+        return Err(AppError::message(
+            "LAN camera HTTPS response must not include Content-Length",
+        ));
+    }
+    let Some(value) = headers.get("transfer-encoding") else {
+        return Ok(CameraV2BodyFraming::CloseDelimited);
+    };
+    let codings = value
+        .split(',')
+        .map(str::trim)
+        .filter(|coding| !coding.is_empty())
+        .collect::<Vec<_>>();
+    if codings.len() == 1 && codings[0].eq_ignore_ascii_case("chunked") {
+        Ok(CameraV2BodyFraming::Chunked)
+    } else {
+        Err(AppError::message(
+            "LAN camera HTTPS response uses an unsupported Transfer-Encoding",
+        ))
+    }
+}
+
+#[derive(Default)]
+struct CameraFrameStreamDecoder {
+    buffered: Vec<u8>,
+}
+
+impl CameraFrameStreamDecoder {
+    fn push(&mut self, bytes: &[u8]) -> io::Result<Vec<CameraDataFrame>> {
+        self.buffered.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        loop {
+            if self.buffered.len() < 16 {
+                break;
+            }
+            if self.buffered[0] != 0x01 || self.buffered[1] != 0x01 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid camera frame header",
+                ));
+            }
+            let payload_len = u32::from_be_bytes([
+                self.buffered[12],
+                self.buffered[13],
+                self.buffered[14],
+                self.buffered[15],
+            ]) as usize;
+            if payload_len > CAMERA_MAX_FRAME_PAYLOAD_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "camera frame payload exceeds the limit",
+                ));
+            }
+            let frame_len = 16 + payload_len;
+            if self.buffered.len() < frame_len {
+                break;
+            }
+            let frame = CameraDataFrame::decode(&self.buffered[..frame_len]).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid camera frame")
+            })?;
+            self.buffered.drain(..frame_len);
+            frames.push(frame);
+        }
+        Ok(frames)
+    }
+
+    fn finish(self) -> io::Result<()> {
+        if self.buffered.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "camera response ended within a frame",
+            ))
+        }
+    }
+}
+
+async fn read_camera_v2_frames<R>(
+    reader: &mut R,
+    framing: CameraV2BodyFraming,
+    mut on_frame: impl FnMut(CameraDataFrame),
+) -> io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut decoder = CameraFrameStreamDecoder::default();
+    let mut buffer = [0_u8; 16 * 1024];
+    match framing {
+        CameraV2BodyFraming::CloseDelimited => loop {
+            let read = reader.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            for frame in decoder.push(&buffer[..read])? {
+                on_frame(frame);
+            }
+        },
+        CameraV2BodyFraming::Chunked => loop {
+            let line = read_http_crlf_line(reader, CAMERA_HTTP_LINE_LIMIT).await?;
+            let size = line
+                .split_once(';')
+                .map_or(line.as_str(), |(size, _)| size)
+                .trim();
+            let mut remaining = u64::from_str_radix(size, 16).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP chunk size")
+            })?;
+            if remaining == 0 {
+                read_http_trailers(reader).await?;
+                break;
+            }
+            while remaining > 0 {
+                let requested = usize::try_from(remaining.min(buffer.len() as u64))
+                    .unwrap_or(buffer.len());
+                reader.read_exact(&mut buffer[..requested]).await?;
+                for frame in decoder.push(&buffer[..requested])? {
+                    on_frame(frame);
+                }
+                remaining -= requested as u64;
+            }
+            let mut terminator = [0_u8; 2];
+            reader.read_exact(&mut terminator).await?;
+            if terminator != *b"\r\n" {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP chunk is missing its terminator",
+                ));
+            }
+        },
+    }
+    decoder.finish()
+}
+
+async fn read_http_crlf_line<R>(reader: &mut R, limit: usize) -> io::Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    loop {
+        if bytes.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP line exceeds the limit",
+            ));
+        }
+        let mut byte = [0_u8; 1];
+        reader.read_exact(&mut byte).await?;
+        bytes.push(byte[0]);
+        if bytes.ends_with(b"\r\n") {
+            bytes.truncate(bytes.len() - 2);
+            return String::from_utf8(bytes).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "HTTP line is not valid UTF-8")
+            });
+        }
+    }
+}
+
+async fn read_http_trailers<R>(reader: &mut R) -> io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut total = 0_usize;
+    loop {
+        let line = read_http_crlf_line(reader, CAMERA_HTTP_LINE_LIMIT).await?;
+        total = total.saturating_add(line.len() + 2);
+        if total > CAMERA_HTTP_TRAILER_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP trailers exceed the limit",
+            ));
+        }
+        if line.is_empty() {
+            return Ok(());
+        }
+        if !line.contains(':') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed HTTP trailer",
+            ));
+        }
+    }
+}
+
+async fn write_camera_v2_stream_response<S>(stream: &mut S) -> AppResult<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 fn parse_file_v3_range(value: &str, total_size: u64) -> Option<u64> {
     let start = value.strip_prefix("bytes=")?.strip_suffix('-')?.parse::<u64>().ok()?;
     (start < total_size).then_some(start)
@@ -5907,13 +6288,14 @@ fn same_lan_identity(left: &DeviceIdentity, right: &DeviceIdentity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_retryable_lan_bind_error, lan_port_candidates, parse_certificate_fingerprint,
-        parse_file_v3_range, CameraReceiveBuffer, LanManager, MemberRecord, MemberState,
+        camera_v2_body_framing, is_retryable_lan_bind_error, lan_port_candidates,
+        parse_certificate_fingerprint, parse_file_v3_range, read_camera_v2_frames,
+        CameraReceiveBuffer, CameraV2BodyFraming, LanManager, MemberRecord, MemberState,
         RANDOM_LAN_PORT_MAX, RANDOM_LAN_PORT_MIN,
     };
     use crate::models::LAN_PORT;
     use crate::protocol::CameraDataFrame;
-    use std::io;
+    use std::{collections::HashMap, io};
 
     fn member(state: MemberState, incarnation: i64) -> MemberRecord {
         MemberRecord {
@@ -5949,6 +6331,84 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![6, 7]
         );
+    }
+
+    #[tokio::test]
+    async fn camera_v2_chunked_body_is_decoded_independently_of_frame_boundaries() {
+        let first = CameraDataFrame::new("h264", true, 7, 11, vec![1; 31])
+            .expect("first frame");
+        let second = CameraDataFrame::new("h264", false, 8, 22, vec![2; 19])
+            .expect("second frame");
+        let body = [first.encode(), second.encode()].concat();
+        let mut chunked = Vec::new();
+        let mut offset = 0_usize;
+        for (index, size) in [3_usize, 9, 21, 5, 37, 64].into_iter().enumerate() {
+            if offset >= body.len() {
+                break;
+            }
+            let end = (offset + size).min(body.len());
+            let extension = if index == 0 { ";camera=test" } else { "" };
+            chunked.extend_from_slice(format!("{:X}{extension}\r\n", end - offset).as_bytes());
+            chunked.extend_from_slice(&body[offset..end]);
+            chunked.extend_from_slice(b"\r\n");
+            offset = end;
+        }
+        if offset < body.len() {
+            chunked.extend_from_slice(format!("{:X}\r\n", body.len() - offset).as_bytes());
+            chunked.extend_from_slice(&body[offset..]);
+            chunked.extend_from_slice(b"\r\n");
+        }
+        chunked.extend_from_slice(b"0\r\nX-Camera-End: true\r\n\r\n");
+
+        let mut input = chunked.as_slice();
+        let mut received = Vec::new();
+        read_camera_v2_frames(&mut input, CameraV2BodyFraming::Chunked, |frame| {
+            received.push(frame);
+        })
+        .await
+        .expect("chunked camera body");
+
+        assert_eq!(received, vec![first, second]);
+    }
+
+    #[tokio::test]
+    async fn camera_v2_close_delimited_body_accepts_multiple_frames() {
+        let first = camera_frame(1, true);
+        let second = camera_frame(2, false);
+        let encoded = [first.encode(), second.encode()].concat();
+        let mut input = encoded.as_slice();
+        let mut received = Vec::new();
+
+        read_camera_v2_frames(
+            &mut input,
+            CameraV2BodyFraming::CloseDelimited,
+            |frame| received.push(frame),
+        )
+        .await
+        .expect("close-delimited camera body");
+
+        assert_eq!(received, vec![first, second]);
+    }
+
+    #[test]
+    fn camera_v2_response_framing_accepts_only_protocol_body_modes() {
+        assert_eq!(
+            camera_v2_body_framing(&HashMap::new()).expect("close-delimited response"),
+            CameraV2BodyFraming::CloseDelimited,
+        );
+        assert_eq!(
+            camera_v2_body_framing(&HashMap::from([(
+                "transfer-encoding".to_string(),
+                "Chunked".to_string(),
+            )]))
+            .expect("chunked response"),
+            CameraV2BodyFraming::Chunked,
+        );
+        assert!(camera_v2_body_framing(&HashMap::from([(
+            "content-length".to_string(),
+            "42".to_string(),
+        )]))
+        .is_err());
     }
 
     #[test]

@@ -75,10 +75,15 @@ use crate::{
         TERMINAL_CLOSE_TYPE, TERMINAL_DATA_TYPE, TERMINAL_OPEN_ACK_TYPE, TERMINAL_OPEN_TYPE,
         TERMINAL_RESIZE_TYPE, TerminalClosePayload, TerminalDataPayload, TerminalOpenAckPayload,
         TerminalOpenPayload, TerminalResizePayload, CameraAlivePayload, CameraClosePayload,
-        CameraConfigPayload, CameraFramePayload,
+        CameraConfigPayload, CameraFramePayload, CameraV2ConfigAckPayload,
+        CameraV2ConfigPayload, CameraV2OpenAckPayload, CameraV2OpenPayload,
         CameraListPayload, CameraListResultPayload, CameraOpenAckPayload, CameraOpenPayload,
         CameraReadyPayload, CAMERA_ALIVE_TYPE, CAMERA_CLOSE_TYPE, CAMERA_CONFIG_TYPE, CAMERA_FRAME_TYPE,
         CAMERA_LIST_RESULT_TYPE, CAMERA_LIST_TYPE, CAMERA_OPEN_ACK_TYPE, CAMERA_OPEN_TYPE, CAMERA_READY_TYPE,
+        CAMERA_V2_ALIVE_TYPE, CAMERA_V2_CLOSE_TYPE, CAMERA_V2_CONFIG_ACK_TYPE,
+        CAMERA_V2_CONFIG_TYPE, CAMERA_V2_FRAME_TYPE, CAMERA_V2_LIST_RESULT_TYPE,
+        CAMERA_V2_LIST_TYPE, CAMERA_V2_OPEN_ACK_TYPE, CAMERA_V2_OPEN_TYPE,
+        CAMERA_V2_READY_TYPE,
     },
     runtime_events::RuntimeEvent,
     store::db::Database,
@@ -525,7 +530,9 @@ impl AppRuntime {
                 correlation_id,
                 message,
             } => {
-                if message.message_type != CAMERA_FRAME_TYPE {
+                if message.message_type != CAMERA_FRAME_TYPE
+                    && message.message_type != CAMERA_V2_FRAME_TYPE
+                {
                     debug!(%from, message_type = %message.message_type, "runtime received cloud relay");
                 }
                 self
@@ -1394,6 +1401,58 @@ impl AppRuntime {
                 let Ok(payload) = serde_json::from_value::<CameraListResultPayload>(message.payload) else { return; };
                 self.handle_camera_list_result(from, correlation_id.as_deref(), payload).await;
             }
+            CAMERA_V2_LIST_TYPE => {
+                let Some(request_id) = envelope_id else { return; };
+                if serde_json::from_value::<CameraListPayload>(message.payload).is_err() { return; }
+                let runtime = self.clone();
+                let from = from.to_string();
+                tauri::async_runtime::spawn(async move {
+                    let camera_capture = runtime.inner.camera_capture.clone();
+                    let response_payload = match tokio::task::spawn_blocking(move || {
+                        camera_capture.list_devices_v2()
+                    })
+                    .await
+                    {
+                        Ok(Ok(cameras)) => CameraListResultPayload {
+                            cameras,
+                            reason: None,
+                            message: None,
+                        },
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "native camera v2 enumeration failed");
+                            CameraListResultPayload {
+                                cameras: Vec::new(),
+                                reason: Some("colink:camera.list_failed.v1".to_string()),
+                                message: Some(error.to_string()),
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "native camera v2 enumeration task failed");
+                            CameraListResultPayload {
+                                cameras: Vec::new(),
+                                reason: Some("colink:camera.list_failed.v1".to_string()),
+                                message: Some("Native camera enumeration failed".to_string()),
+                            }
+                        }
+                    };
+                    if let Ok(response) = BusinessEnvelope::from_payload(
+                        CAMERA_V2_LIST_RESULT_TYPE,
+                        response_payload,
+                    ) {
+                        let _ = runtime
+                            .send_business_message_with_correlation(
+                                &from,
+                                response,
+                                Some(request_id),
+                            )
+                            .await;
+                    }
+                });
+            }
+            CAMERA_V2_LIST_RESULT_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraListResultPayload>(message.payload) else { return; };
+                self.handle_camera_list_result(from, correlation_id.as_deref(), payload).await;
+            }
             CAMERA_OPEN_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraOpenPayload>(message.payload) else { return; };
                 self.handle_camera_open(from, envelope_id, payload).await;
@@ -1402,25 +1461,57 @@ impl AppRuntime {
                 let Ok(payload) = serde_json::from_value::<CameraOpenAckPayload>(message.payload) else { return; };
                 self.handle_camera_open_ack(from, correlation_id.as_deref(), payload).await;
             }
+            CAMERA_V2_OPEN_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraV2OpenPayload>(message.payload) else { return; };
+                self.handle_camera_v2_open(from, envelope_id, payload).await;
+            }
+            CAMERA_V2_OPEN_ACK_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraV2OpenAckPayload>(message.payload) else { return; };
+                self.handle_camera_v2_open_ack(from, correlation_id.as_deref(), payload).await;
+            }
             CAMERA_FRAME_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraFramePayload>(message.payload) else { return; };
-                self.handle_camera_frame(from, payload);
+                self.handle_camera_frame(from, payload, false);
+            }
+            CAMERA_V2_FRAME_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraFramePayload>(message.payload) else { return; };
+                self.handle_camera_frame(from, payload, true);
             }
             CAMERA_CLOSE_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraClosePayload>(message.payload) else { return; };
-                self.handle_camera_close(from, payload);
+                self.handle_camera_close(from, payload, false);
+            }
+            CAMERA_V2_CLOSE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraClosePayload>(message.payload) else { return; };
+                self.handle_camera_close(from, payload, true);
             }
             CAMERA_READY_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraReadyPayload>(message.payload) else { return; };
-                self.handle_camera_ready(from, payload).await;
+                self.handle_camera_ready(from, payload, false).await;
+            }
+            CAMERA_V2_READY_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraReadyPayload>(message.payload) else { return; };
+                self.handle_camera_ready(from, payload, true).await;
             }
             CAMERA_ALIVE_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraAlivePayload>(message.payload) else { return; };
-                self.handle_camera_alive(from, payload).await;
+                self.handle_camera_alive(from, payload, false).await;
+            }
+            CAMERA_V2_ALIVE_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraAlivePayload>(message.payload) else { return; };
+                self.handle_camera_alive(from, payload, true).await;
             }
             CAMERA_CONFIG_TYPE => {
                 let Ok(payload) = serde_json::from_value::<CameraConfigPayload>(message.payload) else { return; };
                 self.handle_camera_config(from, envelope_id.as_deref(), payload).await;
+            }
+            CAMERA_V2_CONFIG_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraV2ConfigPayload>(message.payload) else { return; };
+                self.handle_camera_v2_config(from, envelope_id.as_deref(), payload).await;
+            }
+            CAMERA_V2_CONFIG_ACK_TYPE => {
+                let Ok(payload) = serde_json::from_value::<CameraV2ConfigAckPayload>(message.payload) else { return; };
+                self.handle_camera_v2_config_ack(from, correlation_id.as_deref(), payload);
             }
             _ => {}
         }

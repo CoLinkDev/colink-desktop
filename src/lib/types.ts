@@ -278,10 +278,44 @@ export interface RemoteFilesystemUpload {
 export type RemoteTerminalSupport = 'unknown' | 'supported' | 'unsupported'
 export type RemoteCameraSupport = RemoteTerminalSupport
 
+export interface CameraFpsRange {
+  min: number
+  max: number
+}
+
+export interface CameraResolution {
+  width: number
+  height: number
+  fps?: CameraFpsRange[]
+}
+
+export interface CameraCapabilities {
+  resolutions: CameraResolution[]
+  fpsRange?: CameraFpsRange | null
+}
+
 export interface CameraEntry {
   cameraId: string
   label: string
   position?: string | null
+  capabilities?: CameraCapabilities | null
+}
+
+export interface CameraMode {
+  width: number
+  height: number
+  fps: number
+}
+
+export interface CameraV2ConfigAck {
+  sessionId: string
+  applied: boolean
+  width?: number
+  height?: number
+  fps?: number
+  effectiveFromSequence?: number
+  reason?: string
+  message?: string
 }
 
 export type NoteSyncState = 'synced' | 'pending' | 'pendingDelete' | 'conflict' | 'conflictDelete'
