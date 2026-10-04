@@ -424,7 +424,14 @@ export function CameraPage() {
               decodeFrameRef.current(frame)
             }
           }
-        } catch {
+        } catch (error) {
+          if (CAMERA_DEBUG_LOGGING_ENABLED) {
+            console.error(
+              `[Camera][viewer] session=${activeSession.slice(0, 8)} mode switch to ` +
+                `${next.mode.width}x${next.mode.height}@${next.mode.fps} failed`,
+              error,
+            )
+          }
           if (
             generation !== switchGenerationRef.current ||
             sessionRef.current !== activeSession
